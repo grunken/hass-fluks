@@ -8,7 +8,6 @@ import pytest
 
 from custom_components.fluks.api import (
     FluksApiClient,
-    FluksApiError,
     FluksCannotConnect,
     FluksInvalidCredentials,
     FluksInvalidVerificationCode,
@@ -55,7 +54,6 @@ async def test_public_authentication_contract():
     """Public requests use exact paths and documented payload field names."""
     session = FakeSession(
         FakeResponse(202, {"message": "requested"}),
-        FakeResponse(202, {"message": "requested"}),
         FakeResponse(200, {"message": "verified"}),
         FakeResponse(200, {"data": {"accessToken": "jwt", "expiresIn": 3600}}),
     )
@@ -64,7 +62,6 @@ async def test_public_authentication_contract():
     await client.register_user(
         "user@example.com", "very-long-password", first_name="A", last_name="B"
     )
-    await client.resend_verification("user@example.com")
     await client.verify_email("user@example.com", "042317")
     assert await client.login("user@example.com", "very-long-password") == (
         "jwt",
@@ -73,7 +70,6 @@ async def test_public_authentication_contract():
 
     assert [request[0:2] for request in session.requests] == [
         ("POST", f"{API_BASE_URL}/users"),
-        ("POST", f"{API_BASE_URL}/users/email-verification/resend"),
         ("POST", f"{API_BASE_URL}/users/email-verification/verify"),
         ("POST", f"{API_BASE_URL}/auth/login"),
     ]
@@ -83,8 +79,7 @@ async def test_public_authentication_contract():
         "firstName": "A",
         "lastName": "B",
     }
-    assert session.requests[1][2]["json"] == {"email": "user@example.com"}
-    assert session.requests[2][2]["json"]["code"] == "042317"
+    assert session.requests[1][2]["json"]["code"] == "042317"
     assert all("Authorization" not in item[2]["headers"] for item in session.requests)
 
 
@@ -155,21 +150,3 @@ async def test_timeout_is_connectivity_failure():
 
     with pytest.raises(FluksCannotConnect):
         await client.login("user@example.com", "password")
-
-
-@pytest.mark.asyncio
-async def test_resend_timeout_is_connectivity_failure():
-    """A resend timeout uses the existing recoverable connectivity boundary."""
-    client = FluksApiClient(FakeSession(asyncio.TimeoutError()))
-
-    with pytest.raises(FluksCannotConnect):
-        await client.resend_verification("user@example.com")
-
-
-@pytest.mark.asyncio
-async def test_resend_rejects_malformed_success_response():
-    """A malformed resend response crosses the existing API error boundary."""
-    client = FluksApiClient(FakeSession(FakeResponse(202, [])))
-
-    with pytest.raises(FluksApiError, match="INVALID_RESPONSE"):
-        await client.resend_verification("user@example.com")

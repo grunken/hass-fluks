@@ -26,38 +26,10 @@
         },
         "data_description": {"password": "Brug mindst 12 tegn."}
       },
-      "verification": {
-        "title": "Bekræft din e-mailadresse",
-        "description": "Vælg, hvordan du vil fortsætte med {email}.",
-        "menu_options": {
-          "verify": "Indtast bekræftelseskode",
-          "resend_verification": "Send bekræftelsesmail igen"
-        },
-        "menu_option_descriptions": {
-          "verify": "Indtast den sekscifrede kode fra din e-mail.",
-          "resend_verification": "Bed om en ny bekræftelseskode."
-        }
-      },
       "verify": {
-        "title": "Tjek din e-mail",
-        "description": "Vi har sendt en sekscifret bekræftelseskode til {email}. Indtast den nedenfor. Hvis koden ikke accepteres, kan du prøve igen.",
+        "title": "Bekræft din e-mail",
+        "description": "Indtast den sekscifrede bekræftelseskode, der er sendt til {email}.",
         "data": {"code": "Bekræftelseskode"}
-      },
-      "resend_verification": {
-        "title": "Bed om en ny bekræftelsesmail",
-        "description": "Bed om en ny bekræftelsesmail til {email}."
-      },
-      "verification_resent": {
-        "title": "Anmodningen er modtaget",
-        "description": "Der er anmodet om en ny bekræftelsesmail til {email}.",
-        "menu_options": {
-          "verify": "Indtast bekræftelseskode",
-          "resend_verification": "Bed om en ny mail"
-        },
-        "menu_option_descriptions": {
-          "verify": "Fortsæt med den sekscifrede kode fra din e-mail.",
-          "resend_verification": "Bed om en ny mail, hvis du stadig ikke har modtaget den."
-        }
       },
       "site_choice": {
         "title": "Vælg, hvor der skal oprettes forbindelse",
@@ -95,9 +67,6 @@
       "invalid_input": "Kontrollér de markerede oplysninger, og prøv igen.",
       "invalid_verification_code": "Koden er ugyldig eller kan ikke længere bruges. Kontrollér e-mailen, og prøv igen.",
       "invalid_verification_code_format": "Indtast de seks cifre fra din e-mail.",
-      "resend_cannot_connect": "Kunne ikke anmode om en ny bekræftelsesmail. Kontrollér forbindelsen, og prøv igen.",
-      "resend_invalid_input": "Kunne ikke anmode om en ny bekræftelsesmail. Kontrollér e-mailadressen, og prøv igen.",
-      "resend_unknown": "Kunne ikke anmode om en ny bekræftelsesmail. Prøv igen.",
       "unauthorized": "Dit login er udløbet. Luk vinduet, og begynd forfra for at logge ind.",
       "unknown": "Der opstod en uventet fejl under forbindelsen til fluks. Prøv igen."
     },

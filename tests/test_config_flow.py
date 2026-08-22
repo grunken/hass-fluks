@@ -3,8 +3,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
-import pytest
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResultType
@@ -13,7 +11,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.fluks.api import (
     FluksApiClient,
-    FluksApiError,
     FluksCannotConnect,
     FluksInvalidCredentials,
     FluksInvalidVerificationCode,
@@ -44,7 +41,6 @@ def make_api():
     api.login = AsyncMock(return_value=("human-jwt", 3600))
     api.register_user = AsyncMock()
     api.verify_email = AsyncMock()
-    api.resend_verification = AsyncMock()
     api.list_sites = AsyncMock(return_value=[SITE])
     api.list_integrations = AsyncMock(return_value=[])
     api.create_integration = AsyncMock(
@@ -90,29 +86,6 @@ async def choose_register(hass, flow_id):
     )
 
 
-async def choose_verify(hass, flow_id):
-    """Choose code entry from the native verification menu."""
-    return await hass.config_entries.flow.async_configure(
-        flow_id, {"next_step_id": "verify"}
-    )
-
-
-async def reach_resend_form(hass, api):
-    """Register and choose the native resend action."""
-    result = await start_flow(hass, api)
-    flow_id = result["flow_id"]
-    result = await choose_register(hass, flow_id)
-    result = await hass.config_entries.flow.async_configure(
-        flow_id,
-        {CONF_EMAIL: "new@example.com", CONF_PASSWORD: "long-password"},
-    )
-    assert result["step_id"] == "verification"
-    result = await hass.config_entries.flow.async_configure(
-        flow_id, {"next_step_id": "resend_verification"}
-    )
-    return result
-
-
 def serialize_form(hass, result):
     """Serialize a form through Home Assistant's frontend response path."""
     return _BaseFlowManagerView(hass.config_entries.flow)._prepare_result_json(result)
@@ -155,8 +128,7 @@ async def test_auth_forms_are_clean_and_serializable(hass):
         flow_id,
         {CONF_EMAIL: "new@example.com", CONF_PASSWORD: "long-password"},
     )
-    assert result["step_id"] == "verification"
-    result = await choose_verify(hass, flow_id)
+    assert result["step_id"] == "verify"
     serialized = serialize_form(hass, result)
     assert [item["name"] for item in serialized["data_schema"]] == [CONF_CODE]
 
@@ -236,10 +208,10 @@ async def test_registration_verification_then_login(hass):
         result["flow_id"],
         {CONF_EMAIL: "new@example.com", CONF_PASSWORD: "long-password"},
     )
-    assert result["step_id"] == "verification"
-    assert result["menu_options"] == ["verify", "resend_verification"]
-    result = await choose_verify(hass, result["flow_id"])
     assert result["step_id"] == "verify"
+    assert result["type"] is FlowResultType.FORM
+    assert "menu_options" not in result
+    assert result["description_placeholders"] == {"email": "new@example.com"}
     serialized = serialize_form(hass, result)
     serialized_code = next(
         item for item in serialized["data_schema"] if item["name"] == CONF_CODE
@@ -267,46 +239,12 @@ async def test_registration_verification_then_login(hass):
     )
     assert result["step_id"] == "login"
     assert api.login.await_count == 0
-
-
-async def test_resend_recovery_preserves_flow_state_and_has_no_side_effects(hass):
-    """The native resend action uses stored state and stays in the same flow."""
-    api = make_api()
-    result = await reach_resend_form(hass, api)
-    flow_id = result["flow_id"]
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "resend_verification"
-    assert result["description_placeholders"] == {"email": "new@example.com"}
-    serialized = serialize_form(hass, result)
-    assert serialized["data_schema"] == []
-    api.resend_verification.assert_not_awaited()
-
-    result = await hass.config_entries.flow.async_configure(flow_id, {})
-
-    assert result["type"] is FlowResultType.MENU
-    assert result["step_id"] == "verification_resent"
-    assert result["flow_id"] == flow_id
-    assert result["description_placeholders"] == {"email": "new@example.com"}
-    api.resend_verification.assert_awaited_once_with("new@example.com")
-    api.register_user.assert_awaited_once()
-    api.verify_email.assert_not_awaited()
-    api.login.assert_not_awaited()
     api.list_sites.assert_not_awaited()
     api.create_site.assert_not_awaited()
     api.list_integrations.assert_not_awaited()
     api.create_integration.assert_not_awaited()
-    assert hass.config_entries.async_entries(DOMAIN) == []
 
-    result = await choose_verify(hass, flow_id)
-    assert result["step_id"] == "verify"
-    assert result["description_placeholders"] == {"email": "new@example.com"}
-    result = await hass.config_entries.flow.async_configure(
-        flow_id, {CONF_CODE: "012345"}
-    )
-    assert result["step_id"] == "login"
-    api.verify_email.assert_awaited_once_with("new@example.com", "012345")
-
+    flow_id = result["flow_id"]
     result = await hass.config_entries.flow.async_configure(
         flow_id,
         {CONF_EMAIL: "new@example.com", CONF_PASSWORD: "long-password"},
@@ -321,37 +259,6 @@ async def test_resend_recovery_preserves_flow_state_and_has_no_side_effects(hass
     assert result["data"][CONF_INTEGRATION_ID] == EXTERNAL_ID
 
 
-@pytest.mark.parametrize(
-    ("failure", "error"),
-    [
-        (FluksCannotConnect(), "resend_cannot_connect"),
-        (FluksValidationError("VALIDATION_ERROR"), "resend_invalid_input"),
-        (FluksApiError("INVALID_RESPONSE"), "resend_unknown"),
-    ],
-)
-async def test_resend_failures_are_recoverable(hass, failure, error):
-    """Resend failures preserve state and can be retried in place."""
-    api = make_api()
-    api.resend_verification.side_effect = [failure, None]
-    result = await reach_resend_form(hass, api)
-    flow_id = result["flow_id"]
-
-    result = await hass.config_entries.flow.async_configure(flow_id, {})
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "resend_verification"
-    assert result["flow_id"] == flow_id
-    assert result["errors"] == {"base": error}
-    assert result["description_placeholders"] == {"email": "new@example.com"}
-    serialize_form(hass, result)
-    api.list_sites.assert_not_awaited()
-    api.list_integrations.assert_not_awaited()
-    api.create_integration.assert_not_awaited()
-
-    result = await hass.config_entries.flow.async_configure(flow_id, {})
-    assert result["step_id"] == "verification_resent"
-    assert api.resend_verification.await_count == 2
-
-
 async def test_local_verification_code_validation(hass):
     """Only six ASCII decimal digits are sent to the backend."""
     api = make_api()
@@ -363,8 +270,6 @@ async def test_local_verification_code_validation(hass):
         result["flow_id"],
         {CONF_EMAIL: "new@example.com", CONF_PASSWORD: "long-password"},
     )
-    result = await choose_verify(hass, result["flow_id"])
-
     for invalid_code in ("12345", "1234567", "12a456", "٠١٢٣٤٥"):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {CONF_CODE: invalid_code}

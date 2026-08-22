@@ -81,15 +81,6 @@ class FluksApiClient:
             expected_status=200,
         )
 
-    async def resend_verification(self, email: str) -> None:
-        """Request another verification email for a pending user."""
-        await self._request(
-            "POST",
-            "/users/email-verification/resend",
-            json={"email": email},
-            expected_status=202,
-        )
-
     async def login(self, email: str, password: str) -> tuple[str, int]:
         """Authenticate a verified user and return its human JWT details."""
         response = await self._request(

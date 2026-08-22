@@ -123,7 +123,7 @@ class FluksConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     last_name=user_input.get(CONF_LAST_NAME),
                 )
                 self._registration_email = user_input[CONF_EMAIL]
-                return await self.async_step_verification()
+                return await self.async_step_verify()
             except FluksValidationError:
                 errors["base"] = "invalid_input"
             except FluksCannotConnect:
@@ -150,56 +150,6 @@ class FluksConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
-        )
-
-    async def async_step_verification(
-        self, user_input: dict[str, Any] | None = None
-    ):
-        """Offer code entry or verification-email recovery."""
-        if self._registration_email is None:
-            return self.async_abort(reason="missing_registration")
-        return self.async_show_menu(
-            step_id="verification",
-            menu_options=["verify", "resend_verification"],
-            description_placeholders={"email": self._registration_email},
-        )
-
-    async def async_step_resend_verification(
-        self, user_input: dict[str, Any] | None = None
-    ):
-        """Request another verification email with recoverable errors."""
-        if self._registration_email is None:
-            return self.async_abort(reason="missing_registration")
-
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            try:
-                await self.api.resend_verification(self._registration_email)
-                return await self.async_step_verification_resent()
-            except FluksValidationError:
-                errors["base"] = "resend_invalid_input"
-            except FluksCannotConnect:
-                errors["base"] = "resend_cannot_connect"
-            except FluksApiError:
-                errors["base"] = "resend_unknown"
-
-        return self.async_show_form(
-            step_id="resend_verification",
-            data_schema=vol.Schema({}),
-            errors=errors,
-            description_placeholders={"email": self._registration_email},
-        )
-
-    async def async_step_verification_resent(
-        self, user_input: dict[str, Any] | None = None
-    ):
-        """Confirm the request and keep verification actions available."""
-        if self._registration_email is None:
-            return self.async_abort(reason="missing_registration")
-        return self.async_show_menu(
-            step_id="verification_resent",
-            menu_options=["verify", "resend_verification"],
-            description_placeholders={"email": self._registration_email},
         )
 
     async def async_step_verify(self, user_input: dict[str, Any] | None = None):

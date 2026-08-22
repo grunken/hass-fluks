@@ -26,38 +26,10 @@
         },
         "data_description": {"password": "Use at least 12 characters."}
       },
-      "verification": {
-        "title": "Verify your email",
-        "description": "Choose how to continue with {email}.",
-        "menu_options": {
-          "verify": "Enter verification code",
-          "resend_verification": "Resend verification email"
-        },
-        "menu_option_descriptions": {
-          "verify": "Enter the six-digit code from your email.",
-          "resend_verification": "Request another verification code."
-        }
-      },
       "verify": {
-        "title": "Check your email",
-        "description": "We sent a six-digit verification code to {email}. Enter it below; you can retry if the code is not accepted.",
+        "title": "Verify your email",
+        "description": "Enter the six-digit verification code sent to {email}.",
         "data": {"code": "Verification code"}
-      },
-      "resend_verification": {
-        "title": "Request another verification email",
-        "description": "Request another verification email for {email}."
-      },
-      "verification_resent": {
-        "title": "Request received",
-        "description": "Another verification email has been requested for {email}.",
-        "menu_options": {
-          "verify": "Enter verification code",
-          "resend_verification": "Request another email"
-        },
-        "menu_option_descriptions": {
-          "verify": "Continue with the six-digit code from your email.",
-          "resend_verification": "Request again if you still have not received it."
-        }
       },
       "site_choice": {
         "title": "Choose where to connect",
@@ -95,9 +67,6 @@
       "invalid_input": "Check the highlighted information and try again.",
       "invalid_verification_code": "That code is invalid or no longer available. Check the email and try again.",
       "invalid_verification_code_format": "Enter the six digits from your email.",
-      "resend_cannot_connect": "Could not request another verification email. Check your connection and try again.",
-      "resend_invalid_input": "Could not request another verification email. Check the email address and try again.",
-      "resend_unknown": "Could not request another verification email. Please try again.",
       "unauthorized": "Your login has expired. Close this window and start again to log in.",
       "unknown": "Something unexpected happened while connecting to fluks. Try again."
     },
