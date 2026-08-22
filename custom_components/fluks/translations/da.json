@@ -1,0 +1,112 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Your energy. Decides together.",
+        "description": "Forbind Home Assistant med fluks, og vælg, hvordan du vil komme i gang.",
+        "menu_options": {"login": "Log ind", "register": "Opret konto"},
+        "menu_option_descriptions": {
+          "login": "Brug din eksisterende fluks-konto.",
+          "register": "Opret en ny konto, og bekræft din e-mailadresse."
+        }
+      },
+      "login": {
+        "title": "Velkommen tilbage",
+        "description": "Log ind for at forbinde Home Assistant med din fluks-konto.",
+        "data": {"email": "E-mailadresse", "password": "Adgangskode"}
+      },
+      "register": {
+        "title": "Opret din konto",
+        "description": "Opret en fluks-konto. Bagefter sender vi en sekscifret bekræftelseskode til din e-mailadresse.",
+        "data": {
+          "email": "E-mailadresse",
+          "password": "Adgangskode",
+          "first_name": "Fornavn (valgfrit)",
+          "last_name": "Efternavn (valgfrit)"
+        },
+        "data_description": {"password": "Brug mindst 12 tegn."}
+      },
+      "verification": {
+        "title": "Bekræft din e-mailadresse",
+        "description": "Vælg, hvordan du vil fortsætte med {email}.",
+        "menu_options": {
+          "verify": "Indtast bekræftelseskode",
+          "resend_verification": "Send bekræftelsesmail igen"
+        },
+        "menu_option_descriptions": {
+          "verify": "Indtast den sekscifrede kode fra din e-mail.",
+          "resend_verification": "Bed om en ny bekræftelseskode."
+        }
+      },
+      "verify": {
+        "title": "Tjek din e-mail",
+        "description": "Vi har sendt en sekscifret bekræftelseskode til {email}. Indtast den nedenfor. Hvis koden ikke accepteres, kan du prøve igen.",
+        "data": {"code": "Bekræftelseskode"}
+      },
+      "resend_verification": {
+        "title": "Bed om en ny bekræftelsesmail",
+        "description": "Bed om en ny bekræftelsesmail til {email}."
+      },
+      "verification_resent": {
+        "title": "Anmodningen er modtaget",
+        "description": "Der er anmodet om en ny bekræftelsesmail til {email}.",
+        "menu_options": {
+          "verify": "Indtast bekræftelseskode",
+          "resend_verification": "Bed om en ny mail"
+        },
+        "menu_option_descriptions": {
+          "verify": "Fortsæt med den sekscifrede kode fra din e-mail.",
+          "resend_verification": "Bed om en ny mail, hvis du stadig ikke har modtaget den."
+        }
+      },
+      "site_choice": {
+        "title": "Vælg, hvor der skal oprettes forbindelse",
+        "description": "Vælg et eksisterende fluks Site, eller opret et nyt.",
+        "menu_options": {
+          "site": "Vælg et eksisterende Site",
+          "create_site": "Opret et nyt Site"
+        },
+        "menu_option_descriptions": {
+          "site": "Forbind denne Home Assistant med et af dine Sites.",
+          "create_site": "Opret et nyt sted til dine energienheder."
+        }
+      },
+      "site": {
+        "title": "Vælg et Site",
+        "description": "Vælg det fluks Site, som denne Home Assistant tilhører.",
+        "data": {"site": "Site"}
+      },
+      "create_site": {
+        "title": "Navngiv dit Site",
+        "description": "Giv stedet et tydeligt navn, f.eks. Hjem.",
+        "data": {"site_name": "Navn på Site"},
+        "data_description": {
+          "site_name": "Home Assistant leverer automatisk de nødvendige placeringsoplysninger."
+        }
+      },
+      "register_integration": {
+        "title": "Afslut forbindelsen",
+        "description": "fluks kunne ikke afslutte forbindelsen til denne Home Assistant. Send formularen igen for at prøve på ny."
+      }
+    },
+    "error": {
+      "cannot_connect": "Der kunne ikke oprettes forbindelse til fluks. Kontrollér forbindelsen, og prøv igen.",
+      "invalid_auth": "E-mailadressen eller adgangskoden er forkert.",
+      "invalid_input": "Kontrollér de markerede oplysninger, og prøv igen.",
+      "invalid_verification_code": "Koden er ugyldig eller kan ikke længere bruges. Kontrollér e-mailen, og prøv igen.",
+      "invalid_verification_code_format": "Indtast de seks cifre fra din e-mail.",
+      "resend_cannot_connect": "Kunne ikke anmode om en ny bekræftelsesmail. Kontrollér forbindelsen, og prøv igen.",
+      "resend_invalid_input": "Kunne ikke anmode om en ny bekræftelsesmail. Kontrollér e-mailadressen, og prøv igen.",
+      "resend_unknown": "Kunne ikke anmode om en ny bekræftelsesmail. Prøv igen.",
+      "unauthorized": "Dit login er udløbet. Luk vinduet, og begynd forfra for at logge ind.",
+      "unknown": "Der opstod en uventet fejl under forbindelsen til fluks. Prøv igen."
+    },
+    "abort": {
+      "already_configured": "Dette fluks Site er allerede konfigureret.",
+      "cannot_connect": "Der kunne ikke oprettes forbindelse til fluks. Start forløbet igen for at prøve på ny.",
+      "missing_registration": "Start oprettelsen af kontoen igen, før du bekræfter din e-mailadresse.",
+      "unauthorized": "Godkendelsen er udløbet eller er ikke længere gyldig. Start forløbet igen.",
+      "unknown": "fluks returnerede et uventet svar. Start forløbet igen for at prøve på ny."
+    }
+  }
+}

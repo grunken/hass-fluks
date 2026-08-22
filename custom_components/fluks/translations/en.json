@@ -1,0 +1,112 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Your energy. Decides together.",
+        "description": "Connect Home Assistant to fluks and choose how you want to get started.",
+        "menu_options": {"login": "Log in", "register": "Create account"},
+        "menu_option_descriptions": {
+          "login": "Use your existing fluks account.",
+          "register": "Create a new account and verify your email."
+        }
+      },
+      "login": {
+        "title": "Welcome back",
+        "description": "Log in to connect Home Assistant to your fluks account.",
+        "data": {"email": "Email", "password": "Password"}
+      },
+      "register": {
+        "title": "Create your account",
+        "description": "Create a fluks account. We'll email you a six-digit verification code next.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "first_name": "First name (optional)",
+          "last_name": "Last name (optional)"
+        },
+        "data_description": {"password": "Use at least 12 characters."}
+      },
+      "verification": {
+        "title": "Verify your email",
+        "description": "Choose how to continue with {email}.",
+        "menu_options": {
+          "verify": "Enter verification code",
+          "resend_verification": "Resend verification email"
+        },
+        "menu_option_descriptions": {
+          "verify": "Enter the six-digit code from your email.",
+          "resend_verification": "Request another verification code."
+        }
+      },
+      "verify": {
+        "title": "Check your email",
+        "description": "We sent a six-digit verification code to {email}. Enter it below; you can retry if the code is not accepted.",
+        "data": {"code": "Verification code"}
+      },
+      "resend_verification": {
+        "title": "Request another verification email",
+        "description": "Request another verification email for {email}."
+      },
+      "verification_resent": {
+        "title": "Request received",
+        "description": "Another verification email has been requested for {email}.",
+        "menu_options": {
+          "verify": "Enter verification code",
+          "resend_verification": "Request another email"
+        },
+        "menu_option_descriptions": {
+          "verify": "Continue with the six-digit code from your email.",
+          "resend_verification": "Request again if you still have not received it."
+        }
+      },
+      "site_choice": {
+        "title": "Choose where to connect",
+        "description": "Select an existing fluks Site or create a new one.",
+        "menu_options": {
+          "site": "Choose an existing Site",
+          "create_site": "Create a new Site"
+        },
+        "menu_option_descriptions": {
+          "site": "Connect this Home Assistant to one of your Sites.",
+          "create_site": "Set up a new place for your energy devices."
+        }
+      },
+      "site": {
+        "title": "Choose a Site",
+        "description": "Select the fluks Site this Home Assistant belongs to.",
+        "data": {"site": "Site"}
+      },
+      "create_site": {
+        "title": "Name your Site",
+        "description": "Give this place a clear name, such as Home.",
+        "data": {"site_name": "Site name"},
+        "data_description": {
+          "site_name": "Home Assistant supplies the required location details automatically."
+        }
+      },
+      "register_integration": {
+        "title": "Finish connecting",
+        "description": "fluks could not finish connecting this Home Assistant. Submit to try again safely."
+      }
+    },
+    "error": {
+      "cannot_connect": "We couldn't reach fluks. Check your connection and try again.",
+      "invalid_auth": "The email address or password is incorrect.",
+      "invalid_input": "Check the highlighted information and try again.",
+      "invalid_verification_code": "That code is invalid or no longer available. Check the email and try again.",
+      "invalid_verification_code_format": "Enter the six digits from your email.",
+      "resend_cannot_connect": "Could not request another verification email. Check your connection and try again.",
+      "resend_invalid_input": "Could not request another verification email. Check the email address and try again.",
+      "resend_unknown": "Could not request another verification email. Please try again.",
+      "unauthorized": "Your login has expired. Close this window and start again to log in.",
+      "unknown": "Something unexpected happened while connecting to fluks. Try again."
+    },
+    "abort": {
+      "already_configured": "This fluks Site is already configured.",
+      "cannot_connect": "Cannot connect to fluks. Start the flow again to retry.",
+      "missing_registration": "Start account creation again before verifying your email.",
+      "unauthorized": "Authentication expired or is no longer valid. Start the flow again.",
+      "unknown": "fluks returned an unexpected response. Start the flow again to retry."
+    }
+  }
+}
