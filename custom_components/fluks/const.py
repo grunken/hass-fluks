@@ -9,6 +9,7 @@ CONF_ACCESS_TOKEN_EXPIRES_AT = "access_token_expires_at"
 CONF_INTEGRATION_ID = "integration_id"
 CONF_INTEGRATION_INTERNAL_ID = "integration_internal_id"
 CONF_SITE_ID = "site_id"
+CONF_DEVICE = "device"
 
 INTEGRATION_TYPE = "homeAssistant"
 ENERGY_PROFILE = "ordinary_residential"

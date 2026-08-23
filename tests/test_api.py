@@ -9,6 +9,7 @@ import pytest
 from custom_components.fluks.api import (
     FluksApiClient,
     FluksCannotConnect,
+    FluksConflict,
     FluksInvalidCredentials,
     FluksInvalidVerificationCode,
     FluksUnauthorized,
@@ -125,6 +126,75 @@ async def test_authenticated_site_and_integration_contract():
 
 
 @pytest.mark.asyncio
+async def test_catalog_device_and_mapping_contracts():
+    """Milestone 2 uses exact documented paths, identities, and payloads."""
+    catalog = [
+        {
+            "type": "battery",
+            "concepts": [
+                {
+                    "concept": "battery.soc",
+                    "datatype": "number",
+                    "cadence": "realtime",
+                    "usages": ["fact"],
+                    "source": "mapping",
+                }
+            ],
+        }
+    ]
+    device = {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "deviceId": "external-device-id",
+        "type": "battery",
+    }
+    mapping = {
+        "integrationId": "11111111-1111-1111-1111-111111111111",
+        "deviceId": device["id"],
+        "concept": "battery.soc",
+        "direction": "input",
+        "configuration": {"version": 1, "entityId": "sensor.battery_soc"},
+    }
+    session = FakeSession(
+        FakeResponse(200, {"data": catalog}),
+        FakeResponse(200, {"data": [device]}),
+        FakeResponse(201, {"data": device}),
+        FakeResponse(200, {"data": []}),
+        FakeResponse(201, {"data": {"id": "mapping-id", **mapping}}),
+    )
+    client = FluksApiClient(session, "human-jwt")
+
+    assert await client.get_device_type_catalog() == catalog
+    assert await client.list_devices("site-id") == [device]
+    assert await client.create_device(
+        "site-id",
+        "external-device-id",
+        "battery",
+        {"displayName": "GoodWe", "vendor": "GoodWe"},
+    ) == device
+    assert await client.list_mappings("site-id") == []
+    await client.create_mapping("site-id", mapping)
+
+    assert [item[0:2] for item in session.requests] == [
+        ("GET", f"{API_BASE_URL}/canonical/device-types"),
+        ("GET", f"{API_BASE_URL}/sites/site-id/devices"),
+        ("POST", f"{API_BASE_URL}/sites/site-id/devices"),
+        ("GET", f"{API_BASE_URL}/sites/site-id/mappings"),
+        ("POST", f"{API_BASE_URL}/sites/site-id/mappings"),
+    ]
+    assert session.requests[0][2]["headers"] == {}
+    assert all(
+        item[2]["headers"] == {"Authorization": "Bearer human-jwt"}
+        for item in session.requests[1:]
+    )
+    assert session.requests[2][2]["json"] == {
+        "deviceId": "external-device-id",
+        "type": "battery",
+        "properties": {"displayName": "GoodWe", "vendor": "GoodWe"},
+    }
+    assert session.requests[4][2]["json"] == mapping
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "code", "exception"),
     [
@@ -132,6 +202,7 @@ async def test_authenticated_site_and_integration_contract():
         (400, "INVALID_VERIFICATION_CODE", FluksInvalidVerificationCode),
         (400, "VALIDATION_ERROR", FluksValidationError),
         (401, "UNAUTHORIZED", FluksUnauthorized),
+        (409, "DEVICE_ID_CONFLICT", FluksConflict),
     ],
 )
 async def test_documented_errors(status, code, exception):

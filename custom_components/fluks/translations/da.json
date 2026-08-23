@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Your energy. Decides together.",
+        "title": "Your Energy. Decides together.",
         "description": "Forbind Home Assistant med fluks, og vælg, hvordan du vil komme i gang.",
         "menu_options": {"login": "Log ind", "register": "Opret konto"},
         "menu_option_descriptions": {
@@ -76,6 +76,143 @@
       "missing_registration": "Start oprettelsen af kontoen igen, før du bekræfter din e-mailadresse.",
       "unauthorized": "Godkendelsen er udløbet eller er ikke længere gyldig. Start forløbet igen.",
       "unknown": "fluks returnerede et uventet svar. Start forløbet igen for at prøve på ny."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tilføj enhed",
+        "description": "Hent de tilgængelige typer energienheder fra fluks."
+      },
+      "device_type": {
+        "title": "Tilføj enhed",
+        "description": "Vælg den type energienhed, du vil tilføje til fluks.",
+        "menu_options": {
+          "solar": "Solceller",
+          "generator": "Generator",
+          "battery": "Batteri",
+          "electricVehicle": "Elbil",
+          "heatPump": "Varmepumpe",
+          "waterHeater": "Vandvarmer",
+          "appliance": "Elektrisk apparat"
+        },
+        "menu_option_descriptions": {
+          "solar": "Solenergiproduktion",
+          "generator": "Lokal elproduktion",
+          "battery": "Energilagring",
+          "electricVehicle": "Opladning og bilbatteri",
+          "heatPump": "Opvarmning og varmt vand",
+          "waterHeater": "Lagring af varmt vand",
+          "appliance": "Andet elektrisk udstyr"
+        }
+      },
+      "ha_device_solar": {
+        "title": "Tilføj enhed · Solceller",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for dine solceller.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "ha_device_generator": {
+        "title": "Tilføj enhed · Generator",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for din generator.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "ha_device_battery": {
+        "title": "Tilføj enhed · Batteri",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for dit batteri.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "ha_device_electricVehicle": {
+        "title": "Tilføj enhed · Elbil",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for din elbil.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "ha_device_heatPump": {
+        "title": "Tilføj enhed · Varmepumpe",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for din varmepumpe.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "ha_device_waterHeater": {
+        "title": "Tilføj enhed · Vandvarmer",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for din vandvarmer.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "ha_device_appliance": {
+        "title": "Tilføj enhed · Elektrisk apparat",
+        "description": "Vælg den Home Assistant-enhed, der indeholder målingerne for dit elektriske apparat.",
+        "data": {"ha_device_id": "Home Assistant-enhed"}
+      },
+      "review_solar": {
+        "title": "Solcellemålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"solar.power": "Effekt"}, "data_description": {"solar.power": "Valgfri"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"solar.energy": "Produceret energi"}, "data_description": {"solar.energy": "Valgfri"}},
+          "installation": {"name": "Installation", "description": "Retning og panelhældning er valgfrie, men kan forbedre solprognosen.", "data": {"azimuth_degrees": "Retning", "tilt_degrees": "Panelhældning"}, "data_description": {"azimuth_degrees": "Valgfri · 0° nord, 90° øst, 180° syd", "tilt_degrees": "Valgfri · 0° vandret, 90° lodret"}}
+        }
+      },
+      "review_generator": {
+        "title": "Generatormålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"generator.power": "Effekt", "generator.state": "Driftstilstand"}, "data_description": {"generator.power": "Valgfri", "generator.state": "Valgfri"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"generator.energy": "Produceret energi"}, "data_description": {"generator.energy": "Valgfri"}}
+        }
+      },
+      "review_battery": {
+        "title": "Batterimålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"battery.power": "Effekt", "battery.soc": "Ladeniveau"}, "data_description": {"battery.power": "Anbefalet", "battery.soc": "Anbefalet"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"battery.energy": "Nettoenergi", "battery.chargeEnergy": "Opladet energi", "battery.dischargeEnergy": "Afladet energi"}, "data_description": {"battery.energy": "Valgfri", "battery.chargeEnergy": "Valgfri", "battery.dischargeEnergy": "Valgfri"}}
+        }
+      },
+      "review_electricVehicle": {
+        "title": "Elbilmålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"electricVehicle.power": "Effekt", "electricVehicle.soc": "Ladeniveau", "electricVehicle.connected": "Tilsluttet"}, "data_description": {"electricVehicle.power": "Anbefalet", "electricVehicle.soc": "Anbefalet", "electricVehicle.connected": "Valgfri"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"electricVehicle.energy": "Nettoenergi", "electricVehicle.chargeEnergy": "Opladet energi", "electricVehicle.dischargeEnergy": "Afladet energi"}, "data_description": {"electricVehicle.energy": "Valgfri", "electricVehicle.chargeEnergy": "Valgfri", "electricVehicle.dischargeEnergy": "Valgfri"}}
+        }
+      },
+      "review_heatPump": {
+        "title": "Varmepumpemålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"heatPump.power": "Effekt", "heatPump.state": "Driftstilstand", "heatPump.temperature": "Temperatur", "heatPump.targetTemperature": "Ønsket temperatur", "heatPump.waterTemperature": "Vandtemperatur", "heatPump.waterTargetTemperature": "Ønsket vandtemperatur"}, "data_description": {"heatPump.power": "Anbefalet", "heatPump.state": "Valgfri", "heatPump.temperature": "Valgfri", "heatPump.targetTemperature": "Valgfri", "heatPump.waterTemperature": "Valgfri", "heatPump.waterTargetTemperature": "Valgfri"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"heatPump.energy": "Energi"}, "data_description": {"heatPump.energy": "Valgfri"}}
+        }
+      },
+      "review_waterHeater": {
+        "title": "Vandvarmermålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"waterHeater.power": "Effekt", "waterHeater.state": "Driftstilstand", "waterHeater.temperature": "Vandtemperatur", "waterHeater.targetTemperature": "Ønsket temperatur"}, "data_description": {"waterHeater.power": "Anbefalet", "waterHeater.state": "Valgfri", "waterHeater.temperature": "Valgfri", "waterHeater.targetTemperature": "Valgfri"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"waterHeater.energy": "Energi"}, "data_description": {"waterHeater.energy": "Valgfri"}}
+        }
+      },
+      "review_appliance": {
+        "title": "Apparatmålinger",
+        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "sections": {
+          "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"appliance.power": "Effekt", "appliance.state": "Driftstilstand"}, "data_description": {"appliance.power": "Anbefalet", "appliance.state": "Valgfri"}},
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"appliance.energy": "Energi"}, "data_description": {"appliance.energy": "Valgfri"}}
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Der kunne ikke oprettes forbindelse til fluks. Prøv igen.",
+      "catalog_unavailable": "fluks returnerede et uventet enhedskatalog. Prøv igen.",
+      "missing_device_icon": "En tilgængelig enhedstype mangler sit godkendte fluks-ikon.",
+      "unknown_ha_device": "Vælg en tilgængelig Home Assistant-enhed.",
+      "invalid_input": "Kontrollér oplysningerne, og prøv igen.",
+      "invalid_solar_property": "Indtast en værdi inden for det understøttede interval.",
+      "unauthorized": "Dit login er udløbet. Start opsætningen igen for at logge ind.",
+      "identity_conflict": "Denne enhedsidentitet findes allerede og kunne ikke genfindes sikkert.",
+      "save_failed": "fluks kunne ikke færdiggøre tilføjelsen af enheden. Prøv igen på en sikker måde."
+    },
+    "abort": {
+      "device_already_configured": "Der er allerede tilføjet en fluks-enhed. Enhedshåndtering hører til en senere milepæl.",
+      "invalid_flow_state": "Start Tilføj enhed igen."
     }
   }
 }

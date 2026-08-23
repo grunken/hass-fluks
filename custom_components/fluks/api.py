@@ -1,4 +1,4 @@
-"""Small asynchronous client for milestone 1 of the fluks API."""
+"""Small asynchronous client for fluks onboarding and device configuration."""
 
 from __future__ import annotations
 
@@ -38,8 +38,12 @@ class FluksUnauthorized(FluksApiError):
     """The human access token is missing, invalid, or expired."""
 
 
+class FluksConflict(FluksApiError):
+    """A stable backend identity or mapping already exists."""
+
+
 class FluksApiClient:
-    """Access only the fluks operations needed during onboarding."""
+    """Access only the fluks operations needed by implemented flows."""
 
     def __init__(
         self,
@@ -55,6 +59,19 @@ class FluksApiClient:
     def set_access_token(self, access_token: str) -> None:
         """Set the human JWT used by authenticated operations."""
         self._access_token = access_token
+
+    async def get_device_type_catalog(self) -> list[dict[str, Any]]:
+        """Return the public backend-owned canonical Device catalog."""
+        response = await self._request(
+            "GET",
+            "/canonical/device-types",
+            expected_status=200,
+            authenticated=False,
+        )
+        data = self._response_data(response)
+        if not isinstance(data, list):
+            raise FluksApiError("INVALID_RESPONSE")
+        return data
 
     async def register_user(
         self,
@@ -147,6 +164,57 @@ class FluksApiClient:
         )
         return self._response_object(response)
 
+    async def list_devices(self, site_id: str) -> list[dict[str, Any]]:
+        """List canonical Devices in an owned Site."""
+        response = await self._request(
+            "GET", f"/sites/{site_id}/devices", expected_status=200
+        )
+        data = self._response_data(response)
+        if not isinstance(data, list):
+            raise FluksApiError("INVALID_RESPONSE")
+        return data
+
+    async def create_device(
+        self,
+        site_id: str,
+        device_id: str,
+        device_type: str,
+        properties: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a canonical Device using its stable external identity."""
+        payload: dict[str, Any] = {"deviceId": device_id, "type": device_type}
+        if properties:
+            payload["properties"] = properties
+        response = await self._request(
+            "POST",
+            f"/sites/{site_id}/devices",
+            json=payload,
+            expected_status=201,
+        )
+        return self._response_object(response)
+
+    async def list_mappings(self, site_id: str) -> list[dict[str, Any]]:
+        """List Integration-specific Mappings in an owned Site."""
+        response = await self._request(
+            "GET", f"/sites/{site_id}/mappings", expected_status=200
+        )
+        data = self._response_data(response)
+        if not isinstance(data, list):
+            raise FluksApiError("INVALID_RESPONSE")
+        return data
+
+    async def create_mapping(
+        self, site_id: str, mapping: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create one documented Integration-specific canonical Mapping."""
+        response = await self._request(
+            "POST",
+            f"/sites/{site_id}/mappings",
+            json=mapping,
+            expected_status=201,
+        )
+        return self._response_object(response)
+
     async def _request(
         self,
         method: str,
@@ -154,9 +222,10 @@ class FluksApiClient:
         *,
         json: dict[str, Any] | None = None,
         expected_status: int,
+        authenticated: bool = True,
     ) -> dict[str, Any]:
         headers = {}
-        if self._access_token is not None:
+        if authenticated and self._access_token is not None:
             headers["Authorization"] = f"Bearer {self._access_token}"
 
         try:
@@ -188,6 +257,8 @@ class FluksApiClient:
             raise FluksValidationError(code)
         if response.status == 401 or code == "UNAUTHORIZED":
             raise FluksUnauthorized(code)
+        if response.status == 409:
+            raise FluksConflict(code)
         raise FluksApiError(code)
 
     @staticmethod

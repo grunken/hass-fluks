@@ -1,0 +1,49 @@
+{
+  "options": {
+    "step": {
+      "review_solar": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt",
+          "installation": "mdi:solar-panel"
+        }
+      },
+      "review_generator": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt"
+        }
+      },
+      "review_battery": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt"
+        }
+      },
+      "review_electricVehicle": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt"
+        }
+      },
+      "review_heatPump": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt"
+        }
+      },
+      "review_waterHeater": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt"
+        }
+      },
+      "review_appliance": {
+        "sections": {
+          "measurements": "mdi:gauge",
+          "energy": "mdi:lightning-bolt"
+        }
+      }
+    }
+  }
+}

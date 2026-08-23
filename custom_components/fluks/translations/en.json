@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Your energy. Decides together.",
+        "title": "Your Energy. Decides together.",
         "description": "Connect Home Assistant to fluks and choose how you want to get started.",
         "menu_options": {"login": "Log in", "register": "Create account"},
         "menu_option_descriptions": {
@@ -76,6 +76,143 @@
       "missing_registration": "Start account creation again before verifying your email.",
       "unauthorized": "Authentication expired or is no longer valid. Start the flow again.",
       "unknown": "fluks returned an unexpected response. Start the flow again to retry."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Add device",
+        "description": "Load the available energy device types from fluks."
+      },
+      "device_type": {
+        "title": "Add device",
+        "description": "Choose the type of energy device you want to add to fluks.",
+        "menu_options": {
+          "solar": "Solar",
+          "generator": "Generator",
+          "battery": "Battery",
+          "electricVehicle": "Electric vehicle",
+          "heatPump": "Heat pump",
+          "waterHeater": "Water heater",
+          "appliance": "Appliance"
+        },
+        "menu_option_descriptions": {
+          "solar": "Solar production",
+          "generator": "Local electricity generation",
+          "battery": "Energy storage",
+          "electricVehicle": "Charging and vehicle battery",
+          "heatPump": "Heating and hot water",
+          "waterHeater": "Hot-water storage",
+          "appliance": "Other electrical equipment"
+        }
+      },
+      "ha_device_solar": {
+        "title": "Add device · Solar",
+        "description": "Select the Home Assistant device that contains your Solar measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "ha_device_generator": {
+        "title": "Add device · Generator",
+        "description": "Select the Home Assistant device that contains your Generator measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "ha_device_battery": {
+        "title": "Add device · Battery",
+        "description": "Select the Home Assistant device that contains your Battery measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "ha_device_electricVehicle": {
+        "title": "Add device · Electric vehicle",
+        "description": "Select the Home Assistant device that contains your Electric vehicle measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "ha_device_heatPump": {
+        "title": "Add device · Heat pump",
+        "description": "Select the Home Assistant device that contains your Heat pump measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "ha_device_waterHeater": {
+        "title": "Add device · Water heater",
+        "description": "Select the Home Assistant device that contains your Water heater measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "ha_device_appliance": {
+        "title": "Add device · Appliance",
+        "description": "Select the Home Assistant device that contains your Appliance measurements.",
+        "data": {"ha_device_id": "Home Assistant device"}
+      },
+      "review_solar": {
+        "title": "Solar measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"solar.power": "Power"}, "data_description": {"solar.power": "Optional"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"solar.energy": "Produced energy"}, "data_description": {"solar.energy": "Optional"}},
+          "installation": {"name": "Installation", "description": "Direction and panel angle are optional but can improve solar forecasting.", "data": {"azimuth_degrees": "Direction", "tilt_degrees": "Panel angle"}, "data_description": {"azimuth_degrees": "Optional · 0° north, 90° east, 180° south", "tilt_degrees": "Optional · 0° horizontal, 90° vertical"}}
+        }
+      },
+      "review_generator": {
+        "title": "Generator measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"generator.power": "Power", "generator.state": "Operating state"}, "data_description": {"generator.power": "Optional", "generator.state": "Optional"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"generator.energy": "Generated energy"}, "data_description": {"generator.energy": "Optional"}}
+        }
+      },
+      "review_battery": {
+        "title": "Battery measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"battery.power": "Power", "battery.soc": "State of charge"}, "data_description": {"battery.power": "Recommended", "battery.soc": "Recommended"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"battery.energy": "Net energy", "battery.chargeEnergy": "Charged energy", "battery.dischargeEnergy": "Discharged energy"}, "data_description": {"battery.energy": "Optional", "battery.chargeEnergy": "Optional", "battery.dischargeEnergy": "Optional"}}
+        }
+      },
+      "review_electricVehicle": {
+        "title": "Electric vehicle measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"electricVehicle.power": "Power", "electricVehicle.soc": "State of charge", "electricVehicle.connected": "Connected"}, "data_description": {"electricVehicle.power": "Recommended", "electricVehicle.soc": "Recommended", "electricVehicle.connected": "Optional"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"electricVehicle.energy": "Net energy", "electricVehicle.chargeEnergy": "Charged energy", "electricVehicle.dischargeEnergy": "Discharged energy"}, "data_description": {"electricVehicle.energy": "Optional", "electricVehicle.chargeEnergy": "Optional", "electricVehicle.dischargeEnergy": "Optional"}}
+        }
+      },
+      "review_heatPump": {
+        "title": "Heat pump measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"heatPump.power": "Power", "heatPump.state": "Operating state", "heatPump.temperature": "Temperature", "heatPump.targetTemperature": "Target temperature", "heatPump.waterTemperature": "Water temperature", "heatPump.waterTargetTemperature": "Water target temperature"}, "data_description": {"heatPump.power": "Recommended", "heatPump.state": "Optional", "heatPump.temperature": "Optional", "heatPump.targetTemperature": "Optional", "heatPump.waterTemperature": "Optional", "heatPump.waterTargetTemperature": "Optional"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"heatPump.energy": "Energy"}, "data_description": {"heatPump.energy": "Optional"}}
+        }
+      },
+      "review_waterHeater": {
+        "title": "Water heater measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"waterHeater.power": "Power", "waterHeater.state": "Operating state", "waterHeater.temperature": "Water temperature", "waterHeater.targetTemperature": "Target temperature"}, "data_description": {"waterHeater.power": "Recommended", "waterHeater.state": "Optional", "waterHeater.temperature": "Optional", "waterHeater.targetTemperature": "Optional"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"waterHeater.energy": "Energy"}, "data_description": {"waterHeater.energy": "Optional"}}
+        }
+      },
+      "review_appliance": {
+        "title": "Appliance measurements",
+        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "sections": {
+          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"appliance.power": "Power", "appliance.state": "Operating state"}, "data_description": {"appliance.power": "Recommended", "appliance.state": "Optional"}},
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"appliance.energy": "Energy"}, "data_description": {"appliance.energy": "Optional"}}
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "We couldn't reach fluks. Try again.",
+      "catalog_unavailable": "fluks returned an unexpected device catalog. Try again.",
+      "missing_device_icon": "An available device type is missing its approved fluks icon.",
+      "unknown_ha_device": "Choose an available Home Assistant device.",
+      "invalid_input": "Check the information and try again.",
+      "invalid_solar_property": "Enter a value within the supported range.",
+      "unauthorized": "Your login has expired. Start onboarding again to log in.",
+      "identity_conflict": "This device identity already exists and could not be safely recovered.",
+      "save_failed": "fluks could not finish adding the device. Try again safely."
+    },
+    "abort": {
+      "device_already_configured": "A fluks device has already been added. Device management belongs to a later milestone.",
+      "invalid_flow_state": "Start Add device again."
     }
   }
 }
