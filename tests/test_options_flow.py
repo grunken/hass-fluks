@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.data_entry_flow import _BaseFlowManagerView
@@ -13,8 +14,9 @@ from custom_components.fluks.api import (
     FluksApiClient,
     FluksCannotConnect,
     FluksConflict,
+    FluksUnauthorized,
 )
-from custom_components.fluks.const import CONF_DEVICE, DOMAIN
+from custom_components.fluks.const import CONF_DEVICE, CONF_INTEGRATION_KEY, DOMAIN
 from custom_components.fluks.options_flow import (
     CONF_AZIMUTH_DEGREES,
     CONF_HA_DEVICE_ID,
@@ -28,6 +30,7 @@ SITE_ID = "00000000-0000-0000-0000-000000000001"
 INTEGRATION_INTERNAL_ID = "00000000-0000-0000-0000-000000000002"
 DEVICE_INTERNAL_ID = "00000000-0000-0000-0000-000000000003"
 EXTERNAL_DEVICE_ID = "00000000-0000-0000-0000-000000000004"
+INTEGRATION_KEY = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
 
 BATTERY_CATALOG = [
     {
@@ -79,8 +82,9 @@ def make_entry(hass):
             "site_id": SITE_ID,
             "integration_id": "external-integration-id",
             "integration_internal_id": INTEGRATION_INTERNAL_ID,
+            CONF_INTEGRATION_KEY: INTEGRATION_KEY,
             "access_token": "human-jwt",
-            "access_token_expires_at": 9999999999,
+            "access_token_expires_at": 1,
         },
     )
     entry.add_to_hass(hass)
@@ -228,6 +232,39 @@ async def test_catalog_menu_is_dynamic_excludes_site_and_is_retryable(hass):
     assert result["menu_options"] == ["battery"]
     assert "site" not in result["menu_options"]
     assert api.get_device_type_catalog.await_count == 2
+
+
+async def test_expired_human_jwt_does_not_affect_add_device(hass):
+    """The machine key keeps Options Flow independent of human JWT expiry."""
+    entry = make_entry(hass)
+    assert entry.data["access_token_expires_at"] == 1
+    api = make_api()
+
+    result = await start_options(hass, entry, api)
+
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "device_type"
+    api.get_device_type_catalog.assert_awaited_once()
+
+
+async def test_legacy_entry_starts_native_reauth_before_add_device(hass):
+    """An entry without a machine key cannot fall back to its old human JWT."""
+    entry = make_entry(hass)
+    legacy_data = dict(entry.data)
+    legacy_data.pop(CONF_INTEGRATION_KEY)
+    hass.config_entries.async_update_entry(entry, data=legacy_data)
+
+    result = await start_options(hass, entry, make_api())
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_required"
+    reauth_flows = [
+        flow
+        for flow in hass.config_entries.flow.async_progress()
+        if flow["context"].get("source") == config_entries.SOURCE_REAUTH
+        and flow["context"].get("entry_id") == entry.entry_id
+    ]
+    assert len(reauth_flows) == 1
 
 
 async def test_selected_type_stays_in_context_and_same_ha_device_is_reusable(hass):
@@ -389,6 +426,7 @@ async def test_suggestions_are_optional_serializable_and_user_replaceable(hass):
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     saved = result["data"][CONF_DEVICE]
+    assert CONF_INTEGRATION_KEY not in result["data"]
     assert saved["device_id"] == EXTERNAL_DEVICE_ID
     assert saved["internal_id"] == DEVICE_INTERNAL_ID
     assert saved["ha_device_id"] == device.id
@@ -487,6 +525,32 @@ async def test_retry_after_lost_device_response_reuses_stable_identity(hass):
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_DEVICE]["device_id"] == EXTERNAL_DEVICE_ID
     api.create_device.assert_awaited_once()
+
+
+async def test_rejected_integration_key_starts_reauth_without_human_fallback(hass):
+    """A rejected machine key aborts once into native credential recovery."""
+    api = make_api()
+    api.list_devices.side_effect = FluksUnauthorized("UNAUTHORIZED")
+    result, entry, _device, _power, soc, _energy, _weak = await reach_review(
+        hass, api
+    )
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {SECTION_MEASUREMENTS: {"battery.soc": soc.entity_id}},
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_required"
+    api.list_devices.assert_awaited_once_with(SITE_ID)
+    api.create_device.assert_not_awaited()
+    reauth_flows = [
+        flow
+        for flow in hass.config_entries.flow.async_progress()
+        if flow["context"].get("source") == config_entries.SOURCE_REAUTH
+        and flow["context"].get("entry_id") == entry.entry_id
+    ]
+    assert len(reauth_flows) == 1
 
 
 async def test_device_conflict_is_recovered_by_documented_listing(hass):

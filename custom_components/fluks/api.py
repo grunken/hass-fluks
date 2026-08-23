@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from enum import StrEnum
+import re
 from typing import Any
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from .const import API_BASE_URL, API_TIMEOUT_SECONDS, INTEGRATION_TYPE
+
+INTEGRATION_KEY_PATTERN = re.compile(r"^fluks_[A-Za-z0-9_-]{43}$")
 
 
 class FluksApiError(Exception):
@@ -42,23 +46,33 @@ class FluksConflict(FluksApiError):
     """A stable backend identity or mapping already exists."""
 
 
+class AuthContext(StrEnum):
+    """Explicit credential context for one backend operation."""
+
+    PUBLIC = "public"
+    HUMAN = "human"
+    INTEGRATION = "integration"
+
+
 class FluksApiClient:
     """Access only the fluks operations needed by implemented flows."""
 
     def __init__(
         self,
         session: ClientSession,
-        access_token: str | None = None,
         *,
+        human_access_token: str | None = None,
+        integration_key: str | None = None,
         base_url: str = API_BASE_URL,
     ) -> None:
         self._session = session
-        self._access_token = access_token
+        self._human_access_token = human_access_token
+        self._integration_key = integration_key
         self._base_url = base_url.rstrip("/")
 
-    def set_access_token(self, access_token: str) -> None:
+    def set_human_access_token(self, access_token: str) -> None:
         """Set the human JWT used by authenticated operations."""
-        self._access_token = access_token
+        self._human_access_token = access_token
 
     async def get_device_type_catalog(self) -> list[dict[str, Any]]:
         """Return the public backend-owned canonical Device catalog."""
@@ -66,7 +80,7 @@ class FluksApiClient:
             "GET",
             "/canonical/device-types",
             expected_status=200,
-            authenticated=False,
+            auth=AuthContext.PUBLIC,
         )
         data = self._response_data(response)
         if not isinstance(data, list):
@@ -87,7 +101,13 @@ class FluksApiClient:
             payload["firstName"] = first_name
         if last_name:
             payload["lastName"] = last_name
-        await self._request("POST", "/users", json=payload, expected_status=202)
+        await self._request(
+            "POST",
+            "/users",
+            json=payload,
+            expected_status=202,
+            auth=AuthContext.PUBLIC,
+        )
 
     async def verify_email(self, email: str, code: str) -> None:
         """Verify a pending user's email address."""
@@ -96,6 +116,7 @@ class FluksApiClient:
             "/users/email-verification/verify",
             json={"email": email, "code": code},
             expected_status=200,
+            auth=AuthContext.PUBLIC,
         )
 
     async def login(self, email: str, password: str) -> tuple[str, int]:
@@ -105,6 +126,7 @@ class FluksApiClient:
             "/auth/login",
             json={"email": email, "password": password},
             expected_status=200,
+            auth=AuthContext.PUBLIC,
         )
         data = self._response_data(response)
         try:
@@ -114,7 +136,9 @@ class FluksApiClient:
 
     async def list_sites(self) -> list[dict[str, Any]]:
         """List Sites owned by the authenticated human user."""
-        response = await self._request("GET", "/sites", expected_status=200)
+        response = await self._request(
+            "GET", "/sites", expected_status=200, auth=AuthContext.HUMAN
+        )
         data = self._response_data(response)
         if not isinstance(data, list):
             raise FluksApiError("INVALID_RESPONSE")
@@ -139,13 +163,17 @@ class FluksApiClient:
                 "energyProfile": energy_profile,
             },
             expected_status=201,
+            auth=AuthContext.HUMAN,
         )
         return self._response_object(response)
 
     async def list_integrations(self, site_id: str) -> list[dict[str, Any]]:
         """List Integrations registered in an owned Site."""
         response = await self._request(
-            "GET", f"/sites/{site_id}/integrations", expected_status=200
+            "GET",
+            f"/sites/{site_id}/integrations",
+            expected_status=200,
+            auth=AuthContext.HUMAN,
         )
         data = self._response_data(response)
         if not isinstance(data, list):
@@ -161,13 +189,32 @@ class FluksApiClient:
             f"/sites/{site_id}/integrations",
             json={"integrationId": integration_id, "type": INTEGRATION_TYPE},
             expected_status=201,
+            auth=AuthContext.HUMAN,
         )
-        return self._response_object(response)
+        integration = self._response_object(response)
+        self._integration_key_from_response(integration)
+        return integration
+
+    async def issue_integration_key(
+        self, site_id: str, integration_internal_id: str
+    ) -> str:
+        """Issue or rotate the machine key for an existing Integration."""
+        response = await self._request(
+            "POST",
+            f"/sites/{site_id}/integrations/{integration_internal_id}/integration-key",
+            expected_status=201,
+            auth=AuthContext.HUMAN,
+        )
+        data = self._response_object(response)
+        return self._integration_key_from_response(data)
 
     async def list_devices(self, site_id: str) -> list[dict[str, Any]]:
         """List canonical Devices in an owned Site."""
         response = await self._request(
-            "GET", f"/sites/{site_id}/devices", expected_status=200
+            "GET",
+            f"/sites/{site_id}/devices",
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
         )
         data = self._response_data(response)
         if not isinstance(data, list):
@@ -190,13 +237,17 @@ class FluksApiClient:
             f"/sites/{site_id}/devices",
             json=payload,
             expected_status=201,
+            auth=AuthContext.INTEGRATION,
         )
         return self._response_object(response)
 
     async def list_mappings(self, site_id: str) -> list[dict[str, Any]]:
         """List Integration-specific Mappings in an owned Site."""
         response = await self._request(
-            "GET", f"/sites/{site_id}/mappings", expected_status=200
+            "GET",
+            f"/sites/{site_id}/mappings",
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
         )
         data = self._response_data(response)
         if not isinstance(data, list):
@@ -212,6 +263,7 @@ class FluksApiClient:
             f"/sites/{site_id}/mappings",
             json=mapping,
             expected_status=201,
+            auth=AuthContext.INTEGRATION,
         )
         return self._response_object(response)
 
@@ -222,11 +274,9 @@ class FluksApiClient:
         *,
         json: dict[str, Any] | None = None,
         expected_status: int,
-        authenticated: bool = True,
+        auth: AuthContext,
     ) -> dict[str, Any]:
-        headers = {}
-        if authenticated and self._access_token is not None:
-            headers["Authorization"] = f"Bearer {self._access_token}"
+        headers = self._authorization_headers(auth)
 
         try:
             async with self._session.request(
@@ -260,6 +310,29 @@ class FluksApiClient:
         if response.status == 409:
             raise FluksConflict(code)
         raise FluksApiError(code)
+
+    def _authorization_headers(self, auth: AuthContext) -> dict[str, str]:
+        """Build Authorization only from the deliberately selected context."""
+        if auth is AuthContext.PUBLIC:
+            return {}
+        credential = (
+            self._human_access_token
+            if auth is AuthContext.HUMAN
+            else self._integration_key
+        )
+        if credential is None:
+            raise FluksUnauthorized("MISSING_CREDENTIAL")
+        return {"Authorization": f"Bearer {credential}"}
+
+    @staticmethod
+    def _integration_key_from_response(data: dict[str, Any]) -> str:
+        """Validate the documented one-time plaintext credential response."""
+        integration_key = data.get("integrationKey")
+        if not isinstance(integration_key, str) or not INTEGRATION_KEY_PATTERN.fullmatch(
+            integration_key
+        ):
+            raise FluksApiError("INVALID_RESPONSE")
+        return integration_key
 
     @staticmethod
     def _error_code(body: Any) -> str | None:

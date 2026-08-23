@@ -22,10 +22,9 @@ from custom_components.fluks.config_flow import (
     CONF_SITE_NAME,
 )
 from custom_components.fluks.const import (
-    CONF_ACCESS_TOKEN,
-    CONF_ACCESS_TOKEN_EXPIRES_AT,
     CONF_INTEGRATION_ID,
     CONF_INTEGRATION_INTERNAL_ID,
+    CONF_INTEGRATION_KEY,
     CONF_SITE_ID,
     DOMAIN,
 )
@@ -33,6 +32,7 @@ from custom_components.fluks.const import (
 SITE = {"id": "site-uuid", "name": "Home"}
 EXTERNAL_ID = "11111111-1111-1111-1111-111111111111"
 INTERNAL_ID = "22222222-2222-2222-2222-222222222222"
+INTEGRATION_KEY = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
 
 
 def make_api():
@@ -49,8 +49,10 @@ def make_api():
             "integrationId": EXTERNAL_ID,
             "siteId": SITE["id"],
             "type": "homeAssistant",
+            "integrationKey": INTEGRATION_KEY,
         }
     )
+    api.issue_integration_key = AsyncMock(return_value=INTEGRATION_KEY)
     api.create_site = AsyncMock(return_value=SITE)
     return api
 
@@ -162,10 +164,10 @@ async def test_existing_user_login_and_site_selection(hass):
         CONF_SITE_ID: SITE["id"],
         CONF_INTEGRATION_ID: EXTERNAL_ID,
         CONF_INTEGRATION_INTERNAL_ID: INTERNAL_ID,
-        CONF_ACCESS_TOKEN: "human-jwt",
-        CONF_ACCESS_TOKEN_EXPIRES_AT: result["data"][CONF_ACCESS_TOKEN_EXPIRES_AT],
+        CONF_INTEGRATION_KEY: INTEGRATION_KEY,
     }
     api.create_integration.assert_awaited_once_with(SITE["id"], EXTERNAL_ID)
+    api.issue_integration_key.assert_not_awaited()
 
 
 async def test_invalid_credentials_are_recoverable(hass):
@@ -357,6 +359,7 @@ async def test_existing_integration_is_reused(hass):
     assert result["data"][CONF_INTEGRATION_ID] == EXTERNAL_ID
     assert result["data"][CONF_INTEGRATION_INTERNAL_ID] == INTERNAL_ID
     api.create_integration.assert_not_awaited()
+    api.issue_integration_key.assert_awaited_once_with(SITE["id"], INTERNAL_ID)
 
 
 async def test_registration_retry_keeps_external_identity(hass):
@@ -389,6 +392,7 @@ async def test_registration_retry_keeps_external_identity(hass):
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_INTEGRATION_ID] == EXTERNAL_ID
     api.create_integration.assert_not_awaited()
+    api.issue_integration_key.assert_awaited_once_with(SITE["id"], INTERNAL_ID)
 
 
 async def test_duplicate_site_aborts_before_backend_registration(hass):
@@ -412,3 +416,125 @@ async def test_duplicate_site_aborts_before_backend_registration(hass):
     assert result["reason"] == "already_configured"
     api.list_integrations.assert_not_awaited()
     api.create_integration.assert_not_awaited()
+
+
+async def test_legacy_entry_reauth_provisions_existing_integration_key(hass):
+    """Native reauth rotates a key without creating Site or Integration state."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=SITE["id"],
+        title="Home",
+        data={
+            CONF_SITE_ID: SITE["id"],
+            CONF_INTEGRATION_ID: EXTERNAL_ID,
+            CONF_INTEGRATION_INTERNAL_ID: INTERNAL_ID,
+            "access_token": "expired-human-jwt",
+            "access_token_expires_at": 1,
+        },
+        options={"preserved": True},
+    )
+    entry.add_to_hass(hass)
+    api = make_api()
+
+    with patch(
+        "custom_components.fluks.config_flow.FluksApiClient", return_value=api
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=dict(entry.data),
+        )
+        assert result["step_id"] == "reauth_confirm"
+        serialize_form(hass, result)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_EMAIL: "user@example.com", CONF_PASSWORD: "password"},
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data == {
+        CONF_SITE_ID: SITE["id"],
+        CONF_INTEGRATION_ID: EXTERNAL_ID,
+        CONF_INTEGRATION_INTERNAL_ID: INTERNAL_ID,
+        CONF_INTEGRATION_KEY: INTEGRATION_KEY,
+    }
+    assert entry.options == {"preserved": True}
+    api.login.assert_awaited_once_with("user@example.com", "password")
+    api.issue_integration_key.assert_awaited_once_with(SITE["id"], INTERNAL_ID)
+    api.list_sites.assert_not_awaited()
+    api.create_site.assert_not_awaited()
+    api.list_integrations.assert_not_awaited()
+    api.create_integration.assert_not_awaited()
+
+
+async def test_reauth_invalid_credentials_remains_recoverable(hass):
+    """Credential recovery stays on its native form after a rejected login."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=SITE["id"],
+        data={
+            CONF_SITE_ID: SITE["id"],
+            CONF_INTEGRATION_ID: EXTERNAL_ID,
+            CONF_INTEGRATION_INTERNAL_ID: INTERNAL_ID,
+        },
+    )
+    entry.add_to_hass(hass)
+    api = make_api()
+    api.login.side_effect = FluksInvalidCredentials("INVALID_CREDENTIALS")
+
+    with patch(
+        "custom_components.fluks.config_flow.FluksApiClient", return_value=api
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=dict(entry.data),
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_EMAIL: "user@example.com", CONF_PASSWORD: "wrong"},
+        )
+
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": "invalid_auth"}
+    api.issue_integration_key.assert_not_awaited()
+
+
+async def test_each_site_config_entry_keeps_its_own_integration_key(hass):
+    """A new Site bootstrap never borrows another ConfigEntry's credential."""
+    entries = []
+    for index, integration_key in enumerate(("site-one-key", "site-two-key"), 1):
+        site = {"id": f"site-{index}", "name": f"Home {index}"}
+        api = make_api()
+        api.list_sites.return_value = [site]
+        api.create_integration.return_value = {
+            "id": f"integration-{index}",
+            "integrationId": EXTERNAL_ID,
+            "siteId": site["id"],
+            "type": "homeAssistant",
+            "integrationKey": integration_key,
+        }
+        result = await start_flow(hass, api)
+        result = await choose_login(hass, result["flow_id"])
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_EMAIL: "user@example.com", CONF_PASSWORD: "password"},
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "site"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_SITE: site["id"]}
+        )
+        entries.append(result["data"])
+
+    assert entries[0][CONF_INTEGRATION_KEY] == "site-one-key"
+    assert entries[1][CONF_INTEGRATION_KEY] == "site-two-key"
+    assert entries[0][CONF_INTEGRATION_KEY] != entries[1][CONF_INTEGRATION_KEY]

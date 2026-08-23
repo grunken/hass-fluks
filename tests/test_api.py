@@ -17,6 +17,9 @@ from custom_components.fluks.api import (
 )
 from custom_components.fluks.const import API_BASE_URL
 
+INTEGRATION_KEY = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+ROTATED_INTEGRATION_KEY = "fluks_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+
 
 class FakeResponse:
     """Minimal aiohttp response context manager."""
@@ -98,16 +101,27 @@ async def test_authenticated_site_and_integration_contract():
         FakeResponse(200, {"data": [site]}),
         FakeResponse(201, {"data": site}),
         FakeResponse(200, {"data": [integration]}),
-        FakeResponse(201, {"data": integration}),
+        FakeResponse(
+            201, {"data": {**integration, "integrationKey": INTEGRATION_KEY}}
+        ),
+        FakeResponse(
+            201, {"data": {"integrationKey": ROTATED_INTEGRATION_KEY}}
+        ),
     )
-    client = FluksApiClient(session, "human-jwt")
+    client = FluksApiClient(session, human_access_token="human-jwt")
 
     assert await client.list_sites() == [site]
     assert await client.create_site(
         "Home", 55.1, 12.2, "Europe/Copenhagen", "ordinary_residential"
     ) == site
     assert await client.list_integrations("site-id") == [integration]
-    assert await client.create_integration("site-id", "external-id") == integration
+    assert await client.create_integration("site-id", "external-id") == {
+        **integration,
+        "integrationKey": INTEGRATION_KEY,
+    }
+    assert await client.issue_integration_key("site-id", "internal-id") == (
+        ROTATED_INTEGRATION_KEY
+    )
 
     assert all(
         item[2]["headers"] == {"Authorization": "Bearer human-jwt"}
@@ -123,6 +137,10 @@ async def test_authenticated_site_and_integration_contract():
         "integrationId": "external-id",
         "type": "homeAssistant",
     }
+    assert session.requests[4][0:2] == (
+        "POST",
+        f"{API_BASE_URL}/sites/site-id/integrations/internal-id/integration-key",
+    )
 
 
 @pytest.mark.asyncio
@@ -161,7 +179,11 @@ async def test_catalog_device_and_mapping_contracts():
         FakeResponse(200, {"data": []}),
         FakeResponse(201, {"data": {"id": "mapping-id", **mapping}}),
     )
-    client = FluksApiClient(session, "human-jwt")
+    client = FluksApiClient(
+        session,
+        human_access_token="expired-human-jwt",
+        integration_key="integration-key",
+    )
 
     assert await client.get_device_type_catalog() == catalog
     assert await client.list_devices("site-id") == [device]
@@ -183,7 +205,7 @@ async def test_catalog_device_and_mapping_contracts():
     ]
     assert session.requests[0][2]["headers"] == {}
     assert all(
-        item[2]["headers"] == {"Authorization": "Bearer human-jwt"}
+        item[2]["headers"] == {"Authorization": "Bearer integration-key"}
         for item in session.requests[1:]
     )
     assert session.requests[2][2]["json"] == {
@@ -221,3 +243,38 @@ async def test_timeout_is_connectivity_failure():
 
     with pytest.raises(FluksCannotConnect):
         await client.login("user@example.com", "password")
+
+
+@pytest.mark.asyncio
+async def test_rejected_integration_key_never_falls_back_or_leaks_secret():
+    """A machine 401 is returned once without retrying with the human JWT."""
+    integration_key = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+    session = FakeSession(
+        FakeResponse(401, {"error": {"code": "UNAUTHORIZED"}})
+    )
+    client = FluksApiClient(
+        session,
+        human_access_token="still-valid-human-jwt",
+        integration_key=integration_key,
+    )
+
+    with pytest.raises(FluksUnauthorized) as raised:
+        await client.list_devices("site-id")
+
+    assert len(session.requests) == 1
+    assert session.requests[0][2]["headers"] == {
+        "Authorization": f"Bearer {integration_key}"
+    }
+    assert integration_key not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_missing_auth_context_credential_fails_before_http():
+    """Machine operations cannot silently use a different credential context."""
+    session = FakeSession()
+    client = FluksApiClient(session, human_access_token="human-jwt")
+
+    with pytest.raises(FluksUnauthorized):
+        await client.list_mappings("site-id")
+
+    assert session.requests == []

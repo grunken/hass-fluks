@@ -69,6 +69,7 @@ def test_config_flow_translation_keys_exist():
         "site",
         "create_site",
         "register_integration",
+        "reauth_confirm",
     }
     expected_errors = {
         "cannot_connect",
@@ -84,6 +85,7 @@ def test_config_flow_translation_keys_exist():
         "missing_registration",
         "unauthorized",
         "unknown",
+        "reauth_successful",
     }
 
     assert expected_steps <= english["step"].keys()

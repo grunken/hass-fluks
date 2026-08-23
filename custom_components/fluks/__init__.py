@@ -2,10 +2,15 @@
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
+
+from .const import CONF_INTEGRATION_KEY
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a fluks config entry without runtime communication."""
+    if not entry.data.get(CONF_INTEGRATION_KEY):
+        raise ConfigEntryAuthFailed("The fluks Integration credential is missing")
     return True
 
 

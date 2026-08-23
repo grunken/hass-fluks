@@ -59,6 +59,11 @@
       "register_integration": {
         "title": "Finish connecting",
         "description": "fluks could not finish connecting this Home Assistant. Submit to try again safely."
+      },
+      "reauth_confirm": {
+        "title": "Reconnect fluks",
+        "description": "Log in to restore this Home Assistant connection without creating another Site or Integration.",
+        "data": {"email": "Email", "password": "Password"}
       }
     },
     "error": {
@@ -75,7 +80,8 @@
       "cannot_connect": "Cannot connect to fluks. Start the flow again to retry.",
       "missing_registration": "Start account creation again before verifying your email.",
       "unauthorized": "Authentication expired or is no longer valid. Start the flow again.",
-      "unknown": "fluks returned an unexpected response. Start the flow again to retry."
+      "unknown": "fluks returned an unexpected response. Start the flow again to retry.",
+      "reauth_successful": "The fluks connection has been restored."
     }
   },
   "options": {
@@ -212,7 +218,8 @@
     },
     "abort": {
       "device_already_configured": "A fluks device has already been added. Device management belongs to a later milestone.",
-      "invalid_flow_state": "Start Add device again."
+      "invalid_flow_state": "Start Add device again.",
+      "reauth_required": "The fluks connection needs to be restored. Complete the authentication flow and try again."
     }
   }
 }

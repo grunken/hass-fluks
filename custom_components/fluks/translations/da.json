@@ -59,6 +59,11 @@
       "register_integration": {
         "title": "Afslut forbindelsen",
         "description": "fluks kunne ikke afslutte forbindelsen til denne Home Assistant. Send formularen igen for at prøve på ny."
+      },
+      "reauth_confirm": {
+        "title": "Forbind fluks igen",
+        "description": "Log ind for at genoprette forbindelsen til denne Home Assistant uden at oprette et nyt Site eller en ny Integration.",
+        "data": {"email": "E-mail", "password": "Adgangskode"}
       }
     },
     "error": {
@@ -75,7 +80,8 @@
       "cannot_connect": "Der kunne ikke oprettes forbindelse til fluks. Start forløbet igen for at prøve på ny.",
       "missing_registration": "Start oprettelsen af kontoen igen, før du bekræfter din e-mailadresse.",
       "unauthorized": "Godkendelsen er udløbet eller er ikke længere gyldig. Start forløbet igen.",
-      "unknown": "fluks returnerede et uventet svar. Start forløbet igen for at prøve på ny."
+      "unknown": "fluks returnerede et uventet svar. Start forløbet igen for at prøve på ny.",
+      "reauth_successful": "Forbindelsen til fluks er genoprettet."
     }
   },
   "options": {
@@ -212,7 +218,8 @@
     },
     "abort": {
       "device_already_configured": "Der er allerede tilføjet en fluks-enhed. Enhedshåndtering hører til en senere milepæl.",
-      "invalid_flow_state": "Start Tilføj enhed igen."
+      "invalid_flow_state": "Start Tilføj enhed igen.",
+      "reauth_required": "Forbindelsen til fluks skal genoprettes. Gennemfør godkendelsen, og prøv igen."
     }
   }
 }

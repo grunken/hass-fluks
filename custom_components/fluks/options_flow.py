@@ -24,9 +24,9 @@ from .api import (
     FluksValidationError,
 )
 from .const import (
-    CONF_ACCESS_TOKEN,
     CONF_DEVICE,
     CONF_INTEGRATION_INTERNAL_ID,
+    CONF_INTEGRATION_KEY,
     CONF_SITE_ID,
 )
 from .matcher import input_configuration, suggest_entities
@@ -72,12 +72,14 @@ class FluksOptionsFlow(config_entries.OptionsFlow):
         if self._api is None:
             self._api = FluksApiClient(
                 async_get_clientsession(self.hass),
-                self.config_entry.data.get(CONF_ACCESS_TOKEN),
+                integration_key=self.config_entry.data.get(CONF_INTEGRATION_KEY),
             )
         return self._api
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         """Load the backend-owned catalog and offer physical Device types."""
+        if not self.config_entry.data.get(CONF_INTEGRATION_KEY):
+            return await self._async_require_reauth()
         if CONF_DEVICE in self.config_entry.options:
             return self.async_abort(reason="device_already_configured")
 
@@ -272,7 +274,7 @@ class FluksOptionsFlow(config_entries.OptionsFlow):
                 except FluksValidationError:
                     errors["base"] = "invalid_input"
                 except FluksUnauthorized:
-                    errors["base"] = "unauthorized"
+                    return await self._async_require_reauth()
                 except FluksCannotConnect:
                     errors["base"] = "cannot_connect"
                 except FluksConflict:
@@ -285,6 +287,11 @@ class FluksOptionsFlow(config_entries.OptionsFlow):
             data_schema=self._review_schema(),
             errors=errors,
         )
+
+    async def _async_require_reauth(self):
+        """Start one native recovery flow without credential fallback."""
+        self.config_entry.async_start_reauth(self.hass)
+        return self.async_abort(reason="reauth_required")
 
     def _device_properties(self) -> dict[str, Any]:
         """Use available HA metadata without asking the user to repeat it."""
