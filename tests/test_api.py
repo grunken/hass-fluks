@@ -217,6 +217,58 @@ async def test_catalog_device_and_mapping_contracts():
 
 
 @pytest.mark.asyncio
+async def test_device_management_uses_filtered_incremental_machine_contracts():
+    """Milestone 3 uses integration auth and only documented incremental APIs."""
+    device = {
+        "id": "device-internal",
+        "deviceId": "device-external",
+        "type": "solar",
+        "properties": {"azimuthDegrees": 180},
+    }
+    mapping = {
+        "id": "mapping-id",
+        "concept": "solar.power",
+        "direction": "input",
+        "configuration": {"version": 1, "entityId": "sensor.solar_power"},
+    }
+    session = FakeSession(
+        FakeResponse(200, {"data": device}),
+        FakeResponse(200, {"data": {**device, "properties": {"azimuthDegrees": 190}}}),
+        FakeResponse(200, {"data": [mapping]}),
+        FakeResponse(200, {"data": {**mapping, "configuration": {"version": 1, "entityId": "sensor.new"}}}),
+        FakeResponse(204, None),
+    )
+    client = FluksApiClient(
+        session, human_access_token="expired", integration_key="machine-key"
+    )
+
+    await client.get_device("site-id", "device-internal")
+    await client.update_device_properties(
+        "site-id", "device-internal", {"azimuthDegrees": 190}
+    )
+    await client.list_mappings("site-id", device_id="device-internal")
+    await client.update_mapping(
+        "site-id", "mapping-id", {"version": 1, "entityId": "sensor.new"}
+    )
+    await client.delete_mapping("site-id", "mapping-id")
+
+    assert [request[0] for request in session.requests] == [
+        "GET", "PATCH", "GET", "PATCH", "DELETE"
+    ]
+    assert session.requests[1][2]["json"] == {
+        "properties": {"azimuthDegrees": 190}
+    }
+    assert session.requests[2][2]["params"] == {"deviceId": "device-internal"}
+    assert session.requests[3][2]["json"] == {
+        "configuration": {"version": 1, "entityId": "sensor.new"}
+    }
+    assert all(
+        request[2]["headers"] == {"Authorization": "Bearer machine-key"}
+        for request in session.requests
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "code", "exception"),
     [

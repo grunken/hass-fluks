@@ -87,8 +87,20 @@
   "options": {
     "step": {
       "init": {
+        "title": "Konfigurer fluks",
+        "description": "Se konfigurerede energienheder, eller forbind en ny.",
+        "menu_options": {"devices": "Enheder", "add_device": "Tilføj enhed"},
+        "menu_option_descriptions": {"devices": "Se og rediger konfigurerede enheder.", "add_device": "Forbind endnu en energienhed."}
+      },
+      "add_device": {
         "title": "Tilføj enhed",
         "description": "Hent de tilgængelige typer energienheder fra fluks."
+      },
+      "devices": {
+        "title": "Enheder",
+        "description": "Vælg en konfigureret energienhed, du vil gennemse eller redigere.",
+        "data": {"selected_device": "Enhed"},
+        "type_fallback": "Energienhed"
       },
       "device_type": {
         "title": "Tilføj enhed",
@@ -149,59 +161,66 @@
       },
       "review_solar": {
         "title": "Solcellemålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"solar.power": "Effekt"}, "data_description": {"solar.power": "Valgfri"}},
           "energy": {"name": "Energi", "description": "Energimålinger", "data": {"solar.energy": "Produceret energi"}, "data_description": {"solar.energy": "Valgfri"}},
-          "installation": {"name": "Installation", "description": "Retning og panelhældning er valgfrie, men kan forbedre solprognosen.", "data": {"azimuth_degrees": "Retning", "tilt_degrees": "Panelhældning"}, "data_description": {"azimuth_degrees": "Valgfri · 0° nord, 90° øst, 180° syd", "tilt_degrees": "Valgfri · 0° vandret, 90° lodret"}}
+          "installation": {"name": "Installation", "description": "Retning og panelhældning er valgfrie, men kan forbedre solprognosen.", "data": {"azimuth_degrees": "Retning", "tilt_degrees": "Panelhældning"}, "data_description": {"azimuth_degrees": "Valgfri · 0° nord, 90° øst, 180° syd", "tilt_degrees": "Valgfri · 0° vandret, 90° lodret"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       },
       "review_generator": {
         "title": "Generatormålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"generator.power": "Effekt", "generator.state": "Driftstilstand"}, "data_description": {"generator.power": "Valgfri", "generator.state": "Valgfri"}},
-          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"generator.energy": "Produceret energi"}, "data_description": {"generator.energy": "Valgfri"}}
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"generator.energy": "Produceret energi"}, "data_description": {"generator.energy": "Valgfri"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       },
       "review_battery": {
         "title": "Batterimålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"battery.power": "Effekt", "battery.soc": "Ladeniveau"}, "data_description": {"battery.power": "Anbefalet", "battery.soc": "Anbefalet"}},
-          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"battery.energy": "Nettoenergi", "battery.chargeEnergy": "Opladet energi", "battery.dischargeEnergy": "Afladet energi"}, "data_description": {"battery.energy": "Valgfri", "battery.chargeEnergy": "Valgfri", "battery.dischargeEnergy": "Valgfri"}}
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"battery.energy": "Nettoenergi", "battery.chargeEnergy": "Opladet energi", "battery.dischargeEnergy": "Afladet energi"}, "data_description": {"battery.energy": "Valgfri", "battery.chargeEnergy": "Valgfri", "battery.dischargeEnergy": "Valgfri"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       },
       "review_electricVehicle": {
         "title": "Elbilmålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"electricVehicle.power": "Effekt", "electricVehicle.soc": "Ladeniveau", "electricVehicle.connected": "Tilsluttet"}, "data_description": {"electricVehicle.power": "Anbefalet", "electricVehicle.soc": "Anbefalet", "electricVehicle.connected": "Valgfri"}},
-          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"electricVehicle.energy": "Nettoenergi", "electricVehicle.chargeEnergy": "Opladet energi", "electricVehicle.dischargeEnergy": "Afladet energi"}, "data_description": {"electricVehicle.energy": "Valgfri", "electricVehicle.chargeEnergy": "Valgfri", "electricVehicle.dischargeEnergy": "Valgfri"}}
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"electricVehicle.energy": "Nettoenergi", "electricVehicle.chargeEnergy": "Opladet energi", "electricVehicle.dischargeEnergy": "Afladet energi"}, "data_description": {"electricVehicle.energy": "Valgfri", "electricVehicle.chargeEnergy": "Valgfri", "electricVehicle.dischargeEnergy": "Valgfri"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       },
       "review_heatPump": {
         "title": "Varmepumpemålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"heatPump.power": "Effekt", "heatPump.state": "Driftstilstand", "heatPump.temperature": "Temperatur", "heatPump.targetTemperature": "Ønsket temperatur", "heatPump.waterTemperature": "Vandtemperatur", "heatPump.waterTargetTemperature": "Ønsket vandtemperatur"}, "data_description": {"heatPump.power": "Anbefalet", "heatPump.state": "Valgfri", "heatPump.temperature": "Valgfri", "heatPump.targetTemperature": "Valgfri", "heatPump.waterTemperature": "Valgfri", "heatPump.waterTargetTemperature": "Valgfri"}},
-          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"heatPump.energy": "Energi"}, "data_description": {"heatPump.energy": "Valgfri"}}
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"heatPump.energy": "Energi"}, "data_description": {"heatPump.energy": "Valgfri"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       },
       "review_waterHeater": {
         "title": "Vandvarmermålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"waterHeater.power": "Effekt", "waterHeater.state": "Driftstilstand", "waterHeater.temperature": "Vandtemperatur", "waterHeater.targetTemperature": "Ønsket temperatur"}, "data_description": {"waterHeater.power": "Anbefalet", "waterHeater.state": "Valgfri", "waterHeater.temperature": "Valgfri", "waterHeater.targetTemperature": "Valgfri"}},
-          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"waterHeater.energy": "Energi"}, "data_description": {"waterHeater.energy": "Valgfri"}}
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"waterHeater.energy": "Energi"}, "data_description": {"waterHeater.energy": "Valgfri"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       },
       "review_appliance": {
         "title": "Apparatmålinger",
-        "description": "fluks fandt automatisk disse målinger. Ret eller fjern forslag, der ikke passer.",
+        "description": "Gennemgå de målinger, fluks har fundet eller allerede bruger. Ret eller fjern det, der ikke passer.",
         "sections": {
           "measurements": {"name": "Målinger", "description": "Aktuelle aflæsninger", "data": {"appliance.power": "Effekt", "appliance.state": "Driftstilstand"}, "data_description": {"appliance.power": "Anbefalet", "appliance.state": "Valgfri"}},
-          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"appliance.energy": "Energi"}, "data_description": {"appliance.energy": "Valgfri"}}
+          "energy": {"name": "Energi", "description": "Energimålinger", "data": {"appliance.energy": "Energi"}, "data_description": {"appliance.energy": "Valgfri"}},
+          "device_information": {"name": "Enhedsoplysninger", "description": "Valgfrie oplysninger, der gør enheden nem at genkende.", "data": {"display_name": "Navn", "vendor": "Producent", "model": "Model"}}
         }
       }
     },
@@ -210,14 +229,17 @@
       "catalog_unavailable": "fluks returnerede et uventet enhedskatalog. Prøv igen.",
       "missing_device_icon": "En tilgængelig enhedstype mangler sit godkendte fluks-ikon.",
       "unknown_ha_device": "Vælg en tilgængelig Home Assistant-enhed.",
+      "device_type_already_configured": "Denne Home Assistant-enhed er allerede konfigureret som denne fluks-enhedstype. Rediger den under Enheder, eller vælg en anden enhed.",
       "invalid_input": "Kontrollér oplysningerne, og prøv igen.",
       "invalid_solar_property": "Indtast en værdi inden for det understøttede interval.",
       "unauthorized": "Dit login er udløbet. Start opsætningen igen for at logge ind.",
       "identity_conflict": "Denne enhedsidentitet findes allerede og kunne ikke genfindes sikkert.",
-      "save_failed": "fluks kunne ikke færdiggøre tilføjelsen af enheden. Prøv igen på en sikker måde."
+      "save_failed": "fluks kunne ikke færdiggøre tilføjelsen af enheden. Prøv igen på en sikker måde.",
+      "load_failed": "fluks kunne ikke hente enhederne. Prøv igen."
     },
     "abort": {
-      "device_already_configured": "Der er allerede tilføjet en fluks-enhed. Enhedshåndtering hører til en senere milepæl.",
+      "no_devices": "Der er endnu ikke tilføjet energienheder. Vælg Tilføj enhed for at forbinde en.",
+      "unsupported_device_type": "Denne enhedstype findes ikke i det aktuelle fluks-katalog.",
       "invalid_flow_state": "Start Tilføj enhed igen.",
       "reauth_required": "Forbindelsen til fluks skal genoprettes. Gennemfør godkendelsen, og prøv igen."
     }

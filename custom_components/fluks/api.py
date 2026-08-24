@@ -241,11 +241,42 @@ class FluksApiClient:
         )
         return self._response_object(response)
 
-    async def list_mappings(self, site_id: str) -> list[dict[str, Any]]:
+    async def get_device(
+        self, site_id: str, device_internal_id: str
+    ) -> dict[str, Any]:
+        """Get one Site-owned Device by its immutable internal identity."""
+        response = await self._request(
+            "GET",
+            f"/sites/{site_id}/devices/{device_internal_id}",
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+        )
+        return self._response_object(response)
+
+    async def update_device_properties(
+        self,
+        site_id: str,
+        device_internal_id: str,
+        properties: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Incrementally add, replace, or clear documented Device properties."""
+        response = await self._request(
+            "PATCH",
+            f"/sites/{site_id}/devices/{device_internal_id}",
+            json={"properties": properties},
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+        )
+        return self._response_object(response)
+
+    async def list_mappings(
+        self, site_id: str, *, device_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """List Integration-specific Mappings in an owned Site."""
         response = await self._request(
             "GET",
             f"/sites/{site_id}/mappings",
+            params={"deviceId": device_id} if device_id else None,
             expected_status=200,
             auth=AuthContext.INTEGRATION,
         )
@@ -267,14 +298,39 @@ class FluksApiClient:
         )
         return self._response_object(response)
 
+    async def update_mapping(
+        self, site_id: str, mapping_id: str, configuration: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Replace only one Mapping's Integration-specific configuration."""
+        response = await self._request(
+            "PATCH",
+            f"/sites/{site_id}/mappings/{mapping_id}",
+            json={"configuration": configuration},
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+        )
+        return self._response_object(response)
+
+    async def delete_mapping(self, site_id: str, mapping_id: str) -> None:
+        """Remove one Mapping without deleting its Device or other Mappings."""
+        await self._request(
+            "DELETE",
+            f"/sites/{site_id}/mappings/{mapping_id}",
+            expected_status=204,
+            auth=AuthContext.INTEGRATION,
+            response_body_required=False,
+        )
+
     async def _request(
         self,
         method: str,
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
         expected_status: int,
         auth: AuthContext,
+        response_body_required: bool = True,
     ) -> dict[str, Any]:
         headers = self._authorization_headers(auth)
 
@@ -283,13 +339,17 @@ class FluksApiClient:
                 method,
                 f"{self._base_url}{path}",
                 json=json,
+                params=params,
                 headers=headers,
                 timeout=ClientTimeout(total=API_TIMEOUT_SECONDS),
             ) as response:
-                try:
-                    body = await response.json()
-                except (ClientError, ValueError) as err:
-                    raise FluksApiError("INVALID_RESPONSE") from err
+                if response.status == expected_status and not response_body_required:
+                    body: Any = {}
+                else:
+                    try:
+                        body = await response.json()
+                    except (ClientError, ValueError) as err:
+                        raise FluksApiError("INVALID_RESPONSE") from err
         except (ClientError, asyncio.TimeoutError) as err:
             raise FluksCannotConnect from err
 

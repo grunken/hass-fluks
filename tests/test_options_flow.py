@@ -2,7 +2,6 @@
 
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import UUID
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
@@ -16,14 +15,21 @@ from custom_components.fluks.api import (
     FluksConflict,
     FluksUnauthorized,
 )
-from custom_components.fluks.const import CONF_DEVICE, CONF_INTEGRATION_KEY, DOMAIN
+from custom_components.fluks.const import (
+    CONF_DEVICE,
+    CONF_DEVICE_CONTEXTS,
+    CONF_INTEGRATION_KEY,
+    DOMAIN,
+)
 from custom_components.fluks.options_flow import (
     CONF_AZIMUTH_DEGREES,
     CONF_HA_DEVICE_ID,
     CONF_TILT_DEGREES,
+    FluksOptionsFlow,
     SECTION_ENERGY,
     SECTION_INSTALLATION,
     SECTION_MEASUREMENTS,
+    stable_device_id,
 )
 
 SITE_ID = "00000000-0000-0000-0000-000000000001"
@@ -96,6 +102,8 @@ def make_api(catalog=BATTERY_CATALOG):
     api = MagicMock(spec=FluksApiClient)
     api.get_device_type_catalog = AsyncMock(return_value=catalog)
     api.list_devices = AsyncMock(return_value=[])
+    api.get_device = AsyncMock()
+    api.update_device_properties = AsyncMock()
     api.create_device = AsyncMock(
         return_value={
             "id": DEVICE_INTERNAL_ID,
@@ -105,6 +113,8 @@ def make_api(catalog=BATTERY_CATALOG):
         }
     )
     api.list_mappings = AsyncMock(return_value=[])
+    api.update_mapping = AsyncMock()
+    api.delete_mapping = AsyncMock()
 
     async def create_mapping(_site_id, mapping):
         return {"id": f"mapping-{mapping['concept']}", **mapping}
@@ -179,14 +189,21 @@ def make_ha_device(hass, config_entry_id):
 
 async def start_options(hass, entry, api):
     """Start Options Flow with deterministic external Device identity."""
-    with (
-        patch(
-            "custom_components.fluks.options_flow.uuid4",
-            return_value=UUID(EXTERNAL_DEVICE_ID),
-        ),
-        patch(
-            "custom_components.fluks.options_flow.FluksApiClient", return_value=api
-        ),
+    with patch(
+        "custom_components.fluks.options_flow.FluksApiClient", return_value=api
+    ):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        if result["type"] is FlowResultType.MENU and result["step_id"] == "init":
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], {"next_step_id": "add_device"}
+            )
+        return result
+
+
+async def start_options_root(hass, entry, api):
+    """Start at the Milestone 3 management menu."""
+    with patch(
+        "custom_components.fluks.options_flow.FluksApiClient", return_value=api
     ):
         return await hass.config_entries.options.async_init(entry.entry_id)
 
@@ -425,16 +442,15 @@ async def test_suggestions_are_optional_serializable_and_user_replaceable(hass):
         {SECTION_MEASUREMENTS: {"battery.soc": power.entity_id}},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    saved = result["data"][CONF_DEVICE]
+    contexts = result["data"][CONF_DEVICE_CONTEXTS]
     assert CONF_INTEGRATION_KEY not in result["data"]
-    assert saved["device_id"] == EXTERNAL_DEVICE_ID
-    assert saved["internal_id"] == DEVICE_INTERNAL_ID
-    assert saved["ha_device_id"] == device.id
-    assert saved["ha_device_id"] != saved["device_id"]
-    assert [item["concept"] for item in saved["mappings"]] == ["battery.soc"]
+    assert contexts == {
+        DEVICE_INTERNAL_ID: {"ha_device_id": device.id, "type": "battery"}
+    }
+    assert device.id != EXTERNAL_DEVICE_ID
     api.create_device.assert_awaited_once_with(
         SITE_ID,
-        EXTERNAL_DEVICE_ID,
+        stable_device_id("external-integration-id", "battery", device.id),
         "battery",
         {
             "displayName": "GoodWe Inverter",
@@ -447,7 +463,7 @@ async def test_suggestions_are_optional_serializable_and_user_replaceable(hass):
     assert payload["integrationId"] == INTEGRATION_INTERNAL_ID
     assert payload["deviceId"] == DEVICE_INTERNAL_ID
     assert payload["concept"] == "battery.soc"
-    assert "battery.power" not in [item["concept"] for item in saved["mappings"]]
+    assert payload["concept"] == "battery.soc"
 
 
 async def test_battery_with_only_soc_and_power_saves_without_site_or_energy(hass):
@@ -465,9 +481,8 @@ async def test_battery_with_only_soc_and_power_saves_without_site_or_energy(hass
         },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert {item["concept"] for item in result["data"][CONF_DEVICE]["mappings"]} == {
-        "battery.power",
-        "battery.soc",
+    assert {call.args[1]["concept"] for call in api.create_mapping.await_args_list} == {
+        "battery.power", "battery.soc"
     }
     assert all(
         not call.args[1]["concept"].startswith("site.")
@@ -485,7 +500,7 @@ async def test_energy_mapping_stores_source_semantics_without_normalization(hass
         result["flow_id"],
         {SECTION_MEASUREMENTS: {}, SECTION_ENERGY: {"battery.chargeEnergy": energy.entity_id}},
     )
-    configuration = result["data"][CONF_DEVICE]["mappings"][0]["configuration"]
+    configuration = api.create_mapping.await_args.args[1]["configuration"]
     assert configuration == {
         "version": 1,
         "entityId": energy.entity_id,
@@ -509,6 +524,9 @@ async def test_retry_after_lost_device_response_reuses_stable_identity(hass):
     result, _entry, _device, _power, soc, _energy, _weak = await reach_review(
         hass, api
     )
+    existing["deviceId"] = stable_device_id(
+        "external-integration-id", "battery", _device.id
+    )
     selected = {
         SECTION_MEASUREMENTS: {"battery.soc": soc.entity_id},
         SECTION_ENERGY: {},
@@ -523,7 +541,7 @@ async def test_retry_after_lost_device_response_reuses_stable_identity(hass):
         result["flow_id"], selected
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_DEVICE]["device_id"] == EXTERNAL_DEVICE_ID
+    assert DEVICE_INTERNAL_ID in result["data"][CONF_DEVICE_CONTEXTS]
     api.create_device.assert_awaited_once()
 
 
@@ -567,12 +585,15 @@ async def test_device_conflict_is_recovered_by_documented_listing(hass):
     result, _entry, _device, _power, soc, _energy, _weak = await reach_review(
         hass, api
     )
+    existing["deviceId"] = stable_device_id(
+        "external-integration-id", "battery", _device.id
+    )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {SECTION_MEASUREMENTS: {"battery.soc": soc.entity_id}, SECTION_ENERGY: {}},
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_DEVICE]["device_id"] == EXTERNAL_DEVICE_ID
+    assert DEVICE_INTERNAL_ID in result["data"][CONF_DEVICE_CONTEXTS]
 
 
 async def test_partial_mapping_failure_retries_without_second_device(hass):
@@ -587,6 +608,9 @@ async def test_partial_mapping_failure_retries_without_second_device(hass):
     api.list_devices.side_effect = [[], [device]]
     api.create_device.return_value = device
     result, _entry, _device, power, soc, _energy, _weak = await reach_review(hass, api)
+    device["deviceId"] = stable_device_id(
+        "external-integration-id", "battery", _device.id
+    )
     selected = {
         SECTION_MEASUREMENTS: {
             "battery.power": power.entity_id,
@@ -705,15 +729,605 @@ async def test_missing_optional_ha_metadata_does_not_block_creation(hass):
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     api.create_device.assert_awaited_once_with(
-        SITE_ID, EXTERNAL_DEVICE_ID, "battery", {}
+        SITE_ID,
+        stable_device_id("external-integration-id", "battery", device.id),
+        "battery",
+        {},
     )
     api.create_mapping.assert_not_awaited()
 
 
-async def test_second_device_is_not_a_milestone_two_management_flow(hass):
-    """An entry with one Device does not expose list/edit/add-another UI."""
+async def test_configure_menu_supports_devices_and_additional_devices(hass):
+    """Configure exposes management and reuses the approved Add Device path."""
     entry = make_entry(hass)
     hass.config_entries.async_update_entry(entry, options={CONF_DEVICE: {}})
+    result = await start_options_root(hass, entry, make_api())
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+    assert result["menu_options"] == ["devices", "add_device"]
+    assert "delete" not in result["menu_options"]
+
+
+async def test_add_device_can_repeat_for_same_entry_and_machine_key(hass):
+    """Battery and Solar context accumulate under one ConfigEntry credential."""
+    entry = make_entry(hass)
+    ha_device, *_ = make_ha_device(hass, entry.entry_id)
+    first_api = make_api()
+    result = await start_options(hass, entry, first_api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "battery"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HA_DEVICE_ID: ha_device.id}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {SECTION_MEASUREMENTS: {}, SECTION_ENERGY: {}}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_DEVICE_CONTEXTS] == {
+        DEVICE_INTERNAL_ID: {
+            CONF_HA_DEVICE_ID: ha_device.id,
+            "type": "battery",
+        }
+    }
+
+    second_internal_id = "00000000-0000-0000-0000-000000000005"
+    second_external_id = "00000000-0000-0000-0000-000000000006"
+    solar_catalog = [{
+        "type": "solar",
+        "concepts": [{
+            "concept": "solar.power", "datatype": "number", "unit": "W",
+            "cadence": "realtime", "usages": ["fact"], "source": "mapping",
+        }],
+    }]
+    second_api = make_api(solar_catalog)
+    second_api.create_device.return_value = {
+        "id": second_internal_id,
+        "deviceId": second_external_id,
+        "type": "solar",
+        "properties": {},
+    }
+    result = await start_options(hass, entry, second_api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "solar"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HA_DEVICE_ID: ha_device.id}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {SECTION_MEASUREMENTS: {}, SECTION_INSTALLATION: {}}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.data[CONF_INTEGRATION_KEY] == INTEGRATION_KEY
+    assert set(entry.options[CONF_DEVICE_CONTEXTS]) == {
+        DEVICE_INTERNAL_ID, second_internal_id
+    }
+
+
+async def test_same_ha_device_and_type_is_rejected_before_device_creation(hass):
+    """Add Battery cannot configure an already-associated HA Device twice."""
+    entry = make_entry(hass)
+    ha_device, *_ = make_ha_device(hass, entry.entry_id)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                DEVICE_INTERNAL_ID: {
+                    CONF_HA_DEVICE_ID: ha_device.id,
+                    "type": "battery",
+                }
+            }
+        },
+    )
+    api = make_api()
+    result = await start_options(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "battery"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HA_DEVICE_ID: ha_device.id}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "ha_device_battery"
+    assert result["errors"] == {
+        CONF_HA_DEVICE_ID: "device_type_already_configured"
+    }
+    api.list_devices.assert_not_awaited()
+    api.create_device.assert_not_awaited()
+    api.create_mapping.assert_not_awaited()
+
+
+async def test_different_battery_ha_device_remains_allowed(hass):
+    """The uniqueness rule does not prevent genuinely different Batteries."""
+    entry = make_entry(hass)
+    existing, *_ = make_ha_device(hass, entry.entry_id)
+    second = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("goodwe", "second-inverter")},
+        name="Second battery inverter",
+    )
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                DEVICE_INTERNAL_ID: {
+                    CONF_HA_DEVICE_ID: existing.id,
+                    "type": "battery",
+                }
+            }
+        },
+    )
     result = await start_options(hass, entry, make_api())
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "device_already_configured"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "battery"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HA_DEVICE_ID: second.id}
+    )
+    assert result["step_id"] == "review_battery"
+
+
+async def test_legacy_context_resolves_type_from_backend_before_rejecting(hass):
+    """Older saved HA context remains sufficient for duplicate prevention."""
+    entry = make_entry(hass)
+    ha_device, *_ = make_ha_device(hass, entry.entry_id)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                DEVICE_INTERNAL_ID: {CONF_HA_DEVICE_ID: ha_device.id}
+            }
+        },
+    )
+    api = make_api()
+    api.list_devices.return_value = [
+        {
+            "id": DEVICE_INTERNAL_ID,
+            "deviceId": EXTERNAL_DEVICE_ID,
+            "type": "battery",
+        }
+    ]
+    result = await start_options(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "battery"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_HA_DEVICE_ID: ha_device.id}
+    )
+    assert result["errors"] == {
+        CONF_HA_DEVICE_ID: "device_type_already_configured"
+    }
+    api.list_devices.assert_awaited_once_with(SITE_ID)
+    api.create_device.assert_not_awaited()
+
+
+def test_stable_device_identity_is_deterministic_per_type_pairing():
+    """Repeated flows derive the same identity, while another type differs."""
+    first = stable_device_id("integration", "battery", "ha-device")
+    assert stable_device_id("integration", "battery", "ha-device") == first
+    assert stable_device_id("integration", "solar", "ha-device") != first
+    assert stable_device_id("other-integration", "battery", "ha-device") != first
+
+
+async def test_deterministic_backend_match_is_rejected_not_silently_reused(hass):
+    """Missing local context cannot turn Add Device into an implicit edit/reuse."""
+    api = make_api()
+    result, _entry, device, _power, _soc, _energy, _weak = await reach_review(
+        hass, api
+    )
+    api.list_devices.return_value = [
+        {
+            "id": DEVICE_INTERNAL_ID,
+            "deviceId": stable_device_id(
+                "external-integration-id", "battery", device.id
+            ),
+            "type": "battery",
+        }
+    ]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {SECTION_MEASUREMENTS: {}, SECTION_ENERGY: {}}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "device_type_already_configured"}
+    api.create_device.assert_not_awaited()
+    api.create_mapping.assert_not_awaited()
+
+
+async def open_battery_editor(hass, api, entry, mappings):
+    """Open a configured Battery through the native management UI."""
+    backend_device = {
+        "id": DEVICE_INTERNAL_ID,
+        "deviceId": EXTERNAL_DEVICE_ID,
+        "type": "battery",
+        "properties": {
+            "displayName": "Home battery",
+            "vendor": "GoodWe",
+            "model": "GW10K-ET",
+        },
+    }
+    api.list_devices.return_value = [
+        backend_device,
+        {"id": "site-internal", "deviceId": "site", "type": "site"},
+    ]
+    api.get_device.return_value = backend_device
+    api.list_mappings.return_value = mappings
+    result = await start_options_root(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "devices"}
+    )
+    assert result["step_id"] == "devices"
+    serialized = serialize_form(hass, result)
+    assert "Battery · Home battery" in str(serialized["data_schema"])
+    assert "site-internal" not in str(serialized["data_schema"])
+    assert EXTERNAL_DEVICE_ID not in str(serialized)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"selected_device": DEVICE_INTERNAL_ID}
+    )
+    assert result["type"] is FlowResultType.FORM, result
+    return result
+
+
+async def test_device_labels_always_include_translated_type_and_resolve_id(hass):
+    """Same-name Devices remain unambiguous without exposing canonical labels."""
+    entry = make_entry(hass)
+    catalog = [
+        BATTERY_CATALOG[1],
+        {
+            "type": "solar",
+            "concepts": [
+                {
+                    "concept": "solar.power",
+                    "datatype": "number",
+                    "unit": "W",
+                    "cadence": "realtime",
+                    "usages": ["fact"],
+                    "source": "mapping",
+                }
+            ],
+        },
+        {
+            "type": "electricVehicle",
+            "concepts": [],
+        },
+    ]
+    battery = {
+        "id": DEVICE_INTERNAL_ID,
+        "deviceId": EXTERNAL_DEVICE_ID,
+        "type": "battery",
+        "properties": {"displayName": "Inverter Goodwe #1"},
+    }
+    solar_internal_id = "00000000-0000-0000-0000-000000000005"
+    solar = {
+        "id": solar_internal_id,
+        "deviceId": "00000000-0000-0000-0000-000000000006",
+        "type": "solar",
+        "properties": {"displayName": "Inverter Goodwe #1"},
+    }
+    vehicle = {
+        "id": "00000000-0000-0000-0000-000000000007",
+        "deviceId": "00000000-0000-0000-0000-000000000008",
+        "type": "electricVehicle",
+        "properties": {},
+    }
+    second_battery = {
+        "id": "00000000-0000-0000-0000-000000000009",
+        "deviceId": "00000000-0000-0000-0000-000000000010",
+        "type": "battery",
+        "properties": {"displayName": "Pylontech Force H2"},
+    }
+    duplicate_battery = {
+        "id": "00000000-0000-0000-0000-000000000011",
+        "deviceId": "00000000-0000-0000-0000-000000000012",
+        "type": "battery",
+        "properties": {"displayName": "Inverter Goodwe #1"},
+    }
+    api = make_api(catalog)
+    api.list_devices.return_value = [
+        solar, second_battery, vehicle, duplicate_battery, battery
+    ]
+    api.get_device.return_value = solar
+    api.list_mappings.return_value = []
+
+    result = await start_options_root(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "devices"}
+    )
+    serialized = serialize_form(hass, result)
+    rendered = str(serialized["data_schema"])
+    assert "Battery · Inverter Goodwe #1" in rendered
+    assert rendered.count("Battery · Inverter Goodwe #1") == 2
+    assert "Solar · Inverter Goodwe #1" in rendered
+    assert "Electric vehicle" in rendered
+    assert "electricVehicle" not in rendered
+    assert rendered.index("Battery · Inverter Goodwe #1") < rendered.index(
+        "Battery · Pylontech Force H2"
+    )
+    assert rendered.index("Battery · Pylontech Force H2") < rendered.index(
+        "Electric vehicle"
+    )
+    assert rendered.index("Electric vehicle") < rendered.index(
+        "Solar · Inverter Goodwe #1"
+    )
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"selected_device": solar_internal_id}
+    )
+    assert result["step_id"] == "review_solar"
+    api.get_device.assert_awaited_once_with(SITE_ID, solar_internal_id)
+
+
+async def test_device_label_fallbacks_include_type(hass):
+    """Vendor/model and type-only fallbacks retain the translated type."""
+    translations = {
+        "component.fluks.options.step.device_type.menu_options.battery": "Batteri",
+        "component.fluks.options.step.devices.type_fallback": "Energienhed",
+    }
+    assert FluksOptionsFlow._device_display_name(
+        {
+            "type": "battery",
+            "properties": {"vendor": "Pylontech", "model": "Force H2"},
+        },
+        translations,
+    ) == "Batteri · Pylontech Force H2"
+    assert FluksOptionsFlow._device_display_name(
+        {"type": "battery", "properties": {}}, translations
+    ) == "Batteri"
+
+
+async def test_existing_mapping_wins_and_no_op_edit_writes_nothing(hass):
+    """Backend mappings are preselected and bypass matcher replacement."""
+    entry = make_entry(hass)
+    device, power, soc, _energy, _weak = make_ha_device(hass, entry.entry_id)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                DEVICE_INTERNAL_ID: {CONF_HA_DEVICE_ID: device.id}
+            }
+        },
+    )
+    mappings = [
+        {
+            "id": "mapping-power",
+            "integrationId": INTEGRATION_INTERNAL_ID,
+            "deviceId": DEVICE_INTERNAL_ID,
+            "concept": "battery.power",
+            "direction": "input",
+            "configuration": {"version": 1, "entityId": power.entity_id},
+        },
+        {
+            "id": "mapping-soc",
+            "integrationId": INTEGRATION_INTERNAL_ID,
+            "deviceId": DEVICE_INTERNAL_ID,
+            "concept": "battery.soc",
+            "direction": "input",
+            "configuration": {
+                "version": 1,
+                "entityId": soc.entity_id,
+                "transforms": [{"type": "valueMap", "values": {"on": True}}],
+            },
+        },
+    ]
+    api = make_api()
+    with patch(
+        "custom_components.fluks.options_flow.suggest_entities",
+        return_value={"battery.power": "sensor.wrong"},
+    ) as matcher:
+        result = await open_battery_editor(hass, api, entry, mappings)
+    matched = [item["concept"] for item in matcher.call_args.args[1]]
+    assert matched == ["battery.chargeEnergy"]
+    serialized = serialize_form(hass, result)
+    fields = {
+        item["name"]: item
+        for current in serialized["data_schema"]
+        if "schema" in current
+        for item in current["schema"]
+    }
+    assert fields["battery.power"]["description"]["suggested_value"] == power.entity_id
+    assert fields["battery.soc"]["description"]["suggested_value"] == soc.entity_id
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            SECTION_MEASUREMENTS: {
+                "battery.power": power.entity_id,
+                "battery.soc": soc.entity_id,
+            },
+            SECTION_ENERGY: {},
+            "device_information": {
+                "display_name": "Home battery",
+                "vendor": "GoodWe",
+                "model": "GW10K-ET",
+            },
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    api.update_device_properties.assert_not_awaited()
+    api.create_mapping.assert_not_awaited()
+    api.update_mapping.assert_not_awaited()
+    api.delete_mapping.assert_not_awaited()
+    assert mappings[1]["configuration"]["transforms"] == [
+        {"type": "valueMap", "values": {"on": True}}
+    ]
+
+
+async def test_edit_reconciles_property_and_mapping_diffs_incrementally(hass):
+    """One save PATCHes, POSTs, and DELETEs only the changed resources."""
+    entry = make_entry(hass)
+    _device, power, soc, energy, _weak = make_ha_device(hass, entry.entry_id)
+    mappings = [
+        {
+            "id": "mapping-power",
+            "integrationId": INTEGRATION_INTERNAL_ID,
+            "deviceId": DEVICE_INTERNAL_ID,
+            "concept": "battery.power",
+            "direction": "input",
+            "configuration": {"version": 1, "entityId": power.entity_id},
+        },
+        {
+            "id": "mapping-soc",
+            "integrationId": INTEGRATION_INTERNAL_ID,
+            "deviceId": DEVICE_INTERNAL_ID,
+            "concept": "battery.soc",
+            "direction": "input",
+            "configuration": {"version": 1, "entityId": soc.entity_id},
+        },
+    ]
+    api = make_api()
+    api.update_device_properties.return_value = {
+        "id": DEVICE_INTERNAL_ID,
+        "deviceId": EXTERNAL_DEVICE_ID,
+        "type": "battery",
+        "properties": {"displayName": "Garage battery", "vendor": "GoodWe", "model": "GW10K-ET"},
+    }
+    api.update_mapping.return_value = {
+        **mappings[0], "configuration": {"version": 1, "entityId": soc.entity_id}
+    }
+    api.create_mapping.return_value = {
+        "id": "mapping-energy",
+        "integrationId": INTEGRATION_INTERNAL_ID,
+        "deviceId": DEVICE_INTERNAL_ID,
+        "concept": "battery.chargeEnergy",
+        "direction": "input",
+        "configuration": {"version": 1, "entityId": energy.entity_id, "source": {"kind": "cumulative"}},
+    }
+    result = await open_battery_editor(hass, api, entry, mappings)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            SECTION_MEASUREMENTS: {"battery.power": soc.entity_id},
+            SECTION_ENERGY: {"battery.chargeEnergy": energy.entity_id},
+            "device_information": {
+                "display_name": "Garage battery",
+                "vendor": "GoodWe",
+                "model": "GW10K-ET",
+            },
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    api.update_device_properties.assert_awaited_once_with(
+        SITE_ID, DEVICE_INTERNAL_ID, {"displayName": "Garage battery"}
+    )
+    api.update_mapping.assert_awaited_once()
+    assert api.update_mapping.await_args.args[:2] == (SITE_ID, "mapping-power")
+    api.delete_mapping.assert_awaited_once_with(SITE_ID, "mapping-soc")
+    api.create_mapping.assert_awaited_once()
+    assert api.create_mapping.await_args.args[1]["concept"] == "battery.chargeEnergy"
+    api.create_device.assert_not_awaited()
+
+
+async def test_solar_edit_loads_changes_and_clears_optional_properties(hass):
+    """Solar installation values round-trip through incremental null semantics."""
+    entry = make_entry(hass)
+    solar_catalog = [{
+        "type": "solar",
+        "concepts": [{
+            "concept": "solar.power", "datatype": "number", "unit": "W",
+            "cadence": "realtime", "usages": ["fact"], "source": "mapping",
+        }],
+    }]
+    backend_device = {
+        "id": DEVICE_INTERNAL_ID,
+        "deviceId": EXTERNAL_DEVICE_ID,
+        "type": "solar",
+        "properties": {
+            "displayName": "Solar panels",
+            "azimuthDegrees": 180,
+            "tiltDegrees": 35,
+        },
+    }
+    api = make_api(solar_catalog)
+    api.list_devices.return_value = [backend_device]
+    api.get_device.return_value = backend_device
+    api.list_mappings.return_value = []
+    api.update_device_properties.return_value = {
+        **backend_device,
+        "properties": {
+            "displayName": "Solar panels", "azimuthDegrees": 200
+        },
+    }
+    result = await start_options_root(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "devices"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"selected_device": DEVICE_INTERNAL_ID}
+    )
+    serialized = serialize_form(hass, result)
+    installation = next(
+        item for item in serialized["data_schema"]
+        if item["name"] == SECTION_INSTALLATION
+    )
+    values = {
+        item["name"]: item["description"]["suggested_value"]
+        for item in installation["schema"]
+    }
+    assert values == {CONF_AZIMUTH_DEGREES: 180, CONF_TILT_DEGREES: 35}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            SECTION_MEASUREMENTS: {},
+            SECTION_INSTALLATION: {CONF_AZIMUTH_DEGREES: 200},
+            "device_information": {"display_name": "Solar panels"},
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    api.update_device_properties.assert_awaited_once_with(
+        SITE_ID,
+        DEVICE_INTERNAL_ID,
+        {"azimuthDegrees": 200, "tiltDegrees": None},
+    )
+    api.create_device.assert_not_awaited()
+
+
+async def test_partial_edit_retry_reconciles_only_remaining_mutations(hass):
+    """A retry does not repeat an already successful Mapping PATCH."""
+    entry = make_entry(hass)
+    _device, power, soc, _energy, _weak = make_ha_device(hass, entry.entry_id)
+    mappings = [
+        {
+            "id": "mapping-power",
+            "integrationId": INTEGRATION_INTERNAL_ID,
+            "deviceId": DEVICE_INTERNAL_ID,
+            "concept": "battery.power",
+            "direction": "input",
+            "configuration": {"version": 1, "entityId": power.entity_id},
+        },
+        {
+            "id": "mapping-soc",
+            "integrationId": INTEGRATION_INTERNAL_ID,
+            "deviceId": DEVICE_INTERNAL_ID,
+            "concept": "battery.soc",
+            "direction": "input",
+            "configuration": {"version": 1, "entityId": soc.entity_id},
+        },
+    ]
+    api = make_api()
+    api.update_mapping.return_value = {
+        **mappings[0],
+        "configuration": {"version": 1, "entityId": soc.entity_id},
+    }
+    api.delete_mapping.side_effect = [FluksCannotConnect(), None]
+    result = await open_battery_editor(hass, api, entry, mappings)
+    submitted = {
+        SECTION_MEASUREMENTS: {"battery.power": soc.entity_id},
+        SECTION_ENERGY: {},
+        "device_information": {
+            "display_name": "Home battery",
+            "vendor": "GoodWe",
+            "model": "GW10K-ET",
+        },
+    }
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], submitted
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], submitted
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert api.update_mapping.await_count == 1
+    assert api.delete_mapping.await_count == 2
+    api.create_device.assert_not_awaited()

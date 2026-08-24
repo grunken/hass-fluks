@@ -87,8 +87,20 @@
   "options": {
     "step": {
       "init": {
+        "title": "Configure fluks",
+        "description": "View configured energy devices or connect another one.",
+        "menu_options": {"devices": "Devices", "add_device": "Add device"},
+        "menu_option_descriptions": {"devices": "View and edit configured devices.", "add_device": "Connect another energy device."}
+      },
+      "add_device": {
         "title": "Add device",
         "description": "Load the available energy device types from fluks."
+      },
+      "devices": {
+        "title": "Devices",
+        "description": "Choose a configured energy device to review or edit.",
+        "data": {"selected_device": "Device"},
+        "type_fallback": "Energy device"
       },
       "device_type": {
         "title": "Add device",
@@ -149,59 +161,66 @@
       },
       "review_solar": {
         "title": "Solar measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"solar.power": "Power"}, "data_description": {"solar.power": "Optional"}},
           "energy": {"name": "Energy", "description": "Energy measurements", "data": {"solar.energy": "Produced energy"}, "data_description": {"solar.energy": "Optional"}},
-          "installation": {"name": "Installation", "description": "Direction and panel angle are optional but can improve solar forecasting.", "data": {"azimuth_degrees": "Direction", "tilt_degrees": "Panel angle"}, "data_description": {"azimuth_degrees": "Optional · 0° north, 90° east, 180° south", "tilt_degrees": "Optional · 0° horizontal, 90° vertical"}}
+          "installation": {"name": "Installation", "description": "Direction and panel angle are optional but can improve solar forecasting.", "data": {"azimuth_degrees": "Direction", "tilt_degrees": "Panel angle"}, "data_description": {"azimuth_degrees": "Optional · 0° north, 90° east, 180° south", "tilt_degrees": "Optional · 0° horizontal, 90° vertical"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       },
       "review_generator": {
         "title": "Generator measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"generator.power": "Power", "generator.state": "Operating state"}, "data_description": {"generator.power": "Optional", "generator.state": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"generator.energy": "Generated energy"}, "data_description": {"generator.energy": "Optional"}}
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"generator.energy": "Generated energy"}, "data_description": {"generator.energy": "Optional"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       },
       "review_battery": {
         "title": "Battery measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"battery.power": "Power", "battery.soc": "State of charge"}, "data_description": {"battery.power": "Recommended", "battery.soc": "Recommended"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"battery.energy": "Net energy", "battery.chargeEnergy": "Charged energy", "battery.dischargeEnergy": "Discharged energy"}, "data_description": {"battery.energy": "Optional", "battery.chargeEnergy": "Optional", "battery.dischargeEnergy": "Optional"}}
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"battery.energy": "Net energy", "battery.chargeEnergy": "Charged energy", "battery.dischargeEnergy": "Discharged energy"}, "data_description": {"battery.energy": "Optional", "battery.chargeEnergy": "Optional", "battery.dischargeEnergy": "Optional"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       },
       "review_electricVehicle": {
         "title": "Electric vehicle measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"electricVehicle.power": "Power", "electricVehicle.soc": "State of charge", "electricVehicle.connected": "Connected"}, "data_description": {"electricVehicle.power": "Recommended", "electricVehicle.soc": "Recommended", "electricVehicle.connected": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"electricVehicle.energy": "Net energy", "electricVehicle.chargeEnergy": "Charged energy", "electricVehicle.dischargeEnergy": "Discharged energy"}, "data_description": {"electricVehicle.energy": "Optional", "electricVehicle.chargeEnergy": "Optional", "electricVehicle.dischargeEnergy": "Optional"}}
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"electricVehicle.energy": "Net energy", "electricVehicle.chargeEnergy": "Charged energy", "electricVehicle.dischargeEnergy": "Discharged energy"}, "data_description": {"electricVehicle.energy": "Optional", "electricVehicle.chargeEnergy": "Optional", "electricVehicle.dischargeEnergy": "Optional"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       },
       "review_heatPump": {
         "title": "Heat pump measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"heatPump.power": "Power", "heatPump.state": "Operating state", "heatPump.temperature": "Temperature", "heatPump.targetTemperature": "Target temperature", "heatPump.waterTemperature": "Water temperature", "heatPump.waterTargetTemperature": "Water target temperature"}, "data_description": {"heatPump.power": "Recommended", "heatPump.state": "Optional", "heatPump.temperature": "Optional", "heatPump.targetTemperature": "Optional", "heatPump.waterTemperature": "Optional", "heatPump.waterTargetTemperature": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"heatPump.energy": "Energy"}, "data_description": {"heatPump.energy": "Optional"}}
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"heatPump.energy": "Energy"}, "data_description": {"heatPump.energy": "Optional"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       },
       "review_waterHeater": {
         "title": "Water heater measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"waterHeater.power": "Power", "waterHeater.state": "Operating state", "waterHeater.temperature": "Water temperature", "waterHeater.targetTemperature": "Target temperature"}, "data_description": {"waterHeater.power": "Recommended", "waterHeater.state": "Optional", "waterHeater.temperature": "Optional", "waterHeater.targetTemperature": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"waterHeater.energy": "Energy"}, "data_description": {"waterHeater.energy": "Optional"}}
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"waterHeater.energy": "Energy"}, "data_description": {"waterHeater.energy": "Optional"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       },
       "review_appliance": {
         "title": "Appliance measurements",
-        "description": "fluks found these measurements automatically. Change or remove any suggestion that is incorrect.",
+        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
         "sections": {
           "measurements": {"name": "Measurements", "description": "Current readings", "data": {"appliance.power": "Power", "appliance.state": "Operating state"}, "data_description": {"appliance.power": "Recommended", "appliance.state": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"appliance.energy": "Energy"}, "data_description": {"appliance.energy": "Optional"}}
+          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"appliance.energy": "Energy"}, "data_description": {"appliance.energy": "Optional"}},
+          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
         }
       }
     },
@@ -210,14 +229,17 @@
       "catalog_unavailable": "fluks returned an unexpected device catalog. Try again.",
       "missing_device_icon": "An available device type is missing its approved fluks icon.",
       "unknown_ha_device": "Choose an available Home Assistant device.",
+      "device_type_already_configured": "This Home Assistant device is already configured as this fluks device type. Edit it under Devices or choose another device.",
       "invalid_input": "Check the information and try again.",
       "invalid_solar_property": "Enter a value within the supported range.",
       "unauthorized": "Your login has expired. Start onboarding again to log in.",
       "identity_conflict": "This device identity already exists and could not be safely recovered.",
-      "save_failed": "fluks could not finish adding the device. Try again safely."
+      "save_failed": "fluks could not finish adding the device. Try again safely.",
+      "load_failed": "fluks could not load the devices. Try again."
     },
     "abort": {
-      "device_already_configured": "A fluks device has already been added. Device management belongs to a later milestone.",
+      "no_devices": "No energy devices have been added yet. Choose Add device to connect one.",
+      "unsupported_device_type": "This device type is not available in the current fluks catalog.",
       "invalid_flow_state": "Start Add device again.",
       "reauth_required": "The fluks connection needs to be restored. Complete the authentication flow and try again."
     }

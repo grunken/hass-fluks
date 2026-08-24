@@ -11,6 +11,7 @@ CONF_INTEGRATION_ID = "integration_id"
 CONF_INTEGRATION_INTERNAL_ID = "integration_internal_id"
 CONF_SITE_ID = "site_id"
 CONF_DEVICE = "device"
+CONF_DEVICE_CONTEXTS = "device_contexts"
 
 INTEGRATION_TYPE = "homeAssistant"
 ENERGY_PROFILE = "ordinary_residential"
