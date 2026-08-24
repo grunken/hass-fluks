@@ -9,7 +9,6 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import callback
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -45,14 +44,6 @@ class FluksConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the native Home Assistant onboarding flow for fluks."""
 
     VERSION = 1
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry):
-        """Return the native Milestone 2 Add Device flow."""
-        from .options_flow import FluksOptionsFlow
-
-        return FluksOptionsFlow()
 
     def __init__(self) -> None:
         self._api: FluksApiClient | None = None

@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from custom_components.fluks.options_flow import icon_path
+from custom_components.fluks.device import icon_path
 
 PHYSICAL_TYPES = (
     "solar",

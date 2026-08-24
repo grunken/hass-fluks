@@ -6,8 +6,6 @@ import ast
 import json
 from pathlib import Path
 
-from homeassistant.helpers.icon import async_get_icons
-
 from custom_components.fluks.const import DOMAIN
 
 TRANSLATIONS = Path("custom_components") / DOMAIN / "translations"
@@ -97,10 +95,10 @@ def test_config_flow_translation_keys_exist():
     )
 
 
-def test_options_flow_presentation_is_translated_in_english_and_danish():
-    """Current backend types and review fields have matching friendly text."""
-    english = load_translation("en")["options"]
-    danish = load_translation("da")["options"]
+def test_panel_device_and_concept_presentation_is_translated():
+    """The production panel owns localized Device and concept presentation."""
+    english = load_translation("en")["panel"]
+    danish = load_translation("da")["panel"]
     physical_types = {
         "solar",
         "generator",
@@ -110,65 +108,12 @@ def test_options_flow_presentation_is_translated_in_english_and_danish():
         "waterHeater",
         "appliance",
     }
-    menu_en = english["step"]["device_type"]
-    menu_da = danish["step"]["device_type"]
-    assert physical_types == menu_en["menu_options"].keys()
-    assert physical_types == menu_en["menu_option_descriptions"].keys()
-    assert physical_types == menu_da["menu_options"].keys()
-    assert physical_types == menu_da["menu_option_descriptions"].keys()
-    assert all(value and "." not in value for value in menu_en["menu_options"].values())
+    assert {key.removeprefix("device_type_") for key in english if key.startswith("device_type_") and key != "device_type_fallback"} == physical_types
+    assert {key.removeprefix("device_type_") for key in danish if key.startswith("device_type_") and key != "device_type_fallback"} == physical_types
     for device_type in physical_types:
-        ha_step = f"ha_device_{device_type}"
-        review_step = f"review_{device_type}"
-        assert ha_step in english["step"] and ha_step in danish["step"]
-        assert review_step in english["step"] and review_step in danish["step"]
-        assert "Home Assistant device" in english["step"][ha_step]["data"].values()
-        assert "change or remove" in english["step"][review_step][
-            "description"
-        ].lower()
-
-    assert "Battery" in english["step"]["ha_device_battery"]["title"]
-    assert "Battery measurements" in english["step"]["ha_device_battery"][
-        "description"
-    ]
-    assert "Solar" in english["step"]["ha_device_solar"]["title"]
-    assert "Solar measurements" in english["step"]["ha_device_solar"][
-        "description"
-    ]
-
-
-def test_options_flow_section_icons_use_native_icons_json_structure():
-    """Review section icons use only HA's native options-flow metadata."""
-    icons = json.loads(
-        (Path("custom_components") / DOMAIN / "icons.json").read_text()
-    )
-    english_steps = load_translation("en")["options"]["step"]
-    steps = icons["options"]["step"]
-
-    assert steps
-    for step_id, step_metadata in steps.items():
-        assert step_id in english_steps
-        assert set(step_metadata) == {"sections"}
-        translated_sections = english_steps[step_id]["sections"]
-        for section_id, icon in step_metadata["sections"].items():
-            assert section_id in translated_sections
-            assert icon.startswith("mdi:")
-            assert "/" not in icon and ".png" not in icon
-
-
-async def test_options_flow_section_icons_load_through_home_assistant(hass):
-    """HA's native icon loader resolves the Options Flow section metadata."""
-    icons = json.loads(
-        (Path("custom_components") / DOMAIN / "icons.json").read_text()
-    )
-
-    resources = await async_get_icons(hass, "options", {DOMAIN})
-
-    assert resources == {DOMAIN: icons["options"]}
-    assert resources[DOMAIN]["step"]["review_battery"]["sections"] == {
-        "measurements": "mdi:gauge",
-        "energy": "mdi:lightning-bolt",
-    }
-    assert resources[DOMAIN]["step"]["review_solar"]["sections"][
-        "installation"
-    ] == "mdi:solar-panel"
+        assert english[f"device_type_{device_type}"]
+        assert danish[f"device_type_{device_type}"]
+    assert english["concept_battery.soc"] == "State of charge"
+    assert danish["concept_battery.soc"] == "Ladeniveau"
+    assert "options" not in load_translation("en")
+    assert "options" not in load_translation("da")

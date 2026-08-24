@@ -3,6 +3,7 @@
   "name": "fluks",
   "version": "1.0.0",
   "config_flow": true,
+  "dependencies": ["frontend", "websocket_api"],
   "documentation": "https://github.com/grunken/hass-fluks",
   "requirements": [],
   "codeowners": []

@@ -4,7 +4,10 @@
       "user": {
         "title": "Your Energy. Decides together.",
         "description": "Connect Home Assistant to fluks and choose how you want to get started.",
-        "menu_options": {"login": "Log in", "register": "Create account"},
+        "menu_options": {
+          "login": "Log in",
+          "register": "Create account"
+        },
         "menu_option_descriptions": {
           "login": "Use your existing fluks account.",
           "register": "Create a new account and verify your email."
@@ -13,7 +16,10 @@
       "login": {
         "title": "Welcome back",
         "description": "Log in to connect Home Assistant to your fluks account.",
-        "data": {"email": "Email", "password": "Password"}
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
       },
       "register": {
         "title": "Create your account",
@@ -24,12 +30,16 @@
           "first_name": "First name (optional)",
           "last_name": "Last name (optional)"
         },
-        "data_description": {"password": "Use at least 12 characters."}
+        "data_description": {
+          "password": "Use at least 12 characters."
+        }
       },
       "verify": {
         "title": "Verify your email",
         "description": "Enter the six-digit verification code sent to {email}.",
-        "data": {"code": "Verification code"}
+        "data": {
+          "code": "Verification code"
+        }
       },
       "site_choice": {
         "title": "Choose where to connect",
@@ -46,12 +56,16 @@
       "site": {
         "title": "Choose a Site",
         "description": "Select the fluks Site this Home Assistant belongs to.",
-        "data": {"site": "Site"}
+        "data": {
+          "site": "Site"
+        }
       },
       "create_site": {
         "title": "Name your Site",
         "description": "Give this place a clear name, such as Home.",
-        "data": {"site_name": "Site name"},
+        "data": {
+          "site_name": "Site name"
+        },
         "data_description": {
           "site_name": "Home Assistant supplies the required location details automatically."
         }
@@ -63,7 +77,10 @@
       "reauth_confirm": {
         "title": "Reconnect fluks",
         "description": "Log in to restore this Home Assistant connection without creating another Site or Integration.",
-        "data": {"email": "Email", "password": "Password"}
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -84,205 +101,137 @@
       "reauth_successful": "The fluks connection has been restored."
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Configure fluks",
-        "description": "Manage the Site and its connected energy devices.",
-        "menu_options": {"devices": "Devices", "add_device": "Add device", "site": "Site"},
-        "menu_option_descriptions": {"devices": "View and edit configured devices.", "add_device": "Connect another energy device.", "site": "Manage this fluks Site."}
-      },
-      "site": {
-        "title": "Site",
-        "description": "{site}\n\nManage this fluks Site.",
-        "site_fallback": "Site",
-        "menu_options": {"delete_site": "Delete site"},
-        "menu_option_descriptions": {"delete_site": "Permanently remove this Site and its Devices from fluks."}
-      },
-      "delete_site": {
-        "title": "Delete site?",
-        "description": "Delete {site}?\n\nAre you sure you want to delete this Site from fluks? All Devices connected to this Site will be removed from fluks. This cannot be undone.",
-        "menu_options": {"confirm_delete_site": "Delete site", "cancel_delete_site": "Cancel"},
-        "menu_option_descriptions": {"confirm_delete_site": "Permanently delete this Site.", "cancel_delete_site": "Keep the Site unchanged."}
-      },
-      "site_delete_login": {
-        "title": "Confirm your identity",
-        "description": "Log in to delete {site}. This permanently removes the Site from fluks.",
-        "data": {"email": "Email", "password": "Password"}
-      },
-      "add_device": {
-        "title": "Add device",
-        "description": "Load the available energy device types from fluks."
-      },
-      "devices": {
-        "title": "Devices",
-        "description": "Choose a configured energy device to review or edit.",
-        "data": {"selected_device": "Device"},
-        "type_fallback": "Energy device"
-      },
-      "device_actions": {
-        "title": "Device actions",
-        "description": "{device}\n\nReview this device or remove it from fluks.",
-        "menu_options": {"edit_device": "Edit device", "delete_device": "Delete device"},
-        "menu_option_descriptions": {"edit_device": "Review measurements and device information.", "delete_device": "Permanently remove this device from fluks."}
-      },
-      "delete_device": {
-        "title": "Delete device?",
-        "description": "Delete {device}?\n\nAre you sure you want to delete this device from fluks? This cannot be undone.",
-        "menu_options": {"confirm_delete": "Delete device", "cancel_delete": "Cancel"},
-        "menu_option_descriptions": {"confirm_delete": "Permanently delete this device.", "cancel_delete": "Keep this device unchanged."}
-      },
-      "delete_login": {
-        "title": "Confirm your identity",
-        "description": "Log in to delete {device}. Your fluks connection will remain unchanged.",
-        "data": {"email": "Email", "password": "Password"}
-      },
-      "device_type": {
-        "title": "Add device",
-        "description": "Choose the type of energy device you want to add to fluks.",
-        "menu_options": {
-          "solar": "Solar",
-          "generator": "Generator",
-          "battery": "Battery",
-          "electricVehicle": "Electric vehicle",
-          "heatPump": "Heat pump",
-          "waterHeater": "Water heater",
-          "appliance": "Appliance"
-        },
-        "menu_option_descriptions": {
-          "solar": "Solar production",
-          "generator": "Local electricity generation",
-          "battery": "Energy storage",
-          "electricVehicle": "Charging and vehicle battery",
-          "heatPump": "Heating and hot water",
-          "waterHeater": "Hot-water storage",
-          "appliance": "Other electrical equipment"
-        }
-      },
-      "ha_device_solar": {
-        "title": "Add device · Solar",
-        "description": "Select the Home Assistant device that contains your Solar measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "ha_device_generator": {
-        "title": "Add device · Generator",
-        "description": "Select the Home Assistant device that contains your Generator measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "ha_device_battery": {
-        "title": "Add device · Battery",
-        "description": "Select the Home Assistant device that contains your Battery measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "ha_device_electricVehicle": {
-        "title": "Add device · Electric vehicle",
-        "description": "Select the Home Assistant device that contains your Electric vehicle measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "ha_device_heatPump": {
-        "title": "Add device · Heat pump",
-        "description": "Select the Home Assistant device that contains your Heat pump measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "ha_device_waterHeater": {
-        "title": "Add device · Water heater",
-        "description": "Select the Home Assistant device that contains your Water heater measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "ha_device_appliance": {
-        "title": "Add device · Appliance",
-        "description": "Select the Home Assistant device that contains your Appliance measurements.",
-        "data": {"ha_device_id": "Home Assistant device"}
-      },
-      "review_solar": {
-        "title": "Solar measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"solar.power": "Power"}, "data_description": {"solar.power": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"solar.energy": "Produced energy"}, "data_description": {"solar.energy": "Optional"}},
-          "installation": {"name": "Installation", "description": "Direction and panel angle are optional but can improve solar forecasting.", "data": {"azimuth_degrees": "Direction", "tilt_degrees": "Panel angle"}, "data_description": {"azimuth_degrees": "Optional · 0° north, 90° east, 180° south", "tilt_degrees": "Optional · 0° horizontal, 90° vertical"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      },
-      "review_generator": {
-        "title": "Generator measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"generator.power": "Power", "generator.state": "Operating state"}, "data_description": {"generator.power": "Optional", "generator.state": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"generator.energy": "Generated energy"}, "data_description": {"generator.energy": "Optional"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      },
-      "review_battery": {
-        "title": "Battery measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"battery.power": "Power", "battery.soc": "State of charge"}, "data_description": {"battery.power": "Recommended", "battery.soc": "Recommended"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"battery.energy": "Net energy", "battery.chargeEnergy": "Charged energy", "battery.dischargeEnergy": "Discharged energy"}, "data_description": {"battery.energy": "Optional", "battery.chargeEnergy": "Optional", "battery.dischargeEnergy": "Optional"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      },
-      "review_electricVehicle": {
-        "title": "Electric vehicle measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"electricVehicle.power": "Power", "electricVehicle.soc": "State of charge", "electricVehicle.connected": "Connected"}, "data_description": {"electricVehicle.power": "Recommended", "electricVehicle.soc": "Recommended", "electricVehicle.connected": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"electricVehicle.energy": "Net energy", "electricVehicle.chargeEnergy": "Charged energy", "electricVehicle.dischargeEnergy": "Discharged energy"}, "data_description": {"electricVehicle.energy": "Optional", "electricVehicle.chargeEnergy": "Optional", "electricVehicle.dischargeEnergy": "Optional"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      },
-      "review_heatPump": {
-        "title": "Heat pump measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"heatPump.power": "Power", "heatPump.state": "Operating state", "heatPump.temperature": "Temperature", "heatPump.targetTemperature": "Target temperature", "heatPump.waterTemperature": "Water temperature", "heatPump.waterTargetTemperature": "Water target temperature"}, "data_description": {"heatPump.power": "Recommended", "heatPump.state": "Optional", "heatPump.temperature": "Optional", "heatPump.targetTemperature": "Optional", "heatPump.waterTemperature": "Optional", "heatPump.waterTargetTemperature": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"heatPump.energy": "Energy"}, "data_description": {"heatPump.energy": "Optional"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      },
-      "review_waterHeater": {
-        "title": "Water heater measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"waterHeater.power": "Power", "waterHeater.state": "Operating state", "waterHeater.temperature": "Water temperature", "waterHeater.targetTemperature": "Target temperature"}, "data_description": {"waterHeater.power": "Recommended", "waterHeater.state": "Optional", "waterHeater.temperature": "Optional", "waterHeater.targetTemperature": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"waterHeater.energy": "Energy"}, "data_description": {"waterHeater.energy": "Optional"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      },
-      "review_appliance": {
-        "title": "Appliance measurements",
-        "description": "Review the measurements fluks found or currently uses. Change or remove anything that is incorrect.",
-        "sections": {
-          "measurements": {"name": "Measurements", "description": "Current readings", "data": {"appliance.power": "Power", "appliance.state": "Operating state"}, "data_description": {"appliance.power": "Recommended", "appliance.state": "Optional"}},
-          "energy": {"name": "Energy", "description": "Energy measurements", "data": {"appliance.energy": "Energy"}, "data_description": {"appliance.energy": "Optional"}},
-          "device_information": {"name": "Device information", "description": "Optional details used to identify this device.", "data": {"display_name": "Name", "vendor": "Vendor", "model": "Model"}}
-        }
-      }
-    },
-    "error": {
-      "cannot_connect": "We couldn't reach fluks. Try again.",
-      "catalog_unavailable": "fluks returned an unexpected device catalog. Try again.",
-      "missing_device_icon": "An available device type is missing its approved fluks icon.",
-      "unknown_ha_device": "Choose an available Home Assistant device.",
-      "device_type_already_configured": "This Home Assistant device is already configured as this fluks device type. Edit it under Devices or choose another device.",
-      "invalid_input": "Check the information and try again.",
-      "invalid_solar_property": "Enter a value within the supported range.",
-      "unauthorized": "Your login has expired. Start onboarding again to log in.",
-      "identity_conflict": "This device identity already exists and could not be safely recovered.",
-      "save_failed": "fluks could not finish adding the device. Try again safely.",
-      "load_failed": "fluks could not load the devices. Try again.",
-      "invalid_auth": "The email address or password is incorrect.",
-      "delete_access_denied": "The device could not be deleted. This account may not have access to the Site.",
-      "delete_failed": "fluks could not delete the device. Try again.",
-      "site_delete_access_denied": "The Site could not be deleted. This account may not have access to the Site.",
-      "site_delete_failed": "fluks could not delete the Site. Try again."
-    },
-    "abort": {
-      "no_devices": "No energy devices have been added yet. Choose Add device to connect one.",
-      "unsupported_device_type": "This device type is not available in the current fluks catalog.",
-      "invalid_flow_state": "Start Add device again.",
-      "reauth_required": "The fluks connection needs to be restored. Complete the authentication flow and try again.",
-      "site_deleted": "The Site was deleted from fluks and removed from Home Assistant."
-    }
+  "panel": {
+    "title": "fluks",
+    "tagline": "Your Energy. Decides together.",
+    "loading": "Loading fluks configuration…",
+    "context_missing": "This configuration context is no longer available.",
+    "back": "Back",
+    "cancel": "Cancel",
+    "save": "Save",
+    "saving": "Saving…",
+    "site": "Site",
+    "site_actions": "Site actions",
+    "devices": "Devices",
+    "no_devices": "No energy devices have been added yet.",
+    "add_device": "Add device",
+    "choose_type": "Choose the type of energy device you want to add.",
+    "device_type_fallback": "Energy device",
+    "device_type_solar": "Solar",
+    "device_type_generator": "Generator",
+    "device_type_battery": "Battery",
+    "device_type_electricVehicle": "Electric vehicle",
+    "device_type_heatPump": "Heat pump",
+    "device_type_waterHeater": "Water heater",
+    "device_type_appliance": "Appliance",
+    "concept_solar.power": "Power",
+    "concept_solar.energy": "Produced energy",
+    "concept_generator.power": "Power",
+    "concept_generator.state": "Operating state",
+    "concept_generator.energy": "Generated energy",
+    "concept_battery.power": "Power",
+    "concept_battery.soc": "State of charge",
+    "concept_battery.energy": "Net energy",
+    "concept_battery.chargeEnergy": "Charged energy",
+    "concept_battery.dischargeEnergy": "Discharged energy",
+    "concept_electricVehicle.power": "Power",
+    "concept_electricVehicle.soc": "State of charge",
+    "concept_electricVehicle.connected": "Connected",
+    "concept_electricVehicle.energy": "Net energy",
+    "concept_electricVehicle.chargeEnergy": "Charged energy",
+    "concept_electricVehicle.dischargeEnergy": "Discharged energy",
+    "concept_heatPump.power": "Power",
+    "concept_heatPump.state": "Operating state",
+    "concept_heatPump.temperature": "Temperature",
+    "concept_heatPump.targetTemperature": "Target temperature",
+    "concept_heatPump.waterTemperature": "Water temperature",
+    "concept_heatPump.waterTargetTemperature": "Water target temperature",
+    "concept_heatPump.energy": "Energy",
+    "concept_waterHeater.power": "Power",
+    "concept_waterHeater.state": "Operating state",
+    "concept_waterHeater.temperature": "Water temperature",
+    "concept_waterHeater.targetTemperature": "Target temperature",
+    "concept_waterHeater.energy": "Energy",
+    "concept_appliance.power": "Power",
+    "concept_appliance.state": "Operating state",
+    "concept_appliance.energy": "Energy",
+    "choose_ha_device": "Choose the Home Assistant device containing the measurements.",
+    "review_suggestions": "Review the measurements fluks found. Change or remove any suggestion.",
+    "home_assistant_device": "Home Assistant device",
+    "choose_ha_device_button": "Choose Home Assistant device",
+    "search": "Search",
+    "search_devices": "Search devices…",
+    "search_entities": "Search entities…",
+    "no_results": "No matching results.",
+    "clear_selection": "Clear selection",
+    "measurements": "Measurements",
+    "energy": "Energy",
+    "installation": "Installation",
+    "device_information": "Device information",
+    "name": "Name",
+    "vendor": "Vendor",
+    "model": "Model",
+    "direction": "Direction",
+    "panel_angle": "Panel angle",
+    "optional": "Optional",
+    "edit_device": "Edit mappings and properties",
+    "edit_mappings": "Edit mappings and properties",
+    "measurements_energy": "Measurements & energy",
+    "measurements_count": "measurements",
+    "energy_count": "energy mappings",
+    "available": "available",
+    "controls": "Controls",
+    "not_configured": "Not configured",
+    "prototype_only": "Prototype only · not persisted",
+    "device_actions": "Device actions",
+    "delete_device": "Delete device",
+    "delete_site": "Delete site",
+    "delete_device_title": "Delete {deviceName}?",
+    "delete_device_body": "This will permanently delete this device from fluks. This cannot be undone.",
+    "delete_device_auth_title": "Confirm identity",
+    "delete_device_auth_body": "For security, sign in with the fluks account that owns this device's Site before it can be deleted.",
+    "delete_site_title": "Delete {siteName}?",
+    "delete_site_body": "This will permanently delete the site from fluks, including all devices connected to it. This cannot be undone.",
+    "delete_site_auth_title": "Confirm identity",
+    "delete_site_auth_body": "For security, sign in with the fluks account that owns this site before it can be deleted.",
+    "email": "Email",
+    "password": "Password",
+    "delete": "Delete",
+    "saved": "Changes saved.",
+    "save_device": "Save device",
+    "control_saved": "Prototype action order saved for this browser session only.",
+    "action_intro": "Actions run from top to bottom. Add, edit, remove, or reorder them, then explicitly save.",
+    "no_actions": "No actions configured.",
+    "add_action": "Add action",
+    "save_control": "Save control",
+    "up": "Up",
+    "down": "Down",
+    "edit": "Edit",
+    "remove": "Remove",
+    "edit_action": "Edit action",
+    "action_type": "Action type",
+    "selectOption": "Select option",
+    "setNumber": "Set number",
+    "water_heater_temperature": "Water heater temperature",
+    "save_action": "Save action",
+    "choose_entity": "Choose an entity",
+    "ha_action": "Home Assistant action",
+    "parameter": "Parameter",
+    "entity": "Entity",
+    "value_source": "Value source",
+    "control_value": "Control value",
+    "fixed_value": "Fixed value",
+    "fixed": "Fixed",
+    "choose_entity_error": "Choose a Home Assistant entity.",
+    "fixed_value_error": "Enter a fixed value.",
+    "error_auth_required": "The fluks connection must be restored before continuing.",
+    "error_forbidden_or_missing": "The requested item is unavailable or this account may not have access.",
+    "error_backend_unavailable": "fluks could not be reached. Try again.",
+    "error_validation_error": "Check the information and try again.",
+    "error_conflict": "This Home Assistant device is already configured as this fluks device type.",
+    "error_not_found": "The requested configuration is no longer available.",
+    "error_invalid_mapping": "One or more measurement selections are invalid.",
+    "error_invalid_auth": "The email address or password is incorrect.",
+    "error_unknown": "The operation could not be completed. Try again."
   }
 }
