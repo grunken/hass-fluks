@@ -12,6 +12,7 @@ from custom_components.fluks.api import (
     FluksConflict,
     FluksInvalidCredentials,
     FluksInvalidVerificationCode,
+    FluksNotFound,
     FluksUnauthorized,
     FluksValidationError,
 )
@@ -269,6 +270,70 @@ async def test_device_management_uses_filtered_incremental_machine_contracts():
 
 
 @pytest.mark.asyncio
+async def test_device_lifecycle_delete_uses_only_human_auth():
+    """The administrative DELETE never uses the Integration credential."""
+    session = FakeSession(FakeResponse(204, None))
+    client = FluksApiClient(
+        session,
+        human_access_token="temporary-human-jwt",
+        integration_key="integration-key",
+    )
+
+    await client.delete_device("site-id", "device-internal")
+
+    assert len(session.requests) == 1
+    method, url, kwargs = session.requests[0]
+    assert method == "DELETE"
+    assert url == f"{API_BASE_URL}/sites/site-id/devices/device-internal"
+    assert kwargs["headers"] == {
+        "Authorization": "Bearer temporary-human-jwt"
+    }
+    assert kwargs["json"] is None
+    assert kwargs["params"] is None
+
+
+@pytest.mark.asyncio
+async def test_site_lifecycle_delete_uses_only_human_auth():
+    """Site deletion uses the documented administrative endpoint and JWT."""
+    session = FakeSession(FakeResponse(204, None))
+    client = FluksApiClient(
+        session,
+        human_access_token="temporary-human-jwt",
+        integration_key="integration-key",
+    )
+
+    await client.delete_site("site-id")
+
+    assert len(session.requests) == 1
+    method, url, kwargs = session.requests[0]
+    assert method == "DELETE"
+    assert url == f"{API_BASE_URL}/sites/site-id"
+    assert kwargs["headers"] == {
+        "Authorization": "Bearer temporary-human-jwt"
+    }
+    assert kwargs["json"] is None
+    assert kwargs["params"] is None
+
+
+@pytest.mark.asyncio
+async def test_device_lifecycle_delete_404_is_not_reported_as_success():
+    """A foreign-or-missing Device response crosses the API boundary."""
+    session = FakeSession(
+        FakeResponse(404, {"error": {"code": "NOT_FOUND"}})
+    )
+    client = FluksApiClient(
+        session,
+        human_access_token="valid-foreign-user-jwt",
+        integration_key="integration-key",
+    )
+
+    with pytest.raises(FluksNotFound):
+        await client.delete_device("site-id", "device-internal")
+
+    assert len(session.requests) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "code", "exception"),
     [
@@ -277,6 +342,7 @@ async def test_device_management_uses_filtered_incremental_machine_contracts():
         (400, "VALIDATION_ERROR", FluksValidationError),
         (401, "UNAUTHORIZED", FluksUnauthorized),
         (409, "DEVICE_ID_CONFLICT", FluksConflict),
+        (404, "NOT_FOUND", FluksNotFound),
     ],
 )
 async def test_documented_errors(status, code, exception):

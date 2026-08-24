@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import device_registry as dr, selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -21,6 +22,8 @@ from .api import (
     FluksApiError,
     FluksCannotConnect,
     FluksConflict,
+    FluksInvalidCredentials,
+    FluksNotFound,
     FluksUnauthorized,
     FluksValidationError,
 )
@@ -86,6 +89,8 @@ class FluksOptionsFlow(config_entries.OptionsFlow):
         self._editing_device: dict[str, Any] | None = None
         self._original_mappings: dict[str, dict[str, Any]] = {}
         self._original_properties: dict[str, Any] = {}
+        self._selected_device_label: str | None = None
+        self._selected_site_label: str | None = None
 
     @property
     def api(self) -> FluksApiClient:
@@ -106,7 +111,110 @@ class FluksOptionsFlow(config_entries.OptionsFlow):
         _ = self.api
 
         return self.async_show_menu(
-            step_id="init", menu_options=["devices", "add_device"]
+            step_id="init", menu_options=["devices", "add_device", "site"]
+        )
+
+    async def async_step_site(self, user_input: dict[str, Any] | None = None):
+        """Offer Site administration separately from Device management."""
+        self._selected_site_label = await self._async_site_label()
+        return self.async_show_menu(
+            step_id="site",
+            menu_options=["delete_site"],
+            description_placeholders={"site": self._selected_site_label},
+        )
+
+    async def async_step_delete_site(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Require explicit confirmation before Site authentication."""
+        if self._selected_site_label is None:
+            self._selected_site_label = await self._async_site_label()
+        return self.async_show_menu(
+            step_id="delete_site",
+            menu_options=["confirm_delete_site", "cancel_delete_site"],
+            description_placeholders={"site": self._selected_site_label},
+        )
+
+    async def async_step_cancel_delete_site(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Return to Site administration without any side effects."""
+        return await self.async_step_site()
+
+    async def async_step_confirm_delete_site(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Move from Site confirmation to temporary human login."""
+        return await self.async_step_site_delete_login()
+
+    async def async_step_site_delete_login(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Authenticate once, delete the Site, then remove this ConfigEntry."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                token, _expires_in = await self.api.login(
+                    user_input[CONF_EMAIL], user_input[CONF_PASSWORD]
+                )
+                self.api.set_human_access_token(token)
+                try:
+                    await self.api.delete_site(
+                        self.config_entry.data[CONF_SITE_ID]
+                    )
+                finally:
+                    self.api.set_human_access_token(None)
+                entry_id = self.config_entry.entry_id
+                await self.hass.config_entries.async_remove(entry_id)
+                return self.async_abort(reason="site_deleted")
+            except FluksInvalidCredentials:
+                errors["base"] = "invalid_auth"
+            except FluksValidationError:
+                errors["base"] = "invalid_input"
+            except FluksCannotConnect:
+                errors["base"] = "cannot_connect"
+            except FluksNotFound:
+                # Site 404 intentionally conflates foreign and absent Sites.
+                errors["base"] = "site_delete_access_denied"
+            except FluksUnauthorized:
+                errors["base"] = "unauthorized"
+            except FluksApiError:
+                errors["base"] = "site_delete_failed"
+
+        if self._selected_site_label is None:
+            self._selected_site_label = await self._async_site_label()
+        return self.async_show_form(
+            step_id="site_delete_login",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_EMAIL): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.EMAIL
+                        )
+                    ),
+                    vol.Required(CONF_PASSWORD): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={"site": self._selected_site_label},
+        )
+
+    async def _async_site_label(self) -> str:
+        """Return the configured Site name without exposing its identifier."""
+        if self.config_entry.title.strip():
+            return self.config_entry.title.strip()
+        translations = await async_get_translations(
+            self.hass,
+            self.hass.config.language,
+            "options",
+            integrations={DOMAIN},
+        )
+        return translations.get(
+            f"component.{DOMAIN}.options.step.site.site_fallback", "Site"
         )
 
     async def _async_load_catalog(self, retry_step: str):
@@ -296,7 +404,125 @@ class FluksOptionsFlow(config_entries.OptionsFlow):
             f"async_step_review_{device_type}",
             partial(self._async_step_review, device_type),
         )
-        return await self._async_step_review(device_type)
+        translations = await async_get_translations(
+            self.hass,
+            self.hass.config.language,
+            "options",
+            integrations={DOMAIN},
+        )
+        self._selected_device_label = self._device_display_name(
+            device, translations
+        )
+        return await self.async_step_device_actions()
+
+    async def async_step_device_actions(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Offer native actions only after one Device has been selected."""
+        if self._editing_device is None or self._selected_device_label is None:
+            return self.async_abort(reason="invalid_flow_state")
+        return self.async_show_menu(
+            step_id="device_actions",
+            menu_options=["edit_device", "delete_device"],
+            description_placeholders={"device": self._selected_device_label},
+        )
+
+    async def async_step_edit_device(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Open the existing Milestone 3 Device editor unchanged."""
+        if self._device_type is None:
+            return self.async_abort(reason="invalid_flow_state")
+        return await self._async_step_review(self._device_type)
+
+    async def async_step_delete_device(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Require a separate native confirmation before human login."""
+        if self._editing_device is None or self._selected_device_label is None:
+            return self.async_abort(reason="invalid_flow_state")
+        return self.async_show_menu(
+            step_id="delete_device",
+            menu_options=["confirm_delete", "cancel_delete"],
+            description_placeholders={"device": self._selected_device_label},
+        )
+
+    async def async_step_cancel_delete(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Return safely without changing backend or local state."""
+        return await self.async_step_device_actions()
+
+    async def async_step_confirm_delete(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Move from explicit confirmation to temporary human login."""
+        return await self.async_step_delete_login()
+
+    async def async_step_delete_login(
+        self, user_input: dict[str, Any] | None = None
+    ):
+        """Authenticate once as a human and lifecycle-delete the Device."""
+        if self._backend_device_internal_id is None:
+            return self.async_abort(reason="invalid_flow_state")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                token, _expires_in = await self.api.login(
+                    user_input[CONF_EMAIL], user_input[CONF_PASSWORD]
+                )
+                self.api.set_human_access_token(token)
+                await self.api.delete_device(
+                    self.config_entry.data[CONF_SITE_ID],
+                    self._backend_device_internal_id,
+                )
+                return self._finish_deleted_device()
+            except FluksInvalidCredentials:
+                errors["base"] = "invalid_auth"
+            except FluksValidationError:
+                errors["base"] = "invalid_input"
+            except FluksCannotConnect:
+                errors["base"] = "cannot_connect"
+            except FluksNotFound:
+                # The backend deliberately uses the same 404 for foreign and
+                # nonexistent resources, so absence cannot be proven here.
+                errors["base"] = "delete_access_denied"
+            except FluksUnauthorized:
+                errors["base"] = "unauthorized"
+            except FluksApiError:
+                errors["base"] = "delete_failed"
+
+        return self.async_show_form(
+            step_id="delete_login",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_EMAIL): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.EMAIL
+                        )
+                    ),
+                    vol.Required(CONF_PASSWORD): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "device": self._selected_device_label or ""
+            },
+        )
+
+    def _finish_deleted_device(self):
+        """Forget only local discovery context and finish cleanly."""
+        options = dict(self.config_entry.options)
+        contexts = dict(options.get(CONF_DEVICE_CONTEXTS, {}))
+        if self._backend_device_internal_id:
+            contexts.pop(self._backend_device_internal_id, None)
+        options[CONF_DEVICE_CONTEXTS] = contexts
+        options.pop(CONF_DEVICE, None)
+        return self.async_create_entry(title="", data=options)
 
     def _ha_context_for_device(self, internal_id: str) -> str | None:
         """Read only the local HA discovery context, including old M2 options."""

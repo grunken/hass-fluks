@@ -88,9 +88,27 @@
     "step": {
       "init": {
         "title": "Konfigurer fluks",
-        "description": "Se konfigurerede energienheder, eller forbind en ny.",
-        "menu_options": {"devices": "Enheder", "add_device": "Tilføj enhed"},
-        "menu_option_descriptions": {"devices": "Se og rediger konfigurerede enheder.", "add_device": "Forbind endnu en energienhed."}
+        "description": "Administrer sitet og de tilknyttede energienheder.",
+        "menu_options": {"devices": "Enheder", "add_device": "Tilføj enhed", "site": "Site"},
+        "menu_option_descriptions": {"devices": "Se og rediger konfigurerede enheder.", "add_device": "Forbind endnu en energienhed.", "site": "Administrer dette fluks-site."}
+      },
+      "site": {
+        "title": "Site",
+        "description": "{site}\n\nAdministrer dette fluks-site.",
+        "site_fallback": "Site",
+        "menu_options": {"delete_site": "Slet site"},
+        "menu_option_descriptions": {"delete_site": "Fjern dette site og dets enheder permanent fra fluks."}
+      },
+      "delete_site": {
+        "title": "Slet site?",
+        "description": "Slet {site}?\n\nEr du sikker på, at du vil slette dette site fra fluks? Alle enheder tilknyttet sitet fjernes fra fluks. Dette kan ikke fortrydes.",
+        "menu_options": {"confirm_delete_site": "Slet site", "cancel_delete_site": "Annuller"},
+        "menu_option_descriptions": {"confirm_delete_site": "Slet dette site permanent.", "cancel_delete_site": "Behold sitet uændret."}
+      },
+      "site_delete_login": {
+        "title": "Bekræft din identitet",
+        "description": "Log ind for at slette {site}. Dette fjerner sitet permanent fra fluks.",
+        "data": {"email": "E-mailadresse", "password": "Adgangskode"}
       },
       "add_device": {
         "title": "Tilføj enhed",
@@ -101,6 +119,23 @@
         "description": "Vælg en konfigureret energienhed, du vil gennemse eller redigere.",
         "data": {"selected_device": "Enhed"},
         "type_fallback": "Energienhed"
+      },
+      "device_actions": {
+        "title": "Enhedshandlinger",
+        "description": "{device}\n\nGennemgå enheden, eller fjern den fra fluks.",
+        "menu_options": {"edit_device": "Rediger enhed", "delete_device": "Slet enhed"},
+        "menu_option_descriptions": {"edit_device": "Gennemgå målinger og enhedsoplysninger.", "delete_device": "Fjern denne enhed permanent fra fluks."}
+      },
+      "delete_device": {
+        "title": "Slet enhed?",
+        "description": "Slet {device}?\n\nEr du sikker på, at du vil slette denne enhed fra fluks? Dette kan ikke fortrydes.",
+        "menu_options": {"confirm_delete": "Slet enhed", "cancel_delete": "Annuller"},
+        "menu_option_descriptions": {"confirm_delete": "Slet denne enhed permanent.", "cancel_delete": "Behold enheden uændret."}
+      },
+      "delete_login": {
+        "title": "Bekræft din identitet",
+        "description": "Log ind for at slette {device}. Din forbindelse til fluks forbliver uændret.",
+        "data": {"email": "E-mailadresse", "password": "Adgangskode"}
       },
       "device_type": {
         "title": "Tilføj enhed",
@@ -235,13 +270,19 @@
       "unauthorized": "Dit login er udløbet. Start opsætningen igen for at logge ind.",
       "identity_conflict": "Denne enhedsidentitet findes allerede og kunne ikke genfindes sikkert.",
       "save_failed": "fluks kunne ikke færdiggøre tilføjelsen af enheden. Prøv igen på en sikker måde.",
-      "load_failed": "fluks kunne ikke hente enhederne. Prøv igen."
+      "load_failed": "fluks kunne ikke hente enhederne. Prøv igen.",
+      "invalid_auth": "E-mailadressen eller adgangskoden er forkert.",
+      "delete_access_denied": "Enheden kunne ikke slettes. Denne konto har muligvis ikke adgang til sitet.",
+      "delete_failed": "fluks kunne ikke slette enheden. Prøv igen.",
+      "site_delete_access_denied": "Sitet kunne ikke slettes. Denne konto har muligvis ikke adgang til sitet.",
+      "site_delete_failed": "fluks kunne ikke slette sitet. Prøv igen."
     },
     "abort": {
       "no_devices": "Der er endnu ikke tilføjet energienheder. Vælg Tilføj enhed for at forbinde en.",
       "unsupported_device_type": "Denne enhedstype findes ikke i det aktuelle fluks-katalog.",
       "invalid_flow_state": "Start Tilføj enhed igen.",
-      "reauth_required": "Forbindelsen til fluks skal genoprettes. Gennemfør godkendelsen, og prøv igen."
+      "reauth_required": "Forbindelsen til fluks skal genoprettes. Gennemfør godkendelsen, og prøv igen.",
+      "site_deleted": "Sitet blev slettet fra fluks og fjernet fra Home Assistant."
     }
   }
 }

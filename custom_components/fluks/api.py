@@ -46,6 +46,10 @@ class FluksConflict(FluksApiError):
     """A stable backend identity or mapping already exists."""
 
 
+class FluksNotFound(FluksApiError):
+    """The requested backend resource is already unavailable."""
+
+
 class AuthContext(StrEnum):
     """Explicit credential context for one backend operation."""
 
@@ -70,8 +74,8 @@ class FluksApiClient:
         self._integration_key = integration_key
         self._base_url = base_url.rstrip("/")
 
-    def set_human_access_token(self, access_token: str) -> None:
-        """Set the human JWT used by authenticated operations."""
+    def set_human_access_token(self, access_token: str | None) -> None:
+        """Set or discard the temporary human JWT."""
         self._human_access_token = access_token
 
     async def get_device_type_catalog(self) -> list[dict[str, Any]]:
@@ -166,6 +170,16 @@ class FluksApiClient:
             auth=AuthContext.HUMAN,
         )
         return self._response_object(response)
+
+    async def delete_site(self, site_id: str) -> None:
+        """Lifecycle-delete one Site using explicit human authentication."""
+        await self._request(
+            "DELETE",
+            f"/sites/{site_id}",
+            expected_status=204,
+            auth=AuthContext.HUMAN,
+            response_body_required=False,
+        )
 
     async def list_integrations(self, site_id: str) -> list[dict[str, Any]]:
         """List Integrations registered in an owned Site."""
@@ -269,6 +283,18 @@ class FluksApiClient:
         )
         return self._response_object(response)
 
+    async def delete_device(
+        self, site_id: str, device_internal_id: str
+    ) -> None:
+        """Lifecycle-delete one Device using explicit human authentication."""
+        await self._request(
+            "DELETE",
+            f"/sites/{site_id}/devices/{device_internal_id}",
+            expected_status=204,
+            auth=AuthContext.HUMAN,
+            response_body_required=False,
+        )
+
     async def list_mappings(
         self, site_id: str, *, device_id: str | None = None
     ) -> list[dict[str, Any]]:
@@ -369,6 +395,8 @@ class FluksApiClient:
             raise FluksUnauthorized(code)
         if response.status == 409:
             raise FluksConflict(code)
+        if response.status == 404:
+            raise FluksNotFound(code)
         raise FluksApiError(code)
 
     def _authorization_headers(self, auth: AuthContext) -> dict[str, str]:

@@ -1,9 +1,12 @@
 """Tests for the native Milestone 2 Add Device Options Flow."""
 
+import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+import re
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from homeassistant import config_entries
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.data_entry_flow import _BaseFlowManagerView
@@ -13,6 +16,8 @@ from custom_components.fluks.api import (
     FluksApiClient,
     FluksCannotConnect,
     FluksConflict,
+    FluksInvalidCredentials,
+    FluksNotFound,
     FluksUnauthorized,
 )
 from custom_components.fluks.const import (
@@ -104,6 +109,9 @@ def make_api(catalog=BATTERY_CATALOG):
     api.list_devices = AsyncMock(return_value=[])
     api.get_device = AsyncMock()
     api.update_device_properties = AsyncMock()
+    api.delete_device = AsyncMock()
+    api.delete_site = AsyncMock()
+    api.login = AsyncMock(return_value=("temporary-human-jwt", 3600))
     api.create_device = AsyncMock(
         return_value={
             "id": DEVICE_INTERNAL_ID,
@@ -208,11 +216,52 @@ async def start_options_root(hass, entry, api):
         return await hass.config_entries.options.async_init(entry.entry_id)
 
 
+async def reach_site_delete_login(hass, entry, api):
+    """Reach Site deletion login through both native confirmation menus."""
+    result = await start_options_root(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "site"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_site"}
+    )
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "confirm_delete_site"}
+    )
+
+
 def serialize_form(hass, result):
     """Serialize through the actual HA frontend flow response path."""
     return _BaseFlowManagerView(hass.config_entries.options)._prepare_result_json(
         result
     )
+
+
+def assert_menu_translations_render(hass, result, device_label):
+    """Exercise HA's serialized MENU placeholder contract for both locales."""
+    serialized = serialize_form(hass, result)
+    assert serialized["description_placeholders"] == {"device": device_label}
+
+    rendered: dict[str, tuple[str, str]] = {}
+    for language in ("en", "da"):
+        translations = json.loads(
+            (
+                Path("custom_components/fluks/translations")
+                / f"{language}.json"
+            ).read_text()
+        )
+        step = translations["options"]["step"][serialized["step_id"]]
+        # Native MENU results only serialize description_placeholders. A
+        # translated MENU title therefore cannot safely require a value.
+        assert not re.findall(r"\{([^{}]+)\}", step["title"])
+        required = set(re.findall(r"\{([^{}]+)\}", step["description"]))
+        assert required <= serialized["description_placeholders"].keys()
+        description = step["description"].format(
+            **serialized["description_placeholders"]
+        )
+        assert "{device}" not in step["title"] + description
+        rendered[language] = (step["title"], description)
+    return rendered
 
 
 async def reach_review(hass, api, entry=None):
@@ -744,8 +793,167 @@ async def test_configure_menu_supports_devices_and_additional_devices(hass):
     result = await start_options_root(hass, entry, make_api())
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["devices", "add_device"]
+    assert result["menu_options"] == ["devices", "add_device", "site"]
     assert "delete" not in result["menu_options"]
+
+
+async def test_site_delete_is_separate_confirmed_and_cancelable(hass):
+    """Site administration requires confirmation and Cancel is mutation-free."""
+    entry = make_entry(hass)
+    original_data = dict(entry.data)
+    original_options = dict(entry.options)
+    api = make_api()
+
+    result = await start_options_root(hass, entry, api)
+    assert "delete_site" not in result["menu_options"]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "site"}
+    )
+    assert result["step_id"] == "site"
+    assert result["menu_options"] == ["delete_site"]
+    serialized = serialize_form(hass, result)
+    assert serialized["description_placeholders"] == {"site": "Home"}
+    api.login.assert_not_awaited()
+    api.delete_site.assert_not_awaited()
+    api.delete_device.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_site"}
+    )
+    assert result["step_id"] == "delete_site"
+    assert result["menu_options"] == [
+        "confirm_delete_site", "cancel_delete_site"
+    ]
+    serialized = serialize_form(hass, result)
+    assert serialized["description_placeholders"] == {"site": "Home"}
+    api.login.assert_not_awaited()
+    api.delete_site.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "cancel_delete_site"}
+    )
+    assert result["step_id"] == "site"
+    assert hass.config_entries.async_get_entry(entry.entry_id) is entry
+    assert entry.data == original_data
+    assert entry.options == original_options
+    assert entry.data[CONF_INTEGRATION_KEY] == INTEGRATION_KEY
+    api.login.assert_not_awaited()
+    api.delete_site.assert_not_awaited()
+
+
+async def test_site_delete_wrong_valid_user_is_recoverable(hass):
+    """A foreign Site 404 never removes the ConfigEntry or reports success."""
+    entry = make_entry(hass)
+    original_data = dict(entry.data)
+    original_options = {
+        CONF_DEVICE_CONTEXTS: {
+            DEVICE_INTERNAL_ID: {
+                CONF_HA_DEVICE_ID: "ha-device",
+                "type": "battery",
+            }
+        }
+    }
+    hass.config_entries.async_update_entry(entry, options=original_options)
+    api = make_api()
+    api.login.return_value = ("valid-user-b-human-jwt", 3600)
+    api.delete_site.side_effect = FluksNotFound("NOT_FOUND")
+    result = await reach_site_delete_login(hass, entry, api)
+    assert result["step_id"] == "site_delete_login"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: "user-b@example.com", CONF_PASSWORD: "valid-password"},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "site_delete_login"
+    assert result["errors"] == {"base": "site_delete_access_denied"}
+    api.login.assert_awaited_once_with(
+        "user-b@example.com", "valid-password"
+    )
+    api.delete_site.assert_awaited_once_with(SITE_ID)
+    assert api.set_human_access_token.call_args_list[-2:] == [
+        call("valid-user-b-human-jwt"),
+        call(None),
+    ]
+    api.delete_device.assert_not_awaited()
+    api.delete_mapping.assert_not_awaited()
+    assert hass.config_entries.async_get_entry(entry.entry_id) is entry
+    assert entry.data == original_data
+    assert entry.options == original_options
+    assert entry.data[CONF_INTEGRATION_KEY] == INTEGRATION_KEY
+
+
+async def test_site_delete_success_removes_current_config_entry(hass):
+    """Only a successful backend DELETE removes the active ConfigEntry."""
+    entry = make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                DEVICE_INTERNAL_ID: {
+                    CONF_HA_DEVICE_ID: "ha-device",
+                    "type": "battery",
+                }
+            }
+        },
+    )
+    original_key = entry.data[CONF_INTEGRATION_KEY]
+    api = make_api()
+    result = await reach_site_delete_login(hass, entry, api)
+    serialized = serialize_form(hass, result)
+    assert [item["name"] for item in serialized["data_schema"]] == [
+        CONF_EMAIL, CONF_PASSWORD
+    ]
+    assert serialized["description_placeholders"] == {"site": "Home"}
+    assert hass.config_entries.async_get_entry(entry.entry_id) is entry
+    api.delete_site.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: "owner@example.com", CONF_PASSWORD: "password"},
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "site_deleted"
+    api.login.assert_awaited_once_with("owner@example.com", "password")
+    api.delete_site.assert_awaited_once_with(SITE_ID)
+    assert api.set_human_access_token.call_args_list[-2:] == [
+        call("temporary-human-jwt"),
+        call(None),
+    ]
+    api.delete_device.assert_not_awaited()
+    api.delete_mapping.assert_not_awaited()
+    assert hass.config_entries.async_get_entry(entry.entry_id) is None
+    assert entry.data[CONF_INTEGRATION_KEY] == original_key
+
+
+async def test_site_delete_login_and_network_failure_are_recoverable(hass):
+    """Authentication and DELETE failures never remove the ConfigEntry."""
+    entry = make_entry(hass)
+    original_data = dict(entry.data)
+    api = make_api()
+    api.login.side_effect = [
+        FluksInvalidCredentials("INVALID_CREDENTIALS"),
+        ("temporary-human-jwt", 3600),
+    ]
+    api.delete_site.side_effect = FluksCannotConnect()
+    result = await reach_site_delete_login(hass, entry, api)
+    credentials = {CONF_EMAIL: "owner@example.com", CONF_PASSWORD: "wrong"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], credentials
+    )
+    assert result["errors"] == {"base": "invalid_auth"}
+    api.delete_site.assert_not_awaited()
+
+    credentials[CONF_PASSWORD] = "correct"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], credentials
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert api.delete_site.await_count == 1
+    assert hass.config_entries.async_get_entry(entry.entry_id) is entry
+    assert entry.data == original_data
+    assert entry.data[CONF_INTEGRATION_KEY] == INTEGRATION_KEY
 
 
 async def test_add_device_can_repeat_for_same_entry_and_machine_key(hass):
@@ -933,14 +1141,16 @@ async def test_deterministic_backend_match_is_rejected_not_silently_reused(hass)
     api.create_mapping.assert_not_awaited()
 
 
-async def open_battery_editor(hass, api, entry, mappings):
+async def open_battery_editor(
+    hass, api, entry, mappings, *, edit=True, display_name="Home battery"
+):
     """Open a configured Battery through the native management UI."""
     backend_device = {
         "id": DEVICE_INTERNAL_ID,
         "deviceId": EXTERNAL_DEVICE_ID,
         "type": "battery",
         "properties": {
-            "displayName": "Home battery",
+            "displayName": display_name,
             "vendor": "GoodWe",
             "model": "GW10K-ET",
         },
@@ -957,14 +1167,221 @@ async def open_battery_editor(hass, api, entry, mappings):
     )
     assert result["step_id"] == "devices"
     serialized = serialize_form(hass, result)
-    assert "Battery · Home battery" in str(serialized["data_schema"])
+    assert f"Battery · {display_name}" in str(serialized["data_schema"])
     assert "site-internal" not in str(serialized["data_schema"])
     assert EXTERNAL_DEVICE_ID not in str(serialized)
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"selected_device": DEVICE_INTERNAL_ID}
     )
+    assert result["step_id"] == "device_actions"
+    if not edit:
+        return result
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "edit_device"}
+    )
     assert result["type"] is FlowResultType.FORM, result
     return result
+
+
+async def test_delete_is_device_scoped_confirmed_and_cancelable(hass):
+    """Delete appears only after selection and Cancel performs no mutation."""
+    entry = make_entry(hass)
+    api = make_api()
+    api.list_devices.return_value = [
+        {
+            "id": DEVICE_INTERNAL_ID,
+            "deviceId": EXTERNAL_DEVICE_ID,
+            "type": "battery",
+            "properties": {"displayName": "Inverter Goodwe #1"},
+        }
+    ]
+    result = await start_options_root(hass, entry, api)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "devices"}
+    )
+    assert result["step_id"] == "devices"
+    assert "delete_device" not in str(result)
+
+    result = await open_battery_editor(
+        hass,
+        api,
+        entry,
+        [],
+        edit=False,
+        display_name="Inverter Goodwe #1",
+    )
+    assert result["menu_options"] == ["edit_device", "delete_device"]
+    rendered = assert_menu_translations_render(
+        hass, result, "Battery · Inverter Goodwe #1"
+    )
+    assert "Battery · Inverter Goodwe #1" in rendered["en"][1]
+    assert "Battery · Inverter Goodwe #1" in rendered["da"][1]
+    api.delete_device.assert_not_awaited()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_device"}
+    )
+    assert result["step_id"] == "delete_device"
+    assert result["menu_options"] == ["confirm_delete", "cancel_delete"]
+    rendered = assert_menu_translations_render(
+        hass, result, "Battery · Inverter Goodwe #1"
+    )
+    assert "Delete Battery · Inverter Goodwe #1?" in rendered["en"][1]
+    assert "Slet Battery · Inverter Goodwe #1?" in rendered["da"][1]
+    api.delete_device.assert_not_awaited()
+
+    original_data = dict(entry.data)
+    original_options = dict(entry.options)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "cancel_delete"}
+    )
+    assert result["step_id"] == "device_actions"
+    assert entry.data == original_data
+    assert entry.options == original_options
+    api.login.assert_not_awaited()
+    api.delete_device.assert_not_awaited()
+    api.delete_mapping.assert_not_awaited()
+
+
+async def test_confirmed_delete_uses_temporary_human_login_and_finishes(hass):
+    """Explicit confirmation logs in once, deletes once, and preserves the key."""
+    entry = make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                DEVICE_INTERNAL_ID: {
+                    CONF_HA_DEVICE_ID: "ha-device",
+                    "type": "battery",
+                }
+            }
+        },
+    )
+    original_data = dict(entry.data)
+    api = make_api()
+    result = await open_battery_editor(hass, api, entry, [], edit=False)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_device"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "confirm_delete"}
+    )
+    assert result["step_id"] == "delete_login"
+    serialized = serialize_form(hass, result)
+    assert [item["name"] for item in serialized["data_schema"]] == [
+        CONF_EMAIL, CONF_PASSWORD
+    ]
+    assert api.delete_device.await_count == 0
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: "owner@example.com", CONF_PASSWORD: "password"},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    api.login.assert_awaited_once_with("owner@example.com", "password")
+    api.delete_device.assert_awaited_once_with(SITE_ID, DEVICE_INTERNAL_ID)
+    api.delete_mapping.assert_not_awaited()
+    assert result["data"][CONF_DEVICE_CONTEXTS] == {}
+    assert entry.data == original_data
+    assert entry.data[CONF_INTEGRATION_KEY] == INTEGRATION_KEY
+    assert "temporary-human-jwt" not in str(result)
+    assert "access_token" not in result["data"]
+
+    refresh_api = make_api()
+    refresh_api.list_devices.return_value = [
+        {
+            "id": "solar-internal",
+            "deviceId": "solar-external",
+            "type": "solar",
+            "properties": {"displayName": "Home solar"},
+        }
+    ]
+    refreshed = await start_options_root(hass, entry, refresh_api)
+    refreshed = await hass.config_entries.options.async_configure(
+        refreshed["flow_id"], {"next_step_id": "devices"}
+    )
+    rendered = str(serialize_form(hass, refreshed))
+    assert "Solar · Home solar" in rendered
+    assert "Battery · Home battery" not in rendered
+    assert "restore" not in rendered.lower()
+    assert "undo" not in rendered.lower()
+
+
+async def test_delete_login_and_backend_failures_are_recoverable(hass):
+    """Invalid credentials and one failed DELETE stay retryable without loops."""
+    entry = make_entry(hass)
+    api = make_api()
+    api.login.side_effect = [
+        FluksInvalidCredentials("INVALID_CREDENTIALS"),
+        ("temporary-human-jwt", 3600),
+        ("temporary-human-jwt", 3600),
+    ]
+    api.delete_device.side_effect = [FluksCannotConnect(), None]
+    result = await open_battery_editor(hass, api, entry, [], edit=False)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_device"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "confirm_delete"}
+    )
+    credentials = {CONF_EMAIL: "owner@example.com", CONF_PASSWORD: "wrong"}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], credentials
+    )
+    assert result["errors"] == {"base": "invalid_auth"}
+    api.delete_device.assert_not_awaited()
+
+    credentials[CONF_PASSWORD] = "correct"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], credentials
+    )
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert api.delete_device.await_count == 1
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], credentials
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert api.delete_device.await_count == 2
+
+
+async def test_valid_wrong_user_404_is_recoverable_and_preserves_state(hass):
+    """A valid foreign user cannot turn an access-hidden 404 into success."""
+    entry = make_entry(hass)
+    original_data = dict(entry.data)
+    original_options = {
+        CONF_DEVICE_CONTEXTS: {
+            DEVICE_INTERNAL_ID: {
+                CONF_HA_DEVICE_ID: "ha-device",
+                "type": "battery",
+            }
+        }
+    }
+    hass.config_entries.async_update_entry(entry, options=original_options)
+    api = make_api()
+    api.login.return_value = ("valid-user-b-human-jwt", 3600)
+    api.delete_device.side_effect = FluksNotFound("NOT_FOUND")
+    result = await open_battery_editor(hass, api, entry, [], edit=False)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_device"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "confirm_delete"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_EMAIL: "user-b@example.com", CONF_PASSWORD: "valid-password"},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "delete_login"
+    assert result["errors"] == {"base": "delete_access_denied"}
+    api.login.assert_awaited_once_with(
+        "user-b@example.com", "valid-password"
+    )
+    api.delete_device.assert_awaited_once()
+    assert entry.data == original_data
+    assert entry.options == original_options
+    assert entry.data[CONF_INTEGRATION_KEY] == INTEGRATION_KEY
+    api.delete_mapping.assert_not_awaited()
 
 
 async def test_device_labels_always_include_translated_type_and_resolve_id(hass):
@@ -1051,6 +1468,27 @@ async def test_device_labels_always_include_translated_type_and_resolve_id(hass)
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"selected_device": solar_internal_id}
+    )
+    assert result["step_id"] == "device_actions"
+    assert result["description_placeholders"] == {
+        "device": "Solar · Inverter Goodwe #1"
+    }
+    rendered = assert_menu_translations_render(
+        hass, result, "Solar · Inverter Goodwe #1"
+    )
+    assert "Solar · Inverter Goodwe #1" in rendered["en"][1]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "delete_device"}
+    )
+    rendered = assert_menu_translations_render(
+        hass, result, "Solar · Inverter Goodwe #1"
+    )
+    assert "Delete Solar · Inverter Goodwe #1?" in rendered["en"][1]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "cancel_delete"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "edit_device"}
     )
     assert result["step_id"] == "review_solar"
     api.get_device.assert_awaited_once_with(SITE_ID, solar_internal_id)
@@ -1252,6 +1690,9 @@ async def test_solar_edit_loads_changes_and_clears_optional_properties(hass):
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"selected_device": DEVICE_INTERNAL_ID}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "edit_device"}
     )
     serialized = serialize_form(hass, result)
     installation = next(
