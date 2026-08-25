@@ -8,6 +8,7 @@ from custom_components.fluks.control_editor_panel import (
     PANEL_ICONS_URL,
     PANEL_STATIC_URL,
     PANEL_URL_PATH,
+    _frontend_revision,
     async_register_control_editor_panel,
     async_unregister_control_editor_panel,
 )
@@ -18,12 +19,17 @@ async def test_panel_registration_is_hidden_admin_only_and_domain_scoped(hass):
     http = MagicMock()
     http.async_register_static_paths = AsyncMock()
     hass.http = http
-    with patch(
-        "custom_components.fluks.control_editor_panel.panel_custom.async_register_panel",
-        new=AsyncMock(),
-    ) as register:
+    revision_job = AsyncMock(return_value="content-digest")
+    with (
+        patch.object(hass, "async_add_executor_job", revision_job),
+        patch(
+            "custom_components.fluks.control_editor_panel.panel_custom.async_register_panel",
+            new=AsyncMock(),
+        ) as register,
+    ):
         await async_register_control_editor_panel(hass)
 
+    revision_job.assert_awaited_once_with(_frontend_revision)
     http.async_register_static_paths.assert_awaited_once()
     paths = http.async_register_static_paths.await_args.args[0]
     assert {item.url_path for item in paths} == {PANEL_STATIC_URL, PANEL_ICONS_URL}
@@ -31,7 +37,7 @@ async def test_panel_registration_is_hidden_admin_only_and_domain_scoped(hass):
         hass=hass,
         frontend_url_path=PANEL_URL_PATH,
         webcomponent_name=PANEL_ELEMENT,
-        module_url=f"{PANEL_STATIC_URL}/control-editor-panel.js",
+        module_url=f"{PANEL_STATIC_URL}/control-editor-panel.js?rev=content-digest",
         sidebar_title=None,
         sidebar_icon=None,
         embed_iframe=False,
@@ -66,7 +72,39 @@ def test_panel_frontend_uses_hass_without_credentials_or_direct_backend_calls():
     assert "history.back()" in source
     assert "context_missing" in source
     assert "entryId !== this._entryId" in source
-    assert "this._controlDrafts.clear()" in source
+    assert "this._pendingControl = undefined" in source
+    assert "MODULE_REVISION" in source
+    assert "control-action-editor.js${MODULE_REVISION" in source
+
+
+def test_frontend_revision_changes_when_parent_module_changes(monkeypatch):
+    """The revision is derived from the production parent module contents."""
+    from custom_components.fluks import control_editor_panel
+
+    baseline = _frontend_revision()
+    original = control_editor_panel.Path.read_bytes
+
+    def changed(path):
+        data = original(path)
+        return data + (b"changed" if path.name == "control-editor-panel.js" else b"")
+
+    monkeypatch.setattr(control_editor_panel.Path, "read_bytes", changed)
+    assert _frontend_revision() != baseline
+
+
+def test_frontend_revision_changes_when_child_module_changes(monkeypatch):
+    """The imported child editor can never retain an older browser module key."""
+    from custom_components.fluks import control_editor_panel
+
+    baseline = _frontend_revision()
+    original = control_editor_panel.Path.read_bytes
+
+    def changed(path):
+        data = original(path)
+        return data + (b"changed" if path.name == "control-action-editor.js" else b"")
+
+    monkeypatch.setattr(control_editor_panel.Path, "read_bytes", changed)
+    assert _frontend_revision() != baseline
 
 
 def test_panel_is_activated_by_production_setup():
@@ -89,8 +127,8 @@ def test_configure_has_one_production_destination():
     assert not Path("custom_components/fluks/icons.json").exists()
 
 
-def test_panel_contains_m1_m4_administration_without_control_side_effects():
-    """The production surface includes parity navigation and responsive styling."""
+def test_panel_contains_administration_and_persisted_controls_without_execution():
+    """The production surface persists configuration but never executes actions."""
     source = __import__("pathlib").Path(
         "custom_components/fluks/frontend/control-editor-panel.js"
     ).read_text()
@@ -100,13 +138,16 @@ def test_panel_contains_m1_m4_administration_without_control_side_effects():
         "fluks/config/add_review",
         "fluks/config/add_save",
         "fluks/config/device_save",
+        "fluks/config/control_save",
+        "fluks/config/control_capabilities",
         "fluks/config/device_delete",
         "fluks/config/site_delete",
     ):
         assert command in source
     assert "fluks-control-action-editor" in source
     assert "control-saved" in source
-    assert "this._controlDrafts.set" in source
+    assert "e.detail.configuration" in source
+    assert "output_mappings" in source
     assert "@media(max-width:700px)" in source
     assert "history.pushState" in source
     assert "iframe" not in source.lower()

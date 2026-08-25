@@ -1,181 +1,123 @@
-/* Focused browser-only prototype for ordered fluks control actions.
- *
- * Embedded by the production configuration panel, it performs no network,
- * storage, service, or backend operation. Control persistence and execution
- * remain deliberately outside the current milestone.
+/* Metadata-driven editor for persisted ordered fluks control actions.
+ * It never calls services or backends; the parent owns explicit persistence.
  */
-
 const clone = (value) => JSON.parse(JSON.stringify(value));
-
-const actionBinding = (action) => action?.option ?? action?.value;
+const esc = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+const searchText = (value) => String(value ?? "").toLocaleLowerCase().replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim();
 
 class FluksControlActionEditor extends HTMLElement {
   constructor() {
-    super();
-    this.attachShadow({ mode: "open" });
-    this._baseline = [];
-    this._working = [];
-    this.entities = [];
-    this.controlName = "Control";
-    this.strings = {};
-    this._editing = null;
+    super(); this.attachShadow({ mode: "open" });
+    this._baseline = []; this._working = []; this.capabilities = [];
+    this.valueType = { datatype: "number", unit: null };
+    this.controlName = "Control"; this.strings = {}; this._editing = null;
+    this._dialogDraft = null; this._transformEditing = null;
   }
-
-  set actions(value) {
-    this._baseline = clone(value ?? []);
-    this._working = clone(value ?? []);
-    this.render();
-  }
-
-  get actions() {
-    return clone(this._working);
-  }
-
-  connectedCallback() {
-    this.render();
-  }
-
+  set actions(value) { this._baseline = clone(value ?? []); this._working = clone(value ?? []); this.render(); }
+  get actions() { return clone(this._working); }
+  connectedCallback() { this.render(); }
   _t(key) { return this.strings[key] ?? key.replaceAll("_", " "); }
-
+  _cap(service) { return this.capabilities.find((item) => item.service === service); }
+  _entity(capability, entityId) { return capability?.entities?.find((item) => item.entity_id === entityId); }
+  _allEntities() {
+    const entities = new Map();
+    for (const capability of this.capabilities) for (const entity of capability.entities ?? []) if (!entities.has(entity.entity_id)) entities.set(entity.entity_id, entity);
+    return [...entities.values()].sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  }
+  _capsForEntity(entityId) { return this.capabilities.filter((capability) => this._entity(capability, entityId)); }
+  _selectEntity(entityId) {
+    const service = this._entity(this._cap(this._dialogDraft.service), entityId) ? this._dialogDraft.service : "";
+    this._dialogDraft = { type: "serviceCall", service, target: { entityId }, data: {} };
+  }
   _summary(action) {
-    const entityId = action.entityId ?? action.target?.entityId;
-    const entity = this.entities.find((item) => item.entityId === entityId);
-    const target = entity?.name ?? entityId ?? this._t("choose_entity");
-    const operation = action.type === "callService" ? action.service : this._t(action.type);
-    const binding = actionBinding(action);
-    const detail = binding?.source === "control"
-      ? this._t("control_value") : `${this._t("fixed")}: ${binding?.value ?? ""}`;
-    return { title: `${operation} · ${target}`, detail };
+    const capability = this._cap(action.service); const entity = this._entity(capability, action.target?.entityId);
+    const bindings = Object.values(action.data ?? {}); const requested = bindings.filter((value) => value?.kind === "requestedValue").length;
+    return { title: `${capability?.name ?? action.service} · ${entity?.name ?? action.target?.entityId ?? this._t("choose_entity")}`, detail: bindings.length ? [requested ? `${requested} ${this._t("control_value")}` : "", bindings.length - requested ? `${bindings.length - requested} ${this._t("fixed")}` : ""].filter(Boolean).join(" · ") : this._t("target_only") };
   }
-
   render() {
-    if (!this.shadowRoot) return;
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host { color: var(--primary-text-color, #e8e8e8); font: 14px system-ui; display: block; }
-        .editor { max-width: 720px; margin: 0 auto; }
-        h2 { margin: 0 0 4px; font-size: 24px; }
-        .intro { color: var(--secondary-text-color, #aaa); margin: 0 0 20px; }
-        ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-        li { display: grid; grid-template-columns: 36px 1fr auto; gap: 10px; align-items: center;
-             border: 1px solid var(--divider-color, #444); border-radius: 12px; padding: 12px; }
-        .order { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%;
-                 background: #1b5e45; color: white; font-weight: 700; }
-        .title { font-weight: 650; } .detail { color: var(--secondary-text-color, #aaa); margin-top: 3px; }
-        .row-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: end; }
-        button { border: 0; border-radius: 9px; padding: 9px 12px; cursor: pointer;
-                 background: var(--secondary-background-color, #333); color: inherit; }
-        button.primary { background: #238b65; color: white; }
-        button.danger { color: #ff8a80; }
-        button:disabled { opacity: .35; cursor: default; }
-        .toolbar, .footer { display: flex; gap: 10px; margin-top: 16px; }
-        .footer { justify-content: end; border-top: 1px solid var(--divider-color, #444); padding-top: 16px; }
-        dialog { width: min(520px, calc(100vw - 40px)); color: inherit; background: var(--card-background-color, #242424);
-                 border: 1px solid var(--divider-color, #444); border-radius: 14px; padding: 20px; }
-        dialog::backdrop { background: rgb(0 0 0 / .55); }
-        label { display: grid; gap: 6px; margin: 12px 0; font-weight: 600; }
-        select, input { box-sizing: border-box; width: 100%; padding: 10px; border-radius: 8px;
-                        border: 1px solid var(--divider-color, #555); background: var(--primary-background-color, #111);
-                        color: inherit; }
-        .error { min-height: 20px; color: #ff8a80; }
-        .empty { border: 1px dashed var(--divider-color, #555); border-radius: 12px; padding: 24px;
-                 color: var(--secondary-text-color, #aaa); text-align: center; }
-      </style>
-      <div class="editor">
-        <h2>${this.controlName}</h2>
-        <p class="intro">${this._t("action_intro")}</p>
-        ${this._working.length ? `<ol>${this._working.map((action, index) => this._row(action, index)).join("")}</ol>` : `<div class="empty">${this._t("no_actions")}</div>`}
-        <div class="toolbar"><button class="primary" data-command="add">+ ${this._t("add_action")}</button></div>
-        <div class="footer"><button data-command="cancel">${this._t("cancel")}</button><button class="primary" data-command="save">${this._t("save_control")}</button></div>
-      </div>
-      ${this._dialog()}
-    `;
-    this.shadowRoot.querySelectorAll("button[data-command]").forEach((button) =>
-      button.addEventListener("click", () => this._command(button.dataset.command, Number(button.dataset.index)))
-    );
-    this.shadowRoot.querySelector("#action-type")?.addEventListener("change", () => this._updateDialogFields());
-    this.shadowRoot.querySelector("#value-source")?.addEventListener("change", () => this._updateDialogFields());
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><div class="editor"><h2>${esc(this.controlName)}</h2><p class="intro">${esc(this._t("action_intro"))}</p>
+      ${this._working.length ? `<ol>${this._working.map((action, index) => this._row(action, index)).join("")}</ol>` : `<div class="empty">${esc(this._t("no_actions"))}</div>`}
+      <div class="toolbar"><button class="primary" data-command="add">+ ${esc(this._t("add_action"))}</button></div>${this._saveError ? `<p class="error" role="alert">${esc(this._saveError)}</p>` : ""}<div class="footer"><button data-command="cancel">${esc(this._t("cancel"))}</button><button class="primary" data-command="save">${esc(this._t("save_control"))}</button></div></div>${this._dialog()}`;
+    this._wire();
   }
-
-  _row(action, index) {
-    const summary = this._summary(action);
-    return `<li><span class="order">${index + 1}</span><div><div class="title">${summary.title}</div><div class="detail">${summary.detail}</div></div>
-      <div class="row-actions"><button data-command="up" data-index="${index}" ${index === 0 ? "disabled" : ""}>↑ ${this._t("up")}</button>
-      <button data-command="down" data-index="${index}" ${index === this._working.length - 1 ? "disabled" : ""}>↓ ${this._t("down")}</button>
-      <button data-command="edit" data-index="${index}">${this._t("edit")}</button><button class="danger" data-command="remove" data-index="${index}">${this._t("remove")}</button></div></li>`;
-  }
-
+  _styles() { return `:host{color:var(--primary-text-color,#e8e8e8);font:14px system-ui;display:block}.editor{max-width:760px;margin:auto}h2{margin:0 0 4px;font-size:24px}.intro,.detail,.help{color:var(--secondary-text-color,#aaa)}ol{list-style:none;margin:0;padding:0;display:grid;gap:10px}li{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid var(--divider-color,#444);border-radius:12px;padding:12px}.order{width:30px;height:30px;display:grid;place-items:center;border-radius:50%;background:#1b5e45;color:white;font-weight:700}.title,.identity strong{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.row-actions,.toolbar,.footer{display:flex;gap:6px}.row-actions{justify-content:end;flex-wrap:wrap}.toolbar{margin-top:16px}.footer{justify-content:end;border-top:1px solid var(--divider-color,#444);padding-top:16px;margin-top:16px}button{border:0;border-radius:9px;padding:9px 12px;cursor:pointer;background:var(--secondary-background-color,#333);color:inherit}button.primary{background:#238b65;color:#fff}button.danger,.error,.required{color:#ff8a80}button:disabled{opacity:.35}dialog{width:min(600px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;box-sizing:border-box;color:inherit;background:var(--card-background-color,#242424);border:1px solid var(--divider-color,#444);border-radius:14px;padding:20px}dialog::backdrop{background:rgb(0 0 0/.55)}label{display:grid;gap:6px;margin:12px 0;font-weight:600}input,select{box-sizing:border-box;width:100%;min-width:0;padding:10px;border-radius:8px;border:1px solid var(--divider-color,#555);background:var(--primary-background-color,#111);color:inherit}.choices{max-height:222px;overflow:auto;border:1px solid var(--divider-color,#555);border-radius:9px}.choice{width:100%;height:62px;border-radius:0;display:grid;grid-template-columns:minmax(0,1fr);gap:2px;text-align:left;border-bottom:1px solid var(--divider-color,#444)}.choice.entity-choice{height:74px}.choice[hidden]{display:none}.choice:last-child{border-bottom:0}.choice span,.choice small{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.choice small{color:var(--secondary-text-color,#aaa)}.choice .entity-context{font-size:12px}.field{padding-top:8px;border-top:1px solid var(--divider-color,#444)}.field-heading{display:flex;gap:8px;align-items:baseline}.error{min-height:20px}.empty{border:1px dashed var(--divider-color,#555);border-radius:12px;padding:24px;text-align:center;color:var(--secondary-text-color,#aaa)}.transforms{margin-top:12px;padding:12px;border-radius:10px;background:var(--secondary-background-color,#333)}.transforms li{grid-template-columns:30px minmax(0,1fr) auto;padding:8px}.transform-copy{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:600px){li,.transforms li{grid-template-columns:30px minmax(0,1fr)}.row-actions{grid-column:2;justify-content:start}}`; }
+  _row(action, index) { const summary = this._summary(action); return `<li><span class="order">${index + 1}</span><div class="identity"><div class="title" title="${esc(summary.title)}">${esc(summary.title)}</div><div class="detail">${esc(summary.detail)}</div></div><div class="row-actions"><button data-command="up" data-index="${index}" ${index === 0 ? "disabled" : ""}>↑ ${esc(this._t("up"))}</button><button data-command="down" data-index="${index}" ${index === this._working.length - 1 ? "disabled" : ""}>↓ ${esc(this._t("down"))}</button><button data-command="edit" data-index="${index}">${esc(this._t("edit"))}</button><button class="danger" data-command="remove" data-index="${index}">${esc(this._t("remove"))}</button></div></li>`; }
   _dialog() {
-    const action = this._editing === null ? null : this._working[this._editing];
-    const type = action?.type ?? "selectOption";
-    const binding = actionBinding(action) ?? { source: "fixed", value: "" };
-    return `<dialog id="action-dialog"><h3>${this._t(action ? "edit_action" : "add_action")}</h3>
-      <label>${this._t("action_type")}<select id="action-type"><option value="selectOption" ${type === "selectOption" ? "selected" : ""}>${this._t("selectOption")}</option>
-      <option value="setNumber" ${type === "setNumber" ? "selected" : ""}>${this._t("setNumber")}</option>
-      <option value="callService" ${type === "callService" ? "selected" : ""}>${this._t("water_heater_temperature")}</option></select></label>
-      <div id="conditional-fields">${this._conditionalFields(type, action, binding)}</div>
-      <div class="error" id="action-error"></div>
-      <div class="footer"><button data-command="close-dialog">${this._t("cancel")}</button><button class="primary" data-command="commit-action">${this._t(action ? "save_action" : "add_action")}</button></div></dialog>`;
+    const draft = this._dialogDraft ?? { type: "serviceCall", service: "", target: { entityId: "" }, data: {} };
+    const entities = this._allEntities(); const selectedEntity = entities.find((item) => item.entity_id === draft.target?.entityId); const compatible = selectedEntity ? this._capsForEntity(selectedEntity.entity_id) : [];
+    const capability = compatible.find((item) => item.service === draft.service); const entity = this._entity(capability, selectedEntity?.entity_id);
+    const entityOptions = entities.map((item) => `<button type="button" class="choice entity-choice" data-entity-choice="${esc(item.entity_id)}"><span title="${esc(item.name)}">${esc(item.name)}</span><small title="${esc(item.entity_id)}">${esc(item.entity_id)}</small>${item.metadata ? `<small class="entity-context" title="${esc(item.metadata)}">${esc(item.metadata)}</small>` : ""}</button>`).join("");
+    const actionOptions = compatible.map((item) => `<button type="button" class="choice" data-action-choice="${esc(item.service)}"><span>${esc(item.name)}</span><small title="${esc(item.service)}">${esc(item.service)}</small></button>`).join("");
+    const staleEntity = draft.target?.entityId && !selectedEntity; const staleAction = selectedEntity && draft.service && !capability;
+    return `<dialog id="action-dialog"><h3>${esc(this._t(this._editing === null ? "add_action" : "edit_action"))}</h3><label>${esc(this._t("entity"))}<input id="entity-search" type="search" value="${esc(selectedEntity?.name ?? draft.target?.entityId ?? "")}" placeholder="${esc(this._t("search_entities"))}"></label><div class="choices" data-choices="entity">${entityOptions}</div>${selectedEntity ? `<button type="button" data-clear-entity>${esc(this._t("clear_selection"))}</button><label>${esc(this._t("action"))}<input id="action-search" type="search" value="${esc(capability?.name ?? draft.service)}" placeholder="${esc(this._t("search_actions"))}"></label><div class="choices" data-choices="action">${actionOptions}</div>` : ""}${capability ? `<p class="help">${esc(capability.description)}</p>` : ""}${entity ? `<section><h4>${esc(this._t("action_fields"))}</h4>${entity.fields.map((field) => this._field(field, draft.data?.[field.id])).join("")}</section>` : ""}<div class="error" id="action-error">${staleEntity ? esc(this._t("choose_entity_error")) : staleAction ? esc(this._t("choose_action_error")) : ""}</div><div class="footer"><button data-command="close-dialog">${esc(this._t("cancel"))}</button><button class="primary" data-command="commit-action">${esc(this._t(this._editing === null ? "add_action" : "save_action"))}</button></div></dialog>`;
   }
-
-  _conditionalFields(type, action, binding) {
-    const domains = type === "selectOption" ? ["select"] : type === "setNumber" ? ["number"] : ["water_heater"];
-    const currentEntity = action?.entityId ?? action?.target?.entityId ?? "";
-    const entities = this.entities.filter((entity) => domains.includes(entity.domain));
-    const entityOptions = [`<option value="">${this._t("choose_entity")}</option>`, ...entities.map((entity) => `<option value="${entity.entityId}" ${entity.entityId === currentEntity ? "selected" : ""}>${entity.name}</option>`)].join("");
-    const source = binding.source ?? "fixed";
-    const service = type === "callService" ? `<label>${this._t("ha_action")}<input value="water_heater.set_temperature" disabled></label><label>${this._t("parameter")}<input value="temperature" disabled></label>` : "";
-    return `${service}<label>${this._t("entity")}<select id="action-entity">${entityOptions}</select></label>
-      <label>${this._t("value_source")}<select id="value-source"><option value="control" ${source === "control" ? "selected" : ""}>${this._t("control_value")}</option><option value="fixed" ${source === "fixed" ? "selected" : ""}>${this._t("fixed_value")}</option></select></label>
-      ${source === "fixed" ? `<label>${this._t("fixed_value")}<input id="fixed-value" type="${type === "selectOption" ? "text" : "number"}" value="${binding.value ?? ""}" placeholder="${type === "selectOption" ? "eco_charge" : "50"}"></label>` : ""}`;
+  _field(field, binding) { const source = binding?.kind ?? (field.required ? "literal" : "omit"); const selector = { ...field.selector, ...(field.constraints ?? {}) }; return `<div class="field" data-field="${esc(field.id)}"><div class="field-heading"><strong>${esc(field.name)}</strong>${field.required ? `<span class="required">${esc(this._t("required"))}</span>` : ""}</div>${field.description ? `<p class="help">${esc(field.description)}</p>` : ""}<label>${esc(this._t("value_source"))}<select data-source="${esc(field.id)}"><option value="literal" ${source === "literal" ? "selected" : ""}>${esc(this._t("fixed_value"))}</option><option value="requestedValue" ${source === "requestedValue" ? "selected" : ""}>${esc(this._t("control_value"))}</option>${field.required ? "" : `<option value="omit" ${source === "omit" ? "selected" : ""}>${esc(this._t("not_configured"))}</option>`}</select></label>${source === "requestedValue" ? this._transformEditor(field.id, binding?.transforms ?? []) : source === "literal" ? this._literal(field, selector, binding?.value ?? field.default ?? "") : ""}</div>`; }
+  _literal(field, selector, value) {
+    if (selector.type === "select") return `<label>${esc(this._t("fixed_value"))}<select data-literal="${esc(field.id)}"><option value=""></option>${(selector.options ?? []).map((item) => `<option value="${esc(JSON.stringify(item))}" ${Object.is(item, value) ? "selected" : ""}>${esc(selector.option_labels?.[String(item)] ?? item)}</option>`).join("")}</select></label>`;
+    if (selector.type === "boolean") return `<label>${esc(this._t("fixed_value"))}<select data-literal="${esc(field.id)}"><option value="true" ${value === true ? "selected" : ""}>${esc(this._t("yes"))}</option><option value="false" ${value === false ? "selected" : ""}>${esc(this._t("no"))}</option></select></label>`;
+    if (selector.type === "number") return `<label>${esc(this._t("fixed_value"))}<input data-literal="${esc(field.id)}" type="number" value="${esc(value)}" ${selector.min !== undefined ? `min="${esc(selector.min)}"` : ""} ${selector.max !== undefined ? `max="${esc(selector.max)}"` : ""} ${selector.step !== undefined ? `step="${esc(selector.step)}"` : `step="any"`}></label>`;
+    return `<label>${esc(this._t("fixed_value"))}<input data-literal="${esc(field.id)}" type="text" value="${esc(value)}"></label>`;
   }
-
-  _updateDialogFields() {
-    const type = this.shadowRoot.querySelector("#action-type").value;
-    const source = this.shadowRoot.querySelector("#value-source")?.value ?? "fixed";
-    this.shadowRoot.querySelector("#conditional-fields").innerHTML = this._conditionalFields(type, null, { source });
-    this.shadowRoot.querySelector("#value-source").addEventListener("change", () => this._updateDialogFields());
-  }
-
-  _command(command, index) {
-    if (command === "up" || command === "down") {
-      const target = command === "up" ? index - 1 : index + 1;
-      const [action] = this._working.splice(index, 1); this._working.splice(target, 0, action); this.render(); return;
+  _valueDatatype(value) { return value === null ? "null" : typeof value; }
+  _pipeline(transforms, count = transforms.length) {
+    let datatype = this.valueType?.datatype; let unit = this.valueType?.unit ?? null;
+    for (let index = 0; index < count; index += 1) {
+      const transform = transforms[index]; const numeric = ["invert", "scale", "offset", "nearest"];
+      if (![...numeric, "powerToCurrent", "valueMap"].includes(transform.type)) return { valid: false, index, transform, datatype, unit };
+      if (numeric.includes(transform.type) && datatype !== "number") return { valid: false, index, transform, datatype, unit };
+      if (transform.type === "powerToCurrent") {
+        if (datatype !== "number" || unit !== "W") return { valid: false, index, transform, datatype, unit };
+        unit = "A";
+      } else if (transform.type === "valueMap") {
+        const values = transform.values ?? []; const inputTypes = new Set(values.map((item) => this._valueDatatype(item.from))); const outputTypes = new Set(values.map((item) => this._valueDatatype(item.to)));
+        if (!values.length || inputTypes.size !== 1 || !inputTypes.has(datatype) || outputTypes.size !== 1) return { valid: false, index, transform, datatype, unit };
+        const nextDatatype = [...outputTypes][0]; if (nextDatatype !== datatype) unit = null; datatype = nextDatatype;
+      }
     }
-    if (command === "remove") { this._working.splice(index, 1); this.render(); return; }
-    if (command === "add" || command === "edit") {
-      this._editing = command === "edit" ? index : null; this.render(); this.shadowRoot.querySelector("#action-dialog").showModal(); return;
-    }
-    if (command === "close-dialog") { this.shadowRoot.querySelector("#action-dialog").close(); return; }
-    if (command === "commit-action") { this._commitAction(); return; }
-    if (command === "cancel") {
-      this._working = clone(this._baseline); this.render(); this.dispatchEvent(new CustomEvent("control-cancelled")); return;
-    }
-    if (command === "save") {
-      if (!this._working.length) return;
-      this._baseline = clone(this._working);
-      this.dispatchEvent(new CustomEvent("control-saved", { detail: { actions: clone(this._baseline) } }));
-    }
+    return { valid: true, datatype, unit };
   }
-
-  _commitAction() {
-    const type = this.shadowRoot.querySelector("#action-type").value;
-    const entityId = this.shadowRoot.querySelector("#action-entity").value;
-    const source = this.shadowRoot.querySelector("#value-source").value;
-    const fixedInput = this.shadowRoot.querySelector("#fixed-value");
-    const error = this.shadowRoot.querySelector("#action-error");
-    if (!entityId) { error.textContent = this._t("choose_entity_error"); return; }
-    if (source === "fixed" && !fixedInput?.value) { error.textContent = this._t("fixed_value_error"); return; }
-    const numeric = type !== "selectOption";
-    const binding = source === "control" ? { source: "control" } : { source: "fixed", value: numeric ? Number(fixedInput.value) : fixedInput.value };
-    const action = type === "selectOption"
-      ? { type, entityId, option: binding }
-      : type === "setNumber"
-        ? { type, entityId, value: binding }
-        : { type, service: "water_heater.set_temperature", target: { entityId }, parameter: "temperature", value: binding };
-    if (this._editing === null) this._working.push(action); else this._working[this._editing] = action;
-    this._editing = null; this.render();
+  _availableTransforms(transforms, editingIndex = null) {
+    const state = this._pipeline(transforms, editingIndex ?? transforms.length); if (!state.valid) return [];
+    const available = ["number", "string", "boolean"].includes(state.datatype) ? ["valueMap"] : [];
+    if (state.datatype === "number") available.unshift("invert", "scale", "offset", "nearest");
+    if (state.datatype === "number" && state.unit === "W") available.unshift("powerToCurrent");
+    return available;
   }
+  _pipelineMessage(result) { return `${this._t("invalid_pipeline")} ${result.index + 1}: ${this._t(result.transform?.type === "powerToCurrent" ? "power_to_current" : result.transform?.type ?? "invalid_adjustment")} (${result.datatype}${result.unit ? ` / ${result.unit}` : ""})`; }
+  _configurationPipelineError(actions = this._working) {
+    for (const action of actions) for (const binding of Object.values(action.data ?? {})) if (binding?.kind === "requestedValue") { const result = this._pipeline(binding.transforms ?? []); if (!result.valid) return this._pipelineMessage(result); }
+    return "";
+  }
+  _transformSummary(transform) { if (transform.type === "powerToCurrent") return `${this._t("power_to_current")} · ${transform.phases} × ${transform.voltage} V`; if (transform.type === "nearest") return `${this._t("nearest")} · ${transform.values.join(", ")}`; if (transform.type === "valueMap") return `${this._t("value_map")} · ${transform.values.length}`; if (transform.type === "scale") return `${this._t("scale")} · × ${transform.factor}`; if (transform.type === "offset") return `${this._t("offset")} · ${transform.amount}`; return this._t("invert"); }
+  _transformEditor(fieldId, transforms) {
+    const editIndex = this._transformEditing?.field === fieldId ? this._transformEditing.index : null;
+    const editing = editIndex === null ? null : transforms[editIndex];
+    const available = this._availableTransforms(transforms, editIndex);
+    const selected = editing?.type ?? available[0];
+    const firstMap = editing?.values?.[0]; const fromType = firstMap === undefined ? "number" : typeof firstMap.from; const toType = firstMap?.to === null ? "null" : firstMap === undefined ? "number" : typeof firstMap.to;
+    const labels = { powerToCurrent: "power_to_current", nearest: "nearest", valueMap: "value_map", invert: "invert", scale: "scale", offset: "offset" };
+    const options = [...new Set([...(selected ? [selected] : []), ...available])].map((type) => `<option value="${type}" ${selected === type ? "selected" : ""}>${esc(this._t(labels[type]))}</option>`).join("");
+    const typeOptions = (selectedType, prefix) => ["number", "string", "boolean", ...(prefix === "to" ? ["null"] : [])].map((type) => `<option value="${type}" ${selectedType === type ? "selected" : ""}>${esc(this._t(`${type === "string" ? "text" : type}_type`))}</option>`).join("");
+    const rows = transforms.map((transform, index) => `<li><span class="order">${index + 1}</span><span class="transform-copy">${esc(this._transformSummary(transform))}</span><span class="row-actions"><button type="button" data-transform-command="up" data-field-id="${esc(fieldId)}" data-index="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" data-transform-command="down" data-field-id="${esc(fieldId)}" data-index="${index}" ${index === transforms.length - 1 ? "disabled" : ""}>↓</button><button type="button" data-transform-command="edit" data-field-id="${esc(fieldId)}" data-index="${index}">${esc(this._t("edit"))}</button><button type="button" class="danger" data-transform-command="remove" data-field-id="${esc(fieldId)}" data-index="${index}">${esc(this._t("remove"))}</button></span></li>`).join("");
+    const pipeline = this._pipeline(transforms); const pipelineError = pipeline.valid ? "" : this._pipelineMessage(pipeline);
+    return `<section class="transforms"><h4>${esc(this._t("value_adjustments"))}</h4><p class="help">${esc(this._t("transform_order_help"))}</p>${rows ? `<ol>${rows}</ol>` : `<p>${esc(this._t("no_transforms"))}</p>`}${pipelineError ? `<p class="error" role="alert">${esc(pipelineError)}</p>` : ""}${available.length || editing ? `<label>${esc(this._t("adjustment_type"))}<select data-transform-type="${esc(fieldId)}">${options}</select></label><div class="transform-parameters"><select data-transform-from-type>${typeOptions(fromType, "from")}</select><input data-transform-input="first" value="${esc(editing?.phases ?? editing?.factor ?? editing?.amount ?? editing?.values?.map((v) => v.from ?? v).join(", ") ?? "")}" placeholder="${esc(this._t("from_values"))}"><select data-transform-to-type>${typeOptions(toType, "to")}</select><input data-transform-input="second" value="${esc(editing?.voltage ?? editing?.values?.map((v) => v.to).join(", ") ?? "")}" placeholder="${esc(this._t("to_values"))}"></div><button type="button" data-transform-command="commit" data-field-id="${esc(fieldId)}">${esc(this._t(editing ? "save_adjustment" : "add_adjustment"))}</button>` : ""}</section>`;
+  }
+  _wire() {
+    this.shadowRoot.querySelectorAll("button[data-command]").forEach((button) => button.onclick = () => this._command(button.dataset.command, Number(button.dataset.index)));
+    this.shadowRoot.querySelectorAll("[data-action-choice]").forEach((node) => node.onclick = () => { this._dialogDraft.service = node.dataset.actionChoice; this._dialogDraft.data = {}; this._refreshDialog(); });
+    this.shadowRoot.querySelectorAll("[data-entity-choice]").forEach((node) => node.onclick = () => { this._selectEntity(node.dataset.entityChoice); this._refreshDialog(); });
+    const clearEntity = this.shadowRoot.querySelector("[data-clear-entity]"); if (clearEntity) clearEntity.onclick = () => { this._dialogDraft = { type: "serviceCall", service: "", target: { entityId: "" }, data: {} }; this._refreshDialog(); };
+    [["#action-search", "action"], ["#entity-search", "entity"]].forEach(([selector, kind]) => { const input = this.shadowRoot.querySelector(selector); if (input) input.oninput = () => this._filterChoices(kind, input.value); });
+    this.shadowRoot.querySelectorAll("[data-source]").forEach((node) => node.onchange = () => { this._captureFields(); const id = node.dataset.source; if (node.value === "omit") delete this._dialogDraft.data[id]; else this._dialogDraft.data[id] = { kind: node.value }; this._refreshDialog(); });
+    this.shadowRoot.querySelectorAll("[data-transform-command]").forEach((node) => node.onclick = () => this._transformCommand(node));
+  }
+  _refreshDialog() { this.render(); this.shadowRoot.querySelector("#action-dialog").showModal(); }
+  _filterChoices(kind, query) { const normalized = searchText(query); this.shadowRoot.querySelectorAll(`[data-choices="${kind}"] .choice`).forEach((node) => { node.hidden = normalized !== "" && !searchText(node.textContent).includes(normalized); }); }
+  _captureFields() { if (!this._dialogDraft) return; this.shadowRoot.querySelectorAll("[data-literal]").forEach((node) => { const field = this._selectedFields().find((item) => item.id === node.dataset.literal); if (!field) return; let value = node.value; if (field.selector.type === "number") value = Number(value); else if (field.selector.type === "boolean") value = value === "true"; else if (field.selector.type === "select" && value) value = JSON.parse(value); this._dialogDraft.data[field.id] = { kind: "literal", value }; }); }
+  _selectedFields() { return this._entity(this._cap(this._dialogDraft?.service), this._dialogDraft?.target?.entityId)?.fields ?? []; }
+  _transformCommand(node) { this._captureFields(); const field = node.dataset.fieldId; const transforms = this._dialogDraft.data[field].transforms ?? []; const index = Number(node.dataset.index); const command = node.dataset.transformCommand; if (command === "remove") transforms.splice(index, 1); if (["up", "down"].includes(command)) { const target = command === "up" ? index - 1 : index + 1; const [item] = transforms.splice(index, 1); transforms.splice(target, 0, item); } if (command === "edit") this._transformEditing = { field, index }; if (command === "commit") { try { const transform = this._readTransform(field); if (this._transformEditing?.field === field) transforms[this._transformEditing.index] = transform; else transforms.push(transform); this._transformEditing = null; } catch (_) { this.shadowRoot.querySelector("#action-error").textContent = this._t("invalid_adjustment"); return; } } this._dialogDraft.data[field].transforms = transforms; this._refreshDialog(); }
+  _readTransform(field) { const root = this.shadowRoot.querySelector(`[data-field="${CSS.escape(field)}"]`); const type = root.querySelector("[data-transform-type]").value; const inputs = root.querySelectorAll("[data-transform-input]"); const first = inputs[0]?.value.trim() ?? ""; const second = inputs[1]?.value.trim() ?? ""; const parse = (raw, datatype) => raw.split(",").map((value) => value.trim()).filter(Boolean).map((value) => datatype === "number" ? Number(value) : datatype === "boolean" ? value.toLowerCase() === "true" : datatype === "null" ? null : value); if (type === "powerToCurrent") { const phases = Number(first); const voltage = Number(second); if (!Number.isInteger(phases) || phases < 1 || !Number.isFinite(voltage) || voltage <= 0) throw new Error(); return { type, phases, voltage }; } if (type === "nearest") { const values = parse(first, "number"); if (!values.length || values.some((v) => !Number.isFinite(v))) throw new Error(); return { type, values }; } if (type === "valueMap") { const fromType = root.querySelector("[data-transform-from-type]").value; const toType = root.querySelector("[data-transform-to-type]").value; const from = parse(first, fromType); const to = toType === "null" ? from.map(() => null) : parse(second, toType); if (!from.length || from.length !== to.length || (fromType === "boolean" && first.split(",").some((v) => !["true", "false"].includes(v.trim().toLowerCase())))) throw new Error(); return { type, values: from.map((value, i) => ({ from: value, to: to[i] })) }; } if (type === "scale") { const factor = Number(first); if (!Number.isFinite(factor)) throw new Error(); return { type, factor }; } if (type === "offset") { const amount = Number(first); if (!Number.isFinite(amount)) throw new Error(); return { type, amount }; } return { type: "invert" }; }
+  _command(command, index) { if (["up", "down"].includes(command)) { const target = command === "up" ? index - 1 : index + 1; const [action] = this._working.splice(index, 1); this._working.splice(target, 0, action); this.render(); return; } if (command === "remove") { this._working.splice(index, 1); this.render(); return; } if (["add", "edit"].includes(command)) { this._editing = command === "edit" ? index : null; this._dialogDraft = clone(this._editing === null ? { type: "serviceCall", service: "", target: { entityId: "" }, data: {} } : this._working[this._editing]); this.render(); this.shadowRoot.querySelector("#action-dialog").showModal(); return; } if (command === "close-dialog") { this._dialogDraft = null; this.shadowRoot.querySelector("#action-dialog").close(); return; } if (command === "commit-action") return this._commitAction(); if (command === "cancel") { this._working = clone(this._baseline); this._saveError = ""; this.render(); this.dispatchEvent(new CustomEvent("control-cancelled")); return; } if (command === "save") { this._saveError = this._configurationPipelineError(); if (this._saveError) { this.render(); return; } this.dispatchEvent(new CustomEvent("control-saved", { detail: { configuration: this._working.length ? { version: 1, actions: clone(this._working) } : null } })); } }
+  _commitAction() { this._captureFields(); const error = this.shadowRoot.querySelector("#action-error"); const capability = this._cap(this._dialogDraft.service); const entity = this._entity(capability, this._dialogDraft.target.entityId); if (!capability) { error.textContent = this._t("choose_action_error"); return; } if (!entity) { error.textContent = this._t("choose_entity_error"); return; } for (const field of entity.fields) { const binding = this._dialogDraft.data[field.id]; if (field.required && !binding) { error.textContent = this._t("required_field_error"); return; } if (binding?.kind === "literal" && (binding.value === "" || binding.value === undefined)) { error.textContent = this._t("fixed_value_error"); return; } if (binding?.kind === "requestedValue") { const result = this._pipeline(binding.transforms ?? []); if (!result.valid) { error.textContent = this._pipelineMessage(result); return; } } } const action = clone(this._dialogDraft); if (this._editing === null) this._working.push(action); else this._working[this._editing] = action; this._editing = null; this._dialogDraft = null; this.render(); }
 }
-
 customElements.define("fluks-control-action-editor", FluksControlActionEditor);

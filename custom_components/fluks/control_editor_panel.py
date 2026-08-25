@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from homeassistant.components import frontend, panel_custom
@@ -18,8 +19,17 @@ PANEL_DIRECTORY = Path(__file__).parent / "frontend"
 PANEL_ICONS_DIRECTORY = Path(__file__).parent / "icons"
 
 
+def _frontend_revision() -> str:
+    """Tie the panel and its imported editor to the same browser module revision."""
+    digest = hashlib.sha256()
+    for filename in ("control-editor-panel.js", "control-action-editor.js"):
+        digest.update((PANEL_DIRECTORY / filename).read_bytes())
+    return digest.hexdigest()[:12]
+
+
 async def async_register_control_editor_panel(hass: HomeAssistant) -> None:
     """Register the hidden, admin-only production configuration panel."""
+    revision = await hass.async_add_executor_job(_frontend_revision)
     await hass.http.async_register_static_paths(
         [
             StaticPathConfig(
@@ -38,7 +48,7 @@ async def async_register_control_editor_panel(hass: HomeAssistant) -> None:
         hass=hass,
         frontend_url_path=PANEL_URL_PATH,
         webcomponent_name=PANEL_ELEMENT,
-        module_url=f"{PANEL_STATIC_URL}/control-editor-panel.js",
+        module_url=f"{PANEL_STATIC_URL}/control-editor-panel.js?rev={revision}",
         sidebar_title=None,
         sidebar_icon=None,
         embed_iframe=False,

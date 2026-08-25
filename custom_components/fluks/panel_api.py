@@ -35,6 +35,10 @@ from .const import (
     CONF_SITE_ID,
     DOMAIN,
 )
+from .control_capabilities import (
+    async_control_capabilities,
+    async_validate_control_configuration,
+)
 from .device import (
     CONF_HA_DEVICE_ID,
     SITE_DEVICE_TYPE,
@@ -45,12 +49,15 @@ from .device import (
     stable_device_id,
 )
 from .matcher import input_configuration, suggest_entities
+from .output_mapping import OutputMappingValidationError, validate_output_configuration
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
 COMMAND_DEVICE_DETAIL = f"{DOMAIN}/config/device"
 COMMAND_ADD_REVIEW = f"{DOMAIN}/config/add_review"
 COMMAND_ADD_SAVE = f"{DOMAIN}/config/add_save"
 COMMAND_DEVICE_SAVE = f"{DOMAIN}/config/device_save"
+COMMAND_CONTROL_SAVE = f"{DOMAIN}/config/control_save"
+COMMAND_CONTROL_CAPABILITIES = f"{DOMAIN}/config/control_capabilities"
 COMMAND_DEVICE_DELETE = f"{DOMAIN}/config/device_delete"
 COMMAND_SITE_DELETE = f"{DOMAIN}/config/site_delete"
 
@@ -331,6 +338,12 @@ async def websocket_device_detail(hass, connection, msg):
             if item.get("direction") == "input"
             and isinstance(item.get("concept"), str)
         }
+        output_mappings = {
+            str(item["concept"]): item
+            for item in mappings
+            if item.get("direction") == "output"
+            and isinstance(item.get("concept"), str)
+        }
         concepts = _mappable_concepts(catalog[device_type])
         ha_device_id = _ha_context(entry, msg["device_id"])
         missing = [item for item in concepts if item["concept"] not in existing]
@@ -354,6 +367,10 @@ async def websocket_device_detail(hass, connection, msg):
                 ], translations),
                 "mappings": {
                     name: _safe_mapping(mapping) for name, mapping in existing.items()
+                },
+                "output_mappings": {
+                    name: _safe_mapping(mapping)
+                    for name, mapping in output_mappings.items()
                 },
                 "suggestions": suggestions,
             },
@@ -603,6 +620,99 @@ async def websocket_device_save(hass, connection, msg):
         _send_error(hass, entry, connection, msg["id"], err)
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): COMMAND_CONTROL_SAVE,
+        **BASE_SCHEMA,
+        vol.Required("device_id"): str,
+        vol.Required("concept"): str,
+        vol.Optional("configuration"): dict,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_control_save(hass, connection, msg):
+    """Incrementally persist one catalog-declared output Mapping."""
+    entry = None
+    try:
+        entry = _entry(hass, msg["entry_id"])
+        api = _api(hass, entry)
+        site_id = entry.data[CONF_SITE_ID]
+        device = await api.get_device(site_id, msg["device_id"])
+        catalog = await _catalog(api)
+        device_type = str(device.get("type"))
+        if device_type not in catalog or not any(
+            isinstance(item, dict)
+            and item.get("concept") == msg["concept"]
+            and "control" in item.get("usages", [])
+            for item in catalog[device_type]["concepts"]
+        ):
+            raise PanelCommandError("not_found")
+        mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
+        existing = next(
+            (
+                item
+                for item in mappings
+                if item.get("direction") == "output"
+                and item.get("concept") == msg["concept"]
+            ),
+            None,
+        )
+        submitted = msg.get("configuration")
+        configuration = (
+            validate_output_configuration(submitted) if submitted is not None else None
+        )
+        if existing is None and configuration is None:
+            connection.send_result(msg["id"], {"changed": False})
+            return
+        if existing is not None and configuration == existing.get("configuration"):
+            connection.send_result(msg["id"], {"changed": False})
+            return
+        if configuration is not None and not await async_validate_control_configuration(
+            hass, configuration
+        ):
+            raise PanelCommandError("invalid_mapping")
+        if configuration is None:
+            await api.delete_mapping(site_id, str(existing["id"]))
+        elif existing is not None:
+            await api.update_mapping(site_id, str(existing["id"]), configuration)
+        else:
+            await api.create_mapping(
+                site_id,
+                {
+                    "integrationId": entry.data[CONF_INTEGRATION_INTERNAL_ID],
+                    "deviceId": msg["device_id"],
+                    "concept": msg["concept"],
+                    "direction": "output",
+                    "configuration": configuration,
+                },
+            )
+        connection.send_result(msg["id"], {"changed": True})
+    except OutputMappingValidationError:
+        _send_error(
+            hass, entry, connection, msg["id"], PanelCommandError("invalid_mapping")
+        )
+    except (PanelCommandError, FluksApiError) as err:
+        _send_error(hass, entry, connection, msg["id"], err)
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): COMMAND_CONTROL_CAPABILITIES, **BASE_SCHEMA}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_control_capabilities(hass, connection, msg):
+    """Return safe, normalized Home Assistant action capabilities."""
+    entry = None
+    try:
+        entry = _entry(hass, msg["entry_id"])
+        connection.send_result(
+            msg["id"], {"actions": await async_control_capabilities(hass)}
+        )
+    except PanelCommandError as err:
+        _send_error(hass, entry, connection, msg["id"], err)
+
+
 async def _human_api(hass, entry, email: str, password: str) -> FluksApiClient:
     api = _api(hass, entry)
     token, _ = await api.login(email, password)
@@ -680,6 +790,8 @@ COMMANDS = (
     websocket_add_review,
     websocket_add_save,
     websocket_device_save,
+    websocket_control_save,
+    websocket_control_capabilities,
     websocket_device_delete,
     websocket_site_delete,
 )

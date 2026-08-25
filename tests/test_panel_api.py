@@ -14,6 +14,8 @@ from custom_components.fluks.panel_api import (
     COMMAND_ADD_SAVE,
     COMMANDS,
     COMMAND_CONTEXT,
+    COMMAND_CONTROL_SAVE,
+    COMMAND_CONTROL_CAPABILITIES,
     COMMAND_DEVICE_DETAIL,
     COMMAND_DEVICE_DELETE,
     COMMAND_DEVICE_SAVE,
@@ -22,6 +24,8 @@ from custom_components.fluks.panel_api import (
     _mappable_concepts,
     async_register_panel_commands,
     websocket_context,
+    websocket_control_save,
+    websocket_control_capabilities,
     websocket_add_save,
     websocket_device_detail,
     websocket_device_delete,
@@ -69,7 +73,18 @@ def test_registers_only_finite_product_commands(hass):
         "custom_components.fluks.panel_api.websocket_api.async_register_command"
     ) as register:
         async_register_panel_commands(hass)
-    assert register.call_count == len(COMMANDS) == 7
+    assert register.call_count == len(COMMANDS) == 9
+
+
+async def test_control_capabilities_command_is_admin_and_never_returns_credentials(hass):
+    entry = make_entry(hass)
+    conn = connection()
+    capabilities = [{"service": "number.set_value", "entities": []}]
+    with patch("custom_components.fluks.panel_api.async_control_capabilities", AsyncMock(return_value=capabilities)):
+        websocket_control_capabilities(hass, conn, {"id": 31, "type": COMMAND_CONTROL_CAPABILITIES, "entry_id": entry.entry_id})
+        await hass.async_block_till_done()
+    conn.send_result.assert_called_once_with(31, {"actions": capabilities})
+    assert KEY not in repr(conn.send_result.call_args)
 
 
 def test_catalog_source_semantics_and_local_duplicate_context_are_reused(hass):
@@ -407,6 +422,194 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
     assert result["mappings"]["battery.soc"]["configuration"]["entityId"] == "sensor.existing_soc"
     assert result["suggestions"] == {"battery.power": "sensor.suggested_power"}
     assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.power"]
+
+
+def output_configuration(value=50):
+    return {
+        "version": 1,
+        "actions": [
+            {
+                "type": "serviceCall",
+                "service": "number.set_value",
+                "target": {"entityId": "number.goodwe_target"},
+                "data": {"value": {"kind": "literal", "value": value}},
+            }
+        ],
+    }
+
+
+def control_catalog():
+    return {
+        "battery": {
+            "type": "battery",
+            "concepts": [
+                {
+                    "concept": "battery.power",
+                    "datatype": "number",
+                    "unit": "W",
+                    "usages": ["fact", "control"],
+                    "source": "mapping",
+                }
+            ],
+        }
+    }
+
+
+async def run_control_save(hass, entry, api, configuration, *, msg_id=20):
+    conn = connection()
+    message = {
+        "id": msg_id,
+        "type": COMMAND_CONTROL_SAVE,
+        "entry_id": entry.entry_id,
+        "device_id": "device-a",
+        "concept": "battery.power",
+    }
+    if configuration is not None:
+        message["configuration"] = configuration
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._catalog",
+            AsyncMock(return_value=control_catalog()),
+        ),
+        patch(
+            "custom_components.fluks.panel_api.async_validate_control_configuration",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        websocket_control_save(hass, conn, message)
+        await hass.async_block_till_done()
+    return conn
+
+
+async def test_control_save_creates_documented_output_mapping(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+
+    configuration = output_configuration()
+    conn = await run_control_save(hass, entry, api, configuration)
+
+    payload = api.create_mapping.await_args.args[1]
+    assert payload == {
+        "integrationId": "integration-a",
+        "deviceId": "device-a",
+        "concept": "battery.power",
+        "direction": "output",
+        "configuration": configuration,
+    }
+    conn.send_result.assert_called_once_with(20, {"changed": True})
+
+
+async def test_control_save_is_noop_for_machine_equal_configuration(hass):
+    entry = make_entry(hass)
+    configuration = output_configuration()
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(
+        return_value=[
+            {
+                "id": "output-map",
+                "concept": "battery.power",
+                "direction": "output",
+                "configuration": configuration,
+            }
+        ]
+    )
+    api.create_mapping = AsyncMock()
+    api.update_mapping = AsyncMock()
+    api.delete_mapping = AsyncMock()
+
+    conn = await run_control_save(hass, entry, api, configuration)
+
+    conn.send_result.assert_called_once_with(20, {"changed": False})
+    api.create_mapping.assert_not_awaited()
+    api.update_mapping.assert_not_awaited()
+    api.delete_mapping.assert_not_awaited()
+
+
+async def test_control_save_patches_changed_and_deletes_cleared_mapping(hass):
+    entry = make_entry(hass)
+    existing = output_configuration(50)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(
+        return_value=[
+            {
+                "id": "output-map",
+                "concept": "battery.power",
+                "direction": "output",
+                "configuration": existing,
+            }
+        ]
+    )
+    api.update_mapping = AsyncMock()
+    api.delete_mapping = AsyncMock()
+
+    changed = output_configuration(70)
+    await run_control_save(hass, entry, api, changed, msg_id=21)
+    api.update_mapping.assert_awaited_once_with("site-a", "output-map", changed)
+
+    api.update_mapping.reset_mock()
+    await run_control_save(hass, entry, api, None, msg_id=22)
+    api.delete_mapping.assert_awaited_once_with("site-a", "output-map")
+    api.update_mapping.assert_not_awaited()
+
+
+async def test_control_save_rejects_non_control_concept(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(return_value=[])
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._catalog",
+            AsyncMock(
+                return_value={
+                    "battery": {
+                        "type": "battery",
+                        "concepts": [
+                            {"concept": "battery.soc", "usages": ["fact"]}
+                        ],
+                    }
+                }
+            ),
+        ),
+    ):
+        websocket_control_save(
+            hass,
+            conn,
+            {
+                "id": 23,
+                "type": COMMAND_CONTROL_SAVE,
+                "entry_id": entry.entry_id,
+                "device_id": "device-a",
+                "concept": "battery.soc",
+                "configuration": {"version": 1, "actions": []},
+            },
+        )
+        await hass.async_block_till_done()
+
+    conn.send_result.assert_not_called()
+    conn.send_error.assert_called_once()
+
+
+async def test_control_save_returns_structured_error_for_invalid_configuration(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(return_value=[])
+    conn = await run_control_save(
+        hass, entry, api, {"version": 1, "actions": []}, msg_id=24
+    )
+    conn.send_result.assert_not_called()
+    conn.send_error.assert_called_once_with(
+        24, "invalid_mapping", "The fluks operation could not be completed"
+    )
 
 
 async def test_site_delete_removes_entry_only_after_backend_success(hass):

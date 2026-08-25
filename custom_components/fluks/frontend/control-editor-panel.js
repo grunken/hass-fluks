@@ -1,5 +1,6 @@
 /* Embedded fluks administration panel. Backend credentials remain in Python. */
-import "./control-action-editor.js";
+const MODULE_REVISION = new URL(import.meta.url).searchParams.get("rev");
+await import(`./control-action-editor.js${MODULE_REVISION ? `?rev=${encodeURIComponent(MODULE_REVISION)}` : ""}`);
 
 const TAGLINE = "Your Energy. Decides together.";
 const DEVICE_ICON_BASE = "/fluks-device-icons";
@@ -11,7 +12,7 @@ class FluksControlEditorPanel extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._view = { name: "home" };
-    this._controlDrafts = new Map();
+    this._pendingControl = undefined;
     this._popstate = () => {
       this._view = history.state?.fluksView ?? { name: "home" };
       this._detail = this._draft = undefined;
@@ -29,7 +30,7 @@ class FluksControlEditorPanel extends HTMLElement {
     if (entryId !== this._entryId) {
       this._entryId = entryId;
       this._context = this._detail = this._draft = undefined;
-      this._controlDrafts.clear();
+      this._pendingControl = undefined;
       this._view = { name: "home" };
     }
     if (this.isConnected) this._loadContext();
@@ -79,6 +80,10 @@ class FluksControlEditorPanel extends HTMLElement {
     if (!this._context) return;
     if (["device", "edit", "controls", "control", "delete-device"].includes(this._view.name)) {
       try { this._detail = await this._call("fluks/config/device", { device_id: this._view.deviceId }); }
+      catch (_) { return this._message(this._error); }
+    }
+    if (this._view.name === "control") {
+      try { this._controlCapabilities = (await this._call("fluks/config/control_capabilities")).actions; }
       catch (_) { return this._message(this._error); }
     }
     this._render();
@@ -136,7 +141,7 @@ class FluksControlEditorPanel extends HTMLElement {
       <div class="context-menu device-menu" id="device-actions-menu" role="menu" hidden><button class="menu-danger" id="delete" role="menuitem">${esc(this._t("delete_device"))}</button></div></div>
       <div class="card list overview-list">
       <button class="row" id="edit"><ha-icon icon="mdi:chart-line"></ha-icon><span class="row-copy"><strong>${esc(this._t("measurements_energy"))}</strong><span>${measurementCount} ${esc(this._t("measurements_count"))} · ${energyCount} ${esc(this._t("energy_count"))}</span></span><span class="chevron">›</span></button>
-      <button class="row" id="controls"><ha-icon icon="mdi:tune-variant"></ha-icon><span class="row-copy"><strong>${esc(this._t("controls"))}</strong><span>${this._detail.controls.length} ${esc(this._t("available"))} · ${esc(this._t("prototype_only"))}</span></span><span class="chevron">›</span></button>
+      <button class="row" id="controls"><ha-icon icon="mdi:tune-variant"></ha-icon><span class="row-copy"><strong>${esc(this._t("controls"))}</strong><span>${this._detail.controls.length} ${esc(this._t("available"))}</span></span><span class="chevron">›</span></button>
       <button class="row" id="information"><ha-icon icon="mdi:information-outline"></ha-icon><span class="row-copy"><strong>${esc(this._t("device_information"))}</strong><span>${esc(metadata || this._t("optional"))}</span></span><span class="chevron">›</span></button></div>`, true);
     this._wireMenu("device-menu", "device-actions-menu");
     this.shadowRoot.querySelector("#edit").onclick = () => this._go({ name: "edit", deviceId: this._detail.id });
@@ -310,27 +315,51 @@ class FluksControlEditorPanel extends HTMLElement {
     } catch (_) { this._renderAdd(); }
   }
   _renderControls() {
-    const rows = this._detail.controls.map((c) => `<button class="row" data-control="${esc(c.concept)}"><span><strong>${esc(this._conceptLabel(c))}</strong><small>${esc(this._controlDrafts.has(`${this._detail.id}:${c.concept}`) ? this._t("prototype_only") : this._t("not_configured"))}</small></span><span>›</span></button>`).join("");
+    const rows = this._detail.controls.map((c) => `<button class="row" data-control="${esc(c.concept)}"><span class="row-copy"><strong>${esc(this._conceptLabel(c))}</strong><small>${esc(this._detail.output_mappings[c.concept] ? this._t("configured") : this._t("not_configured"))}</small></span><span>›</span></button>`).join("");
     this._frame(`${this._detail.type_name} · ${this._t("controls")}`, `<div class="card list">${rows || `<p>${esc(this._t("not_configured"))}</p>`}</div>`, true);
     this.shadowRoot.querySelectorAll("[data-control]").forEach((n) => n.onclick = () => this._go({ name: "control", deviceId: this._detail.id, concept: n.dataset.control }));
   }
   _renderControl() {
     const control = this._detail.controls.find((c) => c.concept === this._view.concept);
     if (!control) return this._message(this._t("context_missing"));
-    this._frame(`${this._detail.type_name} · ${this._conceptLabel(control)}`, `<p>${esc(this._t("prototype_only"))}</p><fluks-control-action-editor></fluks-control-action-editor>`, true);
+    this._frame(`${this._detail.type_name} · ${this._conceptLabel(control)}`, `<p>${esc(this._t("control_persistence_intro"))}</p><fluks-control-action-editor></fluks-control-action-editor>`, true);
     const editor = this.shadowRoot.querySelector("fluks-control-action-editor");
     const key = `${this._detail.id}:${control.concept}`;
     editor.controlName = this._conceptLabel(control);
     editor.strings = Object.fromEntries([
       "action_intro", "no_actions", "add_action", "save_control", "up", "down", "edit", "remove",
-      "edit_action", "action_type", "selectOption", "setNumber", "water_heater_temperature",
-      "save_action", "choose_entity", "ha_action", "parameter", "entity", "value_source",
+      "edit_action", "action", "search_actions", "action_fields", "target_only", "required",
+      "save_action", "choose_entity", "clear_selection", "entity", "value_source", "yes", "no",
       "control_value", "fixed_value", "fixed", "choose_entity_error", "fixed_value_error", "cancel",
+      "choose_action_error", "required_field_error", "value_adjustments", "transform_order_help", "no_transforms",
+      "adjustment_type", "power_to_current", "nearest", "value_map", "invert", "scale", "offset",
+      "phases", "voltage", "allowed_values", "input_type", "output_type", "from_values", "to_values",
+      "number_type", "text_type", "boolean_type", "null_type", "factor", "amount",
+      "add_adjustment", "save_adjustment", "invalid_adjustment",
+      "invalid_pipeline",
     ].map((key) => [key, this._t(key)]));
-    editor.entities = Object.values(this._hass.states).filter((s) => ["select", "number", "water_heater"].includes(s.entity_id.split(".")[0])).map((s) => ({ entityId: s.entity_id, domain: s.entity_id.split(".")[0], name: s.attributes.friendly_name || s.entity_id }));
-    editor.actions = this._controlDrafts.get(key) || [];
-    editor.addEventListener("control-saved", (e) => { this._controlDrafts.set(key, e.detail.actions); history.back(); }, { once: true });
-    editor.addEventListener("control-cancelled", () => history.back(), { once: true });
+    editor.capabilities = this._controlCapabilities ?? [];
+    editor.valueType = { datatype: control.datatype, unit: control.unit ?? null };
+    const persisted = this._detail.output_mappings[control.concept]?.configuration;
+    editor.actions = this._pendingControl?.key === key
+      ? this._pendingControl.configuration?.actions ?? []
+      : persisted?.actions ?? [];
+    editor.addEventListener("control-saved", async (e) => {
+      this._pendingControl = { key, configuration: e.detail.configuration };
+      try {
+        await this._call("fluks/config/control_save", {
+          device_id: this._detail.id,
+          concept: control.concept,
+          ...(e.detail.configuration ? { configuration: e.detail.configuration } : {}),
+        });
+        this._pendingControl = undefined;
+        history.back();
+      } catch (_) { this._renderControl(); }
+    }, { once: true });
+    editor.addEventListener("control-cancelled", () => {
+      if (this._pendingControl?.key === key) this._pendingControl = undefined;
+      history.back();
+    }, { once: true });
   }
   _credentials(titleKey, bodyKey, label) {
     return `<section class="card"><h2>${esc(this._t(titleKey))}</h2><p>${esc(this._t(bodyKey))}</p><label>${esc(this._t("email"))}<input id="email" type="email" autocomplete="username"></label><label>${esc(this._t("password"))}<input id="password" type="password" autocomplete="current-password"></label></section><div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="danger" id="confirm">${esc(label)}</button></div>`;

@@ -45,6 +45,10 @@ The command surface is finite rather than a transport proxy:
   Mapping creation.
 - `fluks/config/device_save`: incremental Device PATCH and Mapping
   POST/PATCH/DELETE.
+- `fluks/config/control_save`: create, update, delete, or no-op one
+  catalog-declared output Mapping using configuration version 1.
+- `fluks/config/control_capabilities`: normalized, representable Home Assistant
+  actions, compatible entities, action fields, and safe live value constraints.
 - `fluks/config/device_delete`: temporary human login and lifecycle DELETE.
 - `fluks/config/site_delete`: temporary human login, lifecycle DELETE, and
   ConfigEntry removal after confirmed success.
@@ -71,7 +75,7 @@ orchestration. The browser owns presentation and drafts only.
 Configure → panel home
           ├─ Add device → type → HA Device → review → Save
           ├─ Device → edit measurements/properties → Save
-          │          ├─ Controls → control editor (prototype only)
+          │          ├─ Controls → ordered action/transform editor → Save
           │          └─ Delete → confirm → temporary login
           └─ Site → Delete → confirm → temporary login
 ```
@@ -79,7 +83,7 @@ Configure → panel home
 History state stores only view names and opaque non-secret Device/concept
 identifiers. Back and Cancel discard drafts. Refresh reconstructs core state
 from `config_entry` and Python; unsaved drafts may be lost. Switching entry IDs
-clears all Device and prototype-control draft state. Missing context renders a
+clears all Device and control draft state. Missing context renders a
 safe error instead of selecting a default entry.
 
 The layout uses responsive CSS grids, 42-pixel minimum button heights, wrapping
@@ -110,11 +114,15 @@ their confirmation views use persistent destructive styling.
 
 ## Controls boundary
 
-The approved ordered-action editor is embedded under live catalog concepts with
-`control` usage. Its typed sequence, ordering, add/edit/remove, fixed/control
-values, Save, and Cancel behavior remain browser-session prototype state only.
-There is no backend output-Mapping persistence and no Home Assistant action
-execution.
+The ordered-action editor is embedded under live catalog concepts with `control`
+usage. Action, entity, and field choices come from Home Assistant's registered
+service descriptions and live entity metadata; incomplete and opaque schemas are
+excluded by a small capability filter. It edits output configuration v1 directly:
+ordered `serviceCall` actions, typed literal/requested values, and ordered
+deterministic transforms. Explicit Save reconciles one output Mapping through
+the existing POST/PATCH/DELETE APIs; machine-equal state is a no-op. Cancel
+discards the draft. Credentials and persistence remain in Python. Home Assistant
+action execution remains outside this milestone.
 
 ## Rejected mechanisms
 

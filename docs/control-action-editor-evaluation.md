@@ -32,45 +32,50 @@ integration API.
 
 ## C — Focused fluks editor
 
-Recommended. The prototype custom element implements only three proven actions:
-
-- Select option
-- Set number
-- Water-heater set temperature
+Recommended. The production editor discovers representable entity-targeted
+Home Assistant actions and their fields from Home Assistant service descriptions.
+The earlier Select option, Set number, and water-heater examples are no longer
+hardcoded fluks action types.
 
 It shows a numbered sequence, Up/Down, Edit, Remove, Add action, Cancel, and
-Save control in one surface. Action forms are conditional, and value binding is
-explicitly either Fixed value or Control value. The prototype has no fetch,
-WebSocket, storage, Home Assistant service call, or backend call.
+Save control in one surface. Action and entity selection are searchable, action
+fields are metadata-driven, and value binding is
+explicitly either Fixed value or Control value. The production custom element
+still has no fetch, direct WebSocket, storage, Home Assistant service call, or
+backend call; its parent panel persists through the authenticated local Python
+command boundary.
 
-A production version should be a similarly small frontend surface backed by a
-supported hass-fluks API. It should use Home Assistant entity registries and
-service metadata through supported websocket commands, but it should not import
-the private automation editor.
+The production version remains this small surface, backed by authenticated,
+finite hass-fluks WebSocket commands. Python normalizes service descriptions,
+target restrictions, field selectors, and safe live entity constraints without
+importing the private automation editor.
 
-## Prototype data
+## Production Mapping data
 
 ```json
 {
+  "version": 1,
   "actions": [
     {
-      "type": "selectOption",
-      "entityId": "select.goodwe_operation_mode",
-      "option": {"source": "fixed", "value": "eco_charge"}
+      "type": "serviceCall",
+      "service": "select.select_option",
+      "target": {"entityId": "select.goodwe_operation_mode"},
+      "data": {"option": {"kind": "literal", "value": "eco_charge"}}
     },
     {
-      "type": "setNumber",
-      "entityId": "number.goodwe_charge_target",
-      "value": {"source": "control"}
+      "type": "serviceCall",
+      "service": "number.set_value",
+      "target": {"entityId": "number.goodwe_charge_target"},
+      "data": {"value": {"kind": "requestedValue"}}
     }
   ]
 }
 ```
 
 Bindings are typed objects. There is no `$controlValue`, YAML, template, or
-arbitrary expression. A future optional typed transform can be added beside
-`source`, for example a constrained scale/offset object, without changing action
-ordering or introducing a language.
+arbitrary expression. Requested values may contain ordered, constrained
+transforms (`invert`, `scale`, `offset`, `powerToCurrent`, `nearest`, and typed
+`valueMap`) without introducing an expression language.
 
 ## Canonical gap
 

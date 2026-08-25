@@ -25,18 +25,37 @@ await import("../../custom_components/fluks/frontend/control-action-editor.js");
 const Editor = customElements.get("fluks-control-action-editor");
 
 const mode = {
-  type: "selectOption",
-  entityId: "select.goodwe_operation_mode",
-  option: { source: "fixed", value: "eco_charge" },
+  type: "serviceCall",
+  service: "select.select_option",
+  target: { entityId: "select.goodwe_operation_mode" },
+  data: { option: { kind: "literal", value: "eco_charge" } },
 };
 const target = {
-  type: "setNumber",
-  entityId: "number.goodwe_charge_target",
-  value: { source: "control" },
+  type: "serviceCall",
+  service: "number.set_value",
+  target: { entityId: "number.goodwe_charge_target" },
+  data: {
+    value: {
+      kind: "requestedValue",
+      transforms: [
+        { type: "powerToCurrent", phases: 3, voltage: 230 },
+        { type: "nearest", values: [5, 10, 15] },
+        { type: "valueMap", values: [{ from: 5, to: "low" }, { from: 10, to: "high" }] },
+      ],
+    },
+  },
 };
+const capabilities = [{
+  service: "select.select_option", name: "Select option", description: "Selects an option.",
+  entities: [{ entity_id: "select.goodwe_operation_mode", name: "GoodWe mode", fields: [{ id: "option", name: "Option", required: true, selector: { type: "select" }, constraints: { options: ["eco", "eco_charge"] } }] }],
+}, {
+  service: "number.set_value", name: "Set value", description: "Sets a value.",
+  entities: [{ entity_id: "number.goodwe_charge_target", name: "GoodWe target", fields: [{ id: "value", name: "Value", required: true, selector: { type: "number" }, constraints: { min: 0, max: 100, step: 1 } }] }],
+}];
 
 test("production editor preserves ordered explicit Save and lossless Cancel", () => {
   const editor = new Editor();
+  editor.valueType = { datatype: "number", unit: "W" };
   editor.actions = [mode, target];
   editor.render = () => {};
 
@@ -49,7 +68,89 @@ test("production editor preserves ordered explicit Save and lossless Cancel", ()
   editor._command("up", 1);
   editor._command("save", 0);
   assert.equal(editor.lastEvent.type, "control-saved");
-  assert.deepEqual(editor.lastEvent.detail.actions, [target, mode]);
+  assert.deepEqual(editor.lastEvent.detail.configuration, {
+    version: 1,
+    actions: [target, mode],
+  });
+});
+
+test("saving an empty existing sequence requests Mapping removal", () => {
+  const editor = new Editor();
+  editor.actions = [mode];
+  editor.render = () => {};
+  editor._command("remove", 0);
+  editor._command("save", 0);
+  assert.equal(editor.lastEvent.type, "control-saved");
+  assert.equal(editor.lastEvent.detail.configuration, null);
+});
+
+test("editor exposes every documented requested-value transform as structured UI", () => {
+  const editor = new Editor();
+  editor.valueType = { datatype: "number", unit: "W" };
+  const html = editor._transformEditor("value", []);
+  for (const transform of ["powerToCurrent", "nearest", "valueMap", "invert", "scale", "offset"]) {
+    assert.match(html, new RegExp(`value="${transform}"`));
+  }
+  assert.doesNotMatch(html, /textarea|JSON|YAML/);
+});
+
+test("transform availability follows canonical datatype, unit, and ordered pipeline", () => {
+  const power = new Editor(); power.valueType = { datatype: "number", unit: "W" };
+  assert.deepEqual(power._availableTransforms([]), ["powerToCurrent", "invert", "scale", "offset", "nearest", "valueMap"]);
+  const converted = [{ type: "powerToCurrent", phases: 3, voltage: 230 }];
+  assert.deepEqual(power._pipeline(converted), { valid: true, datatype: "number", unit: "A" });
+  assert.ok(!power._availableTransforms(converted).includes("powerToCurrent"));
+  assert.ok(power._availableTransforms(converted).includes("nearest"));
+
+  for (const concept of ["heatPump.targetTemperature", "waterHeater.targetTemperature"]) {
+    const temperature = new Editor(); temperature.controlName = concept; temperature.valueType = { datatype: "number", unit: "°C" };
+    assert.ok(!temperature._availableTransforms([]).includes("powerToCurrent"));
+    assert.deepEqual(temperature._pipeline([{ type: "offset", amount: 1 }]), { valid: true, datatype: "number", unit: "°C" });
+  }
+  const logical = new Editor(); logical.valueType = { datatype: "boolean", unit: null };
+  assert.deepEqual(logical._availableTransforms([]), ["valueMap"]);
+});
+
+test("valueMap output and reordering recalculate and block invalid pipelines", () => {
+  const editor = new Editor(); editor.valueType = { datatype: "number", unit: "W" };
+  editor.strings = { invalid_pipeline: "Invalid adjustment sequence at step" };
+  const map = { type: "valueMap", values: [{ from: 0, to: "off" }, { from: 1, to: "on" }] };
+  assert.deepEqual(editor._pipeline([map]), { valid: true, datatype: "string", unit: null });
+  assert.deepEqual(editor._availableTransforms([map]), ["valueMap"]);
+  const invalid = [map, { type: "nearest", values: [0, 1] }];
+  assert.equal(editor._pipeline(invalid).valid, false);
+  assert.equal(editor._pipeline(invalid).index, 1);
+  assert.equal(editor._pipeline([{ type: "nearest", values: [0, 1] }, map]).valid, true);
+  assert.equal(editor._pipeline([{ type: "nearest", values: [0, 1] }]).unit, "W");
+  assert.ok(editor._availableTransforms([]).includes("nearest"));
+
+  editor._working = [{ type: "serviceCall", service: "number.set_value", target: { entityId: "number.target" }, data: { value: { kind: "requestedValue", transforms: invalid } } }];
+  editor.render = () => {};
+  editor._command("save", 0);
+  assert.match(editor._saveError, /step 2/i);
+  assert.notEqual(editor.lastEvent?.type, "control-saved");
+  editor._working[0].data.value.transforms.shift();
+  assert.equal(editor._configurationPipelineError(), "");
+});
+
+test("editor is driven by HA actions, entities, and dynamic fields", () => {
+  const editor = new Editor();
+  editor.capabilities = capabilities;
+  editor._dialogDraft = structuredClone(mode);
+  const html = editor._dialog();
+  assert.match(html, /select\.select_option/);
+  assert.match(html, /select\.goodwe_operation_mode/);
+  assert.match(html, /eco_charge/);
+  assert.doesNotMatch(html, /action-type|selectOption|setNumber|water_heater_temperature/);
+});
+
+test("typed literal and requestedValue bindings retain the existing Mapping shape", () => {
+  const editor = new Editor();
+  editor.capabilities = capabilities;
+  editor.actions = [mode, target];
+  assert.equal(typeof editor.actions[0].data.option.value, "string");
+  assert.equal(editor.actions[1].data.value.kind, "requestedValue");
+  assert.deepEqual(editor.actions[1].data.value.transforms, target.data.value.transforms);
 });
 
 test("production editor removal remains a draft until Save", () => {
