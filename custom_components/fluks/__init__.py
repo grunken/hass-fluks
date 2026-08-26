@@ -1,12 +1,15 @@
 """The fluks Home Assistant integration."""
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_INTEGRATION_KEY
+from .const import API_BASE_URL, CONF_INTEGRATION_KEY, DATA_RUNTIME, DOMAIN
 from .control_editor_panel import async_register_control_editor_panel
 from .panel_api import async_register_panel_commands
+from .runtime import FluksRuntimeWebSocket
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -17,12 +20,34 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a fluks config entry without runtime communication."""
-    if not entry.data.get(CONF_INTEGRATION_KEY):
+    """Set up a fluks config entry and start its background runtime transport."""
+    if not (integration_key := entry.data.get(CONF_INTEGRATION_KEY)):
         raise ConfigEntryAuthFailed("The fluks Integration credential is missing")
+    runtime = FluksRuntimeWebSocket(
+        async_get_clientsession(hass), integration_key, API_BASE_URL
+    )
+    runtimes = hass.data.setdefault(DOMAIN, {}).setdefault(DATA_RUNTIME, {})
+    if (previous := runtimes.pop(entry.entry_id, None)) is not None:
+        await previous.async_stop()
+    runtimes[entry.entry_id] = runtime
+    runtime.start(
+        lambda coroutine: entry.async_create_background_task(
+            hass, coroutine, "fluks runtime"
+        )
+    )
+
+    async def _stop_runtime(_event: Event) -> None:
+        await runtime.async_stop()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop_runtime)
+    )
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a fluks config entry."""
+    """Unload a fluks config entry and stop its runtime transport."""
+    runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {})
+    if (runtime := runtimes.pop(entry.entry_id, None)) is not None:
+        await runtime.async_stop()
     return True

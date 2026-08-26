@@ -1,6 +1,7 @@
 """Tests for the milestone 1 config entry lifecycle."""
 
-from unittest.mock import patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -24,13 +25,30 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass):
     )
     entry.add_to_hass(hass)
 
-    with patch(
-        "custom_components.fluks.api.FluksApiClient.create_integration"
-    ) as create_integration:
+    runtime = MagicMock()
+    runtime.async_stop = AsyncMock()
+    with (
+        patch(
+            "custom_components.fluks.api.FluksApiClient.create_integration"
+        ) as create_integration,
+        patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime),
+    ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
+        runtime.start.assert_called_once()
+        create_background_task = runtime.start.call_args.args[0]
+        pending_runtime = create_background_task(asyncio.Event().wait())
+        assert pending_runtime in hass._background_tasks
+        assert pending_runtime not in hass._tasks
+        await hass.async_block_till_done()
+        assert not pending_runtime.done()
         assert await hass.config_entries.async_unload(entry.entry_id)
+        assert pending_runtime.cancelled()
+        runtime.async_stop.assert_awaited_once()
+        runtime.reset_mock()
+        runtime.async_stop = AsyncMock()
         assert await hass.config_entries.async_setup(entry.entry_id)
+        runtime.start.assert_called_once()
         create_integration.assert_not_called()
 
     assert entry.data["integration_id"] == "external-id"

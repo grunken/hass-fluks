@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+import pytest
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResultType
@@ -33,6 +34,15 @@ SITE = {"id": "site-uuid", "name": "Home"}
 EXTERNAL_ID = "11111111-1111-1111-1111-111111111111"
 INTERNAL_ID = "22222222-2222-2222-2222-222222222222"
 INTEGRATION_KEY = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+
+
+@pytest.fixture(autouse=True)
+def prevent_live_runtime_connections():
+    """Onboarding tests never open the production runtime transport."""
+    runtime = MagicMock()
+    runtime.async_stop = AsyncMock()
+    with patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime):
+        yield
 
 
 def make_api():
