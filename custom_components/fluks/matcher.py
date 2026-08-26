@@ -169,7 +169,10 @@ def suggest_entities(
 
 
 def input_configuration(
-    hass: HomeAssistant, concept: dict[str, Any], entity_id: str
+    hass: HomeAssistant,
+    concept: dict[str, Any],
+    entity_id: str,
+    transforms: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build exactly the documented Home Assistant input configuration."""
     configuration: dict[str, Any] = {"version": 1, "entityId": entity_id}
@@ -181,6 +184,8 @@ def input_configuration(
         configuration["transforms"] = [
             {"type": "valueMap", "values": {"on": True, "off": False}}
         ]
+    if transforms is not None:
+        configuration["transforms"] = transforms
     if concept.get("cadence") == "interval":
         state_class = state.attributes.get("state_class") if state else None
         configuration["source"] = {
@@ -191,3 +196,40 @@ def input_configuration(
             )
         }
     return configuration
+
+
+def normalize_input_configuration(
+    hass: HomeAssistant, concept: dict[str, Any], submitted: Any
+) -> dict[str, Any]:
+    """Validate editable input configuration without changing its v1 contract."""
+    if not isinstance(submitted, dict) or submitted.get("version", 1) != 1:
+        raise ValueError("Invalid input Mapping")
+    entity_id = submitted.get("entityId")
+    if not isinstance(entity_id, str) or "." not in entity_id:
+        raise ValueError("Invalid input entity")
+    transforms = submitted.get("transforms")
+    if transforms is not None:
+        if not isinstance(transforms, list) or not 1 <= len(transforms) <= 16:
+            raise ValueError("Invalid input transforms")
+        normalized: list[dict[str, Any]] = []
+        for transform in transforms:
+            if not isinstance(transform, dict):
+                raise ValueError("Invalid input transform")
+            kind = transform.get("type")
+            if kind == "invert" and set(transform) == {"type"}:
+                normalized.append({"type": "invert"})
+            elif kind in {"scale", "offset"}:
+                parameter = "factor" if kind == "scale" else "amount"
+                value = transform.get(parameter)
+                if set(transform) != {"type", parameter} or isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError("Invalid numeric input transform")
+                normalized.append({"type": kind, parameter: value})
+            elif kind == "valueMap":
+                values = transform.get("values")
+                if set(transform) != {"type", "values"} or not isinstance(values, dict) or not values:
+                    raise ValueError("Invalid input value map")
+                normalized.append({"type": "valueMap", "values": dict(values)})
+            else:
+                raise ValueError("Unsupported input transform")
+        transforms = normalized
+    return input_configuration(hass, concept, entity_id, transforms)

@@ -18,6 +18,7 @@ globalThis.CustomEvent = class {};
 globalThis.addEventListener = () => {};
 globalThis.removeEventListener = () => {};
 globalThis.history = { back: () => {} };
+globalThis.CSS = { escape: (value) => value };
 
 await import("../../custom_components/fluks/frontend/control-action-editor.js?rev=existing-ha-session");
 await import("../../custom_components/fluks/frontend/control-editor-panel.js?rev=production-path-test");
@@ -298,4 +299,51 @@ test("ordinary Device and canonical Site route to their distinct lifecycle delet
 
   assert.deepEqual(routeDelete("battery"), { name: "delete-device", deviceId: "battery-id", stage: "confirm" });
   assert.deepEqual(routeDelete("site"), { name: "delete-site", stage: "confirm" });
+});
+
+test("production Edit mappings path saves and restores ordered input conversions", async () => {
+  const detail = {
+    id: "site-device", type: "site", type_name: "Site", label: "Site · Home", properties: {},
+    concepts: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
+    mappings: { "site.power": { configuration: { version: 1, entityId: "sensor.grid_power" } } }, suggestions: {},
+  };
+  const panel = new Panel(); panel._context = { translations: {}, entities: [] }; panel._detail = detail;
+  panel._hass = { states: { "sensor.grid_power": { state: "4919", attributes: { friendly_name: "Grid power", unit_of_measurement: "W" } } }, language: "en", localize: () => undefined };
+  let body; let saved; let addButton;
+  const cancel = {}; const save = {};
+  panel._call = async (type, payload) => { if (type === "fluks/config/device_save") saved = payload; return {}; };
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = (selector) => {
+    if (selector === "[data-picker-kind]") return [];
+    if (selector === "[data-input-transform]") return addButton ? [addButton] : [];
+    if (selector === "[data-property]") return [];
+    return [];
+  };
+  panel.shadowRoot.querySelector = (selector) => {
+    if (selector === "#cancel") return cancel;
+    if (selector === "#save") return save;
+    if (selector.includes("data-input-transform-type")) return { value: "invert" };
+    if (selector.includes("data-input-transform-value")) return { value: "" };
+    return null;
+  };
+  addButton = { dataset: { inputTransform: "commit", inputConcept: "site.power" } };
+
+  panel._renderEdit();
+  assert.match(body, /sensor\.grid_power/);
+  assert.match(body, /Conversions|conversions/);
+  addButton.onclick();
+  assert.match(body, /Invert sign|invert/);
+  await save.onclick();
+  assert.deepEqual(saved.mappings["site.power"], {
+    version: 1, entityId: "sensor.grid_power", transforms: [{ type: "invert" }],
+  });
+
+  const reopened = new Panel(); reopened._context = panel._context; reopened._hass = panel._hass;
+  reopened._detail = { ...detail, mappings: { "site.power": { configuration: saved.mappings["site.power"] } } };
+  reopened._frame = (_title, html) => { body = html; };
+  reopened.shadowRoot.querySelectorAll = () => [];
+  reopened.shadowRoot.querySelector = (selector) => selector === "#cancel" ? {} : selector === "#save" ? {} : null;
+  reopened._renderEdit();
+  assert.match(body, /Invert sign|invert/);
+  assert.match(body, /sensor\.grid_power/);
 });

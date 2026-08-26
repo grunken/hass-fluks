@@ -10,6 +10,7 @@ if (!customElements.get(CONTROL_ACTION_EDITOR_TAG)) {
 
 const TAGLINE = "Your Energy. Decides together.";
 const DEVICE_ICON_BASE = "/fluks-device-icons";
+const clone = (value) => JSON.parse(JSON.stringify(value));
 const esc = (value) => String(value ?? "").replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 
@@ -212,11 +213,22 @@ class FluksControlEditorPanel extends HTMLElement {
       <span class="source-icon"><ha-icon icon="${esc(item?.icon || (kind === "device" ? "mdi:devices" : "mdi:chart-bell-curve-cumulative"))}"></ha-icon></span>
       <span class="row-copy"><strong title="${esc(name)}">${esc(name)}</strong><span title="${esc(secondary || this._t("optional"))}">${esc(secondary || this._t("optional"))}</span></span><span class="chevron">⌄</span></button>`;
   }
-  _mappingFields(detail) {
+  _inputConversions(concept, configuration) {
+    const transforms = configuration.transforms ?? [];
+    const editing = this._inputTransformEditing?.concept === concept ? transforms[this._inputTransformEditing.index] : undefined;
+    const rows = transforms.map((transform, index) => {
+      const detail = transform.type === "scale" ? ` × ${transform.factor}` : transform.type === "offset" ? ` ${transform.amount}` : transform.type === "valueMap" ? ` · ${Object.keys(transform.values ?? {}).length}` : "";
+      return `<li><span>${index + 1}. ${esc(this._t(transform.type === "valueMap" ? "value_map" : transform.type))}${esc(detail)}</span><span class="row-actions"><button type="button" data-input-transform="up" data-input-concept="${esc(concept)}" data-index="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" data-input-transform="down" data-input-concept="${esc(concept)}" data-index="${index}" ${index === transforms.length - 1 ? "disabled" : ""}>↓</button>${transform.type === "valueMap" ? "" : `<button type="button" data-input-transform="edit" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("edit"))}</button>`}<button type="button" data-input-transform="remove" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("remove"))}</button></span></li>`;
+    }).join("");
+    const selected = editing?.type ?? "invert"; const value = editing?.factor ?? editing?.amount ?? "";
+    return `<div class="input-conversions"><strong>${esc(this._t("conversions"))}</strong>${rows ? `<ol>${rows}</ol>` : `<small>${esc(this._t("no_transforms"))}</small>`}<div class="conversion-add"><select data-input-transform-type="${esc(concept)}"><option value="invert" ${selected === "invert" ? "selected" : ""}>${esc(this._t("invert"))}</option><option value="scale" ${selected === "scale" ? "selected" : ""}>${esc(this._t("scale"))}</option><option value="offset" ${selected === "offset" ? "selected" : ""}>${esc(this._t("offset"))}</option></select><input type="number" step="any" value="${esc(value)}" data-input-transform-value="${esc(concept)}" aria-label="${esc(this._t("amount"))}"><button type="button" data-input-transform="commit" data-input-concept="${esc(concept)}">${editing ? esc(this._t("save_adjustment")) : `＋ ${esc(this._t("add_conversion"))}`}</button></div></div>`;
+  }
+  _mappingFields(detail, editableConversions = false) {
     const groups = { measurements: [], energy: [] };
     for (const concept of detail.concepts) {
-      const selected = detail.mappings[concept.concept]?.configuration?.entityId || detail.suggestions[concept.concept] || "";
-      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>`);
+      const configuration = editableConversions ? this._inputDraft[concept.concept] : undefined;
+      const selected = configuration?.entityId || detail.mappings[concept.concept]?.configuration?.entityId || detail.suggestions[concept.concept] || "";
+      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${editableConversions && selected ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
     }
     return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
   }
@@ -227,8 +239,10 @@ class FluksControlEditorPanel extends HTMLElement {
       <label>${esc(this._t("direction"))}<input type="number" min="0" max="359.999" data-property="azimuthDegrees" value="${esc(properties.azimuthDegrees ?? "")}"></label>
       <label>${esc(this._t("panel_angle"))}<input type="number" min="0" max="90" data-property="tiltDegrees" value="${esc(properties.tiltDegrees ?? "")}"></label></div></section>` : ""}`;
   }
-  _collectForm() {
-    const mappings = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-concept]")].map((n) => [n.dataset.concept, n.value]).filter(([, v]) => v));
+  _collectForm(useInputDraft = false) {
+    const mappings = useInputDraft
+      ? Object.fromEntries(Object.entries(this._inputDraft).filter(([, value]) => value.entityId).map(([concept, value]) => [concept, clone(value)]))
+      : Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-concept]")].map((n) => [n.dataset.concept, n.value]).filter(([, v]) => v));
     const properties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((n) => [n.dataset.property, n.value === "" ? null : n.type === "number" ? Number(n.value) : n.value.trim()]));
     return { mappings, properties };
   }
@@ -241,10 +255,32 @@ class FluksControlEditorPanel extends HTMLElement {
         }
         const hidden = this.shadowRoot.querySelector(`[data-concept="${CSS.escape(button.dataset.pickerKey)}"]`);
         hidden.value = value;
+        if (this._inputDraft?.[button.dataset.pickerKey]) this._inputDraft[button.dataset.pickerKey].entityId = value;
         const replacement = document.createRange().createContextualFragment(this._pickerValue("entity", value, button.dataset.pickerKey));
         button.replaceWith(replacement);
         this._wirePickers();
       });
+    });
+  }
+  _wireInputConversions() {
+    this.shadowRoot.querySelectorAll("[data-input-transform]").forEach((button) => button.onclick = () => {
+      const concept = button.dataset.inputConcept; const transforms = this._inputDraft[concept].transforms ?? [];
+      const index = Number(button.dataset.index); const command = button.dataset.inputTransform;
+      if (command === "remove") transforms.splice(index, 1);
+      if (command === "up" || command === "down") { const destination = command === "up" ? index - 1 : index + 1; const [item] = transforms.splice(index, 1); transforms.splice(destination, 0, item); }
+      if (command === "edit") this._inputTransformEditing = { concept, index };
+      if (command === "commit") {
+        const type = this.shadowRoot.querySelector(`[data-input-transform-type="${CSS.escape(concept)}"]`).value;
+        const raw = this.shadowRoot.querySelector(`[data-input-transform-value="${CSS.escape(concept)}"]`).value;
+        let transform;
+        if (type === "invert") transform = { type };
+        else { const value = Number(raw); if (!Number.isFinite(value)) return; transform = { type, [type === "scale" ? "factor" : "amount"]: value }; }
+        if (this._inputTransformEditing?.concept === concept) transforms[this._inputTransformEditing.index] = transform; else transforms.push(transform);
+        this._inputTransformEditing = undefined;
+      }
+      if (transforms.length) this._inputDraft[concept].transforms = transforms; else delete this._inputDraft[concept].transforms;
+      this._editProperties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()]));
+      this._renderEdit();
     });
   }
   _openPicker(kind, selected, onSelect) {
@@ -278,11 +314,20 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _renderEdit() {
     const site = this._detail.type === "site";
-    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail)}${site ? "" : this._propertiesForm(this._detail.properties, this._detail.type === "solar")}${this._actions()}`, true);
+    if (this._inputDraftDevice !== this._detail.id) {
+      this._inputDraftDevice = this._detail.id;
+      this._inputDraft = Object.fromEntries(this._detail.concepts.map((concept) => {
+        const existing = this._detail.mappings[concept.concept]?.configuration;
+        return [concept.concept, clone(existing ?? { version: 1, entityId: this._detail.suggestions[concept.concept] || "" })];
+      }));
+      this._editProperties = clone(this._detail.properties);
+    }
+    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type === "solar")}${this._actions()}`, true);
     this._wirePickers();
+    this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => history.back();
     this.shadowRoot.querySelector("#save").onclick = async () => {
-      try { const form = this._collectForm(); await this._call("fluks/config/device_save", { device_id: this._detail.id, mappings: form.mappings, properties: site ? {} : form.properties }); history.back(); }
+      try { const form = this._collectForm(true); await this._call("fluks/config/device_save", { device_id: this._detail.id, mappings: form.mappings, properties: site ? {} : form.properties }); history.back(); }
       catch (_) { this._renderEdit(); }
     };
   }
@@ -413,12 +458,13 @@ class FluksControlEditorPanel extends HTMLElement {
     .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
     .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
-    label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input{width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}
+    label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input,select{width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}
+    .mapping-field{min-width:0}.input-conversions{display:grid;gap:8px;margin-top:10px;padding:10px;border-radius:9px;background:var(--secondary-background-color)}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:6px}.input-conversions li{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}.input-conversions .row-actions{display:flex;gap:4px}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.conversion-add{display:grid;grid-template-columns:minmax(120px,1fr) minmax(90px,1fr) auto;gap:7px;align-items:center}.conversion-add button{white-space:nowrap}
     .picker-value{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;padding:10px 12px;background:var(--secondary-background-color);overflow:hidden}.source-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;color:var(--primary-color)}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}
     dialog{width:min(620px,calc(100vw - 32px));max-height:min(720px,calc(100vh - 32px));padding:0;border:1px solid var(--divider-color);border-radius:14px;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 14px 45px rgba(0,0,0,.38)}dialog::backdrop{background:rgba(0,0,0,.58)}.dialog-heading{display:flex;justify-content:space-between;align-items:center;padding:18px 18px 8px}.dialog-heading h2{margin:0}.search{padding:8px 16px;margin:0}.picker-results{max-height:min(530px,65vh);overflow:auto;border-top:1px solid var(--divider-color)}.picker-row{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;background:transparent;padding:8px 15px;overflow:hidden}.picker-row.selected{outline:2px solid var(--primary-color);outline-offset:-2px}.picker-row .trailing{flex:0 1 150px;min-width:0;max-width:28%;margin-left:auto;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}.empty-results{padding:22px}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
     .error{background:var(--error-color);color:#fff;padding:12px;margin-bottom:16px;border-radius:7px}
-    @media(max-width:700px){main{padding:16px 12px 36px}.fields,.fields.two,.fields.three{grid-template-columns:1fr}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.device-icon.hero{width:52px;height:52px}.section-title{align-items:flex-start}.actions{position:sticky;z-index:4;bottom:0;background:var(--primary-background-color);padding:10px 0}.row{padding:12px}.card{padding:14px}.list{padding:0}.picker-results{max-height:60vh}.picker-row .trailing{flex-basis:96px;max-width:24%}}
+    @media(max-width:700px){main{padding:16px 12px 36px}.fields,.fields.two,.fields.three{grid-template-columns:1fr}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.device-icon.hero{width:52px;height:52px}.section-title{align-items:flex-start}.actions{position:sticky;z-index:4;bottom:0;background:var(--primary-background-color);padding:10px 0}.row{padding:12px}.card{padding:14px}.list{padding:0}.picker-results{max-height:60vh}.picker-row .trailing{flex-basis:96px;max-width:24%}.conversion-add{grid-template-columns:1fr 1fr}.conversion-add button{grid-column:1/-1}}
     @media(max-width:390px){.type-grid{grid-template-columns:1fr 1fr}.type-option{min-height:108px}.device-icon.picker{width:58px;height:58px}.section-title{flex-wrap:wrap}}
   `; }
 }

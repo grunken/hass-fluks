@@ -380,8 +380,8 @@ async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(h
                 "entry_id": entry.entry_id,
                 "device_id": "device-a",
                 "mappings": {
-                    "battery.soc": "sensor.new_soc",
-                    "battery.energy": "sensor.new_energy",
+                    "battery.soc": {"version": 1, "entityId": "sensor.new_soc"},
+                    "battery.energy": {"version": 1, "entityId": "sensor.new_energy"},
                 },
                 "properties": {"vendor": "GoodWe", "model": "New"},
             },
@@ -530,7 +530,13 @@ async def test_site_input_mapping_uses_shared_incremental_device_save(hass):
                 "type": COMMAND_DEVICE_SAVE,
                 "entry_id": entry.entry_id,
                 "device_id": "site-device",
-                "mappings": {"site.power": "sensor.grid_power"},
+                "mappings": {
+                    "site.power": {
+                        "version": 1,
+                        "entityId": "sensor.grid_power",
+                        "transforms": [{"type": "invert"}],
+                    }
+                },
                 "properties": {},
             },
         )
@@ -541,6 +547,7 @@ async def test_site_input_mapping_uses_shared_incremental_device_save(hass):
     assert payload["concept"] == "site.power"
     assert payload["direction"] == "input"
     assert payload["configuration"]["entityId"] == "sensor.grid_power"
+    assert payload["configuration"]["transforms"] == [{"type": "invert"}]
     api.update_device_properties.assert_not_awaited()
 
 

@@ -48,7 +48,7 @@ from .device import (
     device_type_name,
     stable_device_id,
 )
-from .matcher import input_configuration, suggest_entities
+from .matcher import input_configuration, normalize_input_configuration, suggest_entities
 from .output_mapping import OutputMappingValidationError, validate_output_configuration
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
@@ -459,6 +459,22 @@ def _validate_selected(
     }
 
 
+def _validate_input_mappings(
+    hass: HomeAssistant, concepts: list[dict[str, Any]], submitted: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    allowed = {str(item["concept"]): item for item in concepts}
+    if not isinstance(submitted, dict) or any(key not in allowed for key in submitted):
+        raise PanelCommandError("invalid_mapping")
+    try:
+        return {
+            str(key): normalize_input_configuration(hass, allowed[str(key)], value)
+            for key, value in submitted.items()
+            if isinstance(value, dict) and value.get("entityId")
+        }
+    except ValueError as err:
+        raise PanelCommandError("invalid_mapping") from err
+
+
 def _device_properties(hass, ha_device_id: str, submitted: dict[str, Any]) -> dict[str, Any]:
     device = dr.async_get(hass).async_get(ha_device_id)
     properties = {
@@ -595,7 +611,7 @@ async def websocket_device_save(hass, connection, msg):
         if device_type not in catalog:
             raise PanelCommandError("not_found")
         concepts = _mappable_concepts(catalog[device_type])
-        selected = _validate_selected(concepts, msg["mappings"])
+        selected = _validate_input_mappings(hass, concepts, msg["mappings"])
         original_properties = dict(device.get("properties") or {})
         submitted = {
             key: value
@@ -619,15 +635,14 @@ async def websocket_device_save(hass, connection, msg):
         }
         definitions = {str(item["concept"]): item for item in concepts}
         for concept, definition in definitions.items():
-            entity_id = selected.get(concept)
+            configuration = selected.get(concept)
             mapping = existing.get(concept)
             current = (mapping or {}).get("configuration") or {}
-            if entity_id == current.get("entityId"):
+            if configuration == current:
                 continue
-            if mapping is not None and not entity_id:
+            if mapping is not None and configuration is None:
                 await api.delete_mapping(site_id, str(mapping["id"]))
-            elif entity_id:
-                configuration = input_configuration(hass, definition, entity_id)
+            elif configuration is not None:
                 if mapping is not None:
                     await api.update_mapping(site_id, str(mapping["id"]), configuration)
                 else:
