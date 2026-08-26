@@ -309,30 +309,34 @@ test("production Edit mappings path saves and restores ordered input conversions
   };
   const panel = new Panel(); panel._context = { translations: {}, entities: [] }; panel._detail = detail;
   panel._hass = { states: { "sensor.grid_power": { state: "4919", attributes: { friendly_name: "Grid power", unit_of_measurement: "W" } } }, language: "en", localize: () => undefined };
-  let body; let saved; let addButton;
+  let body; let saved;
   const cancel = {}; const save = {};
   panel._call = async (type, payload) => { if (type === "fluks/config/device_save") saved = payload; return {}; };
   panel._frame = (_title, html) => { body = html; };
   panel.shadowRoot.querySelectorAll = (selector) => {
     if (selector === "[data-picker-kind]") return [];
-    if (selector === "[data-input-transform]") return addButton ? [addButton] : [];
+    if (selector === "[data-input-transform]") return [];
     if (selector === "[data-property]") return [];
     return [];
   };
   panel.shadowRoot.querySelector = (selector) => {
     if (selector === "#cancel") return cancel;
     if (selector === "#save") return save;
-    if (selector.includes("data-input-transform-type")) return { value: "invert" };
-    if (selector.includes("data-input-transform-value")) return { value: "" };
     return null;
   };
-  addButton = { dataset: { inputTransform: "commit", inputConcept: "site.power" } };
 
   panel._renderEdit();
   assert.match(body, /sensor\.grid_power/);
   assert.match(body, /Conversions|conversions/);
-  addButton.onclick();
+  assert.match(body, /data-input-transform="add"/);
+  assert.doesNotMatch(body, /data-input-transform-type|data-input-transform-value/);
+  assert.equal(panel._commitInputConversion("site.power", undefined, "invert", ""), true);
+  panel._renderEdit();
   assert.match(body, /Invert sign|invert/);
+  assert.match(body, /class="order">1</);
+  assert.match(body, /data-input-transform="up"[^>]+disabled/);
+  assert.match(body, /data-input-transform="down"[^>]+disabled/);
+  assert.match(body, /data-input-transform="edit"/);
   await save.onclick();
   assert.deepEqual(saved.mappings["site.power"], {
     version: 1, entityId: "sensor.grid_power", transforms: [{ type: "invert" }],
@@ -346,4 +350,71 @@ test("production Edit mappings path saves and restores ordered input conversions
   reopened._renderEdit();
   assert.match(body, /Invert sign|invert/);
   assert.match(body, /sensor\.grid_power/);
+});
+
+test("Input Mapping conversions follow the unsaved Entity draft immediately", () => {
+  const panel = new Panel();
+  panel._context = { translations: {}, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._detail = {
+    id: "device", type: "battery", type_name: "Battery", label: "Battery · Test", properties: {},
+    concepts: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
+    mappings: {}, suggestions: {},
+  };
+  let body;
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? {} : selector === "#save" ? {} : null;
+
+  panel._renderEdit();
+  assert.doesNotMatch(body, /data-input-transform="add"/);
+
+  panel._selectInputEntity("battery.power", "sensor.goodwe_power");
+  assert.match(body, /data-input-transform="add"/);
+  assert.equal(panel._inputDraft["battery.power"].entityId, "sensor.goodwe_power");
+
+  panel._selectInputEntity("battery.power", "");
+  assert.doesNotMatch(body, /data-input-transform="add"/);
+  assert.equal(panel._inputDraft["battery.power"].entityId, "");
+});
+
+test("clearing a persisted Input Mapping remains cleared until Save or Cancel", async () => {
+  const persisted = { version: 1, entityId: "sensor.saved_power", transforms: [{ type: "invert" }] };
+  const panel = new Panel();
+  panel._context = { translations: {}, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._detail = {
+    id: "device", type: "battery", type_name: "Battery", label: "Battery · Test", properties: {},
+    concepts: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
+    mappings: { "battery.power": { configuration: persisted } }, suggestions: {},
+  };
+  let body; let saved; let backCount = 0;
+  const originalBack = history.back; history.back = () => { backCount += 1; };
+  const cancel = {}; const save = {};
+  panel._frame = (_title, html) => { body = html; };
+  panel._call = async (_type, payload) => { saved = payload; return {}; };
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+
+  panel._renderEdit();
+  assert.match(body, /sensor\.saved_power/);
+  assert.match(body, /data-input-transform="add"/);
+  panel._selectInputEntity("battery.power", "");
+  assert.doesNotMatch(body, /sensor\.saved_power/);
+  assert.doesNotMatch(body, /data-input-transform="add"/);
+  assert.equal(panel._inputDraft["battery.power"].entityId, "");
+
+  await save.onclick();
+  assert.deepEqual(saved.mappings, {});
+
+  panel._inputDraftDevice = undefined;
+  panel._renderEdit();
+  panel._selectInputEntity("battery.power", "");
+  cancel.onclick();
+  assert.equal(panel._inputDraft, undefined);
+  panel._renderEdit();
+  assert.match(body, /sensor\.saved_power/);
+  assert.match(body, /data-input-transform="add"/);
+  assert.ok(backCount >= 2);
+  history.back = originalBack;
 });
