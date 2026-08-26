@@ -48,8 +48,9 @@ from .device import (
     device_type_name,
     stable_device_id,
 )
-from .matcher import input_configuration, normalize_input_configuration, suggest_entities
+from .matcher import normalize_input_configuration, suggest_entities
 from .output_mapping import OutputMappingValidationError, validate_output_configuration
+from .observations import async_refresh_observations
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
 COMMAND_DEVICE_DETAIL = f"{DOMAIN}/config/device"
@@ -529,7 +530,7 @@ async def websocket_add_save(hass, connection, msg):
         if msg["device_type"] not in catalog or msg["device_type"] == SITE_DEVICE_TYPE:
             raise PanelCommandError("validation_error")
         concepts = _mappable_concepts(catalog[msg["device_type"]])
-        selected = _validate_selected(concepts, msg["mappings"])
+        selected = _validate_input_mappings(hass, concepts, msg["mappings"])
         _validate_solar_properties(msg["device_type"], msg["properties"])
         external_id = stable_device_id(
             entry.data[CONF_INTEGRATION_ID], msg["device_type"], msg["ha_device_id"]
@@ -562,14 +563,13 @@ async def websocket_add_save(hass, connection, msg):
         internal_id = str(device["id"])
         existing_mappings = await api.list_mappings(site_id, device_id=internal_id)
         by_name = {item.get("concept"): item for item in existing_mappings}
-        definitions = {str(item["concept"]): item for item in concepts}
-        for concept, entity_id in selected.items():
+        for concept, configuration in selected.items():
             payload = {
                 "integrationId": entry.data[CONF_INTEGRATION_INTERNAL_ID],
                 "deviceId": internal_id,
                 "concept": concept,
                 "direction": "input",
-                "configuration": input_configuration(hass, definitions[concept], entity_id),
+                "configuration": configuration,
             }
             if concept not in by_name:
                 await api.create_mapping(site_id, payload)
@@ -583,6 +583,7 @@ async def websocket_add_save(hass, connection, msg):
         options.pop(CONF_DEVICE, None)
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], {"device_id": internal_id})
+        await async_refresh_observations(hass, entry.entry_id)
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)
 
@@ -657,6 +658,7 @@ async def websocket_device_save(hass, connection, msg):
                         },
                     )
         connection.send_result(msg["id"], {})
+        await async_refresh_observations(hass, entry.entry_id)
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)
 
@@ -789,6 +791,7 @@ async def websocket_device_delete(hass, connection, msg):
         options.pop(CONF_DEVICE, None)
         hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], {})
+        await async_refresh_observations(hass, entry.entry_id)
     except (PanelCommandError, FluksApiError) as err:
         _send_error(
             hass, entry, connection, msg["id"], err,

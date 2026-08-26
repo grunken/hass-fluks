@@ -124,6 +124,84 @@ test("production Controls handoff is independent of fluks Device and input mappi
   assert.deepEqual(renderFor("Electric vehicle", { "electricVehicle.power": { configuration: { entityId: "sensor.monta" } } }), [capability]);
 });
 
+test("production Add Device edits and persists suggested Input Mapping conversions", async () => {
+  const panel = new Panel();
+  panel._hass = { states: { "sensor.battery_power": { state: "1200", attributes: { friendly_name: "Battery power", unit_of_measurement: "W" } } }, language: "en", localize: () => undefined };
+  panel._context = {
+    translations: {
+      choose_type: "Choose device type", add_device: "Add device", choose_ha_device: "Choose a Home Assistant device",
+      home_assistant_device: "Home Assistant device", review_suggestions: "Review suggestions", measurements: "Measurements",
+      energy: "Energy", conversions: "Conversions", no_transforms: "No conversions", add_conversion: "Add conversion",
+      save_device: "Save device", cancel: "Cancel", optional: "Optional", up: "Up", down: "Down", edit: "Edit", remove: "Remove",
+      invert: "Invert sign", scale: "Scale", offset: "Offset", device_information: "Device information", name: "Name", vendor: "Vendor", model: "Model",
+    },
+    device_types: [{ type: "battery", name: "Battery" }],
+    ha_devices: [{ id: "ha-battery", name: "GoodWe battery", manufacturer: "GoodWe", model: "GW10K" }],
+    entities: [{ entity_id: "sensor.battery_power", name: "Battery power", device_id: "ha-battery" }],
+  };
+  panel._view = { name: "add", deviceType: "battery" };
+  const review = {
+    concepts: [{ concept: "battery.power", label: "Power", cadence: "realtime" }],
+    suggestions: { "battery.power": "sensor.battery_power" },
+    properties: { displayName: "GoodWe battery", vendor: "GoodWe", model: "GW10K" },
+  };
+  const calls = [];
+  panel._go = () => {};
+  panel._call = async (type, data) => {
+    calls.push({ type, data });
+    if (type === "fluks/config/add_review") return review;
+    if (type === "fluks/config/context") return panel._context;
+    return { device_id: "device-created" };
+  };
+  const originalRenderAdd = panel._renderAdd.bind(panel);
+  panel._renderAdd = () => {};
+  await panel._selectAddHaDevice("ha-battery");
+  panel._renderAdd = originalRenderAdd;
+
+  let rendered = "";
+  const save = {}; const cancel = {};
+  panel._frame = (_title, body) => { rendered = body; };
+  panel.shadowRoot.querySelector = (selector) => selector === "#save" ? save : selector === "#cancel" ? cancel : null;
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel._renderAdd();
+  assert.match(rendered, /sensor\.battery_power/);
+  assert.match(rendered, /Add conversion/);
+  assert.deepEqual(panel._inputDraft["battery.power"], { version: 1, entityId: "sensor.battery_power" });
+
+  assert.equal(panel._commitInputConversion("battery.power", undefined, "invert", ""), true);
+  assert.equal(panel._commitInputConversion("battery.power", undefined, "scale", "0.5"), true);
+  panel._renderAdd();
+  assert.ok(rendered.indexOf("Invert sign") < rendered.indexOf("Scale"));
+
+  panel._selectInputEntity("battery.power", "");
+  assert.doesNotMatch(rendered, /Add conversion/);
+  panel._selectInputEntity("battery.power", "sensor.battery_power");
+  assert.match(rendered, /Add conversion/);
+  await save.onclick();
+  const persisted = calls.find((call) => call.type === "fluks/config/add_save").data.mappings["battery.power"];
+  assert.deepEqual(persisted, {
+    version: 1,
+    entityId: "sensor.battery_power",
+    transforms: [{ type: "invert" }, { type: "scale", factor: 0.5 }],
+  });
+
+  const reopened = new Panel();
+  reopened._context = panel._context; reopened._hass = panel._hass;
+  reopened._view = { name: "edit", deviceId: "device-created" };
+  reopened._detail = {
+    id: "device-created", type: "battery", type_name: "Battery", label: "Battery · GoodWe battery",
+    concepts: review.concepts, suggestions: {}, properties: review.properties,
+    mappings: { "battery.power": { configuration: persisted } },
+  };
+  reopened._frame = (_title, body) => { rendered = body; };
+  reopened.shadowRoot.querySelector = (selector) => selector === "#save" || selector === "#cancel" ? {} : null;
+  reopened.shadowRoot.querySelectorAll = () => [];
+  reopened._renderEdit();
+  assert.deepEqual(reopened._inputDraft["battery.power"], persisted);
+  assert.match(rendered, /Invert sign/);
+  assert.match(rendered, /Scale/);
+});
+
 test("production action dialog selects a global Entity before compatible Action", () => {
   const editor = new Editor();
   editor.capabilities = [

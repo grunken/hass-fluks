@@ -313,7 +313,16 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
                 "entry_id": entry.entry_id,
                 "device_type": "battery",
                 "ha_device_id": "ha-new",
-                "mappings": {"battery.soc": "sensor.new_soc"},
+                "mappings": {
+                    "battery.soc": {
+                        "version": 1,
+                        "entityId": "sensor.new_soc",
+                        "transforms": [
+                            {"type": "invert"},
+                            {"type": "scale", "factor": 0.5},
+                        ],
+                    }
+                },
                 "properties": {},
             },
         )
@@ -324,6 +333,10 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
     payload = api.create_mapping.await_args.args[1]
     assert payload["concept"] == "battery.soc"
     assert payload["configuration"]["entityId"] == "sensor.new_soc"
+    assert payload["configuration"]["transforms"] == [
+        {"type": "invert"},
+        {"type": "scale", "factor": 0.5},
+    ]
     assert "futureDerived" not in repr(payload)
     assert entry.options[CONF_DEVICE_CONTEXTS]["device-new"] == {
         "ha_device_id": "ha-new",
@@ -518,9 +531,14 @@ async def test_site_input_mapping_uses_shared_incremental_device_save(hass):
         }
     }
     conn = connection()
+    refresh = AsyncMock()
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
         patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch(
+            "custom_components.fluks.panel_api.async_refresh_observations",
+            refresh,
+        ),
     ):
         websocket_device_save(
             hass,
@@ -548,6 +566,7 @@ async def test_site_input_mapping_uses_shared_incremental_device_save(hass):
     assert payload["direction"] == "input"
     assert payload["configuration"]["entityId"] == "sensor.grid_power"
     assert payload["configuration"]["transforms"] == [{"type": "invert"}]
+    refresh.assert_awaited_once_with(hass, entry.entry_id)
     api.update_device_properties.assert_not_awaited()
 
 

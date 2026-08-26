@@ -6,8 +6,17 @@ from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import API_BASE_URL, CONF_INTEGRATION_KEY, DATA_RUNTIME, DOMAIN
+from .api import FluksApiClient
+from .const import (
+    API_BASE_URL,
+    CONF_INTEGRATION_KEY,
+    CONF_SITE_ID,
+    DATA_OBSERVATIONS,
+    DATA_RUNTIME,
+    DOMAIN,
+)
 from .control_editor_panel import async_register_control_editor_panel
+from .observations import RealtimeObservationPublisher
 from .panel_api import async_register_panel_commands
 from .runtime import FluksRuntimeWebSocket
 
@@ -35,8 +44,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, coroutine, "fluks runtime"
         )
     )
+    observations = RealtimeObservationPublisher(
+        hass,
+        FluksApiClient(
+            async_get_clientsession(hass), integration_key=integration_key
+        ),
+        entry.data[CONF_SITE_ID],
+        runtime.async_send,
+    )
+    publishers = hass.data[DOMAIN].setdefault(DATA_OBSERVATIONS, {})
+    if (previous := publishers.pop(entry.entry_id, None)) is not None:
+        await previous.async_stop()
+    publishers[entry.entry_id] = observations
+    entry.async_create_background_task(
+        hass, observations.async_refresh(), "fluks observations"
+    )
 
     async def _stop_runtime(_event: Event) -> None:
+        await observations.async_stop()
         await runtime.async_stop()
 
     entry.async_on_unload(
@@ -48,6 +73,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a fluks config entry and stop its runtime transport."""
     runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {})
+    publishers = hass.data.get(DOMAIN, {}).get(DATA_OBSERVATIONS, {})
+    if (publisher := publishers.pop(entry.entry_id, None)) is not None:
+        await publisher.async_stop()
     if (runtime := runtimes.pop(entry.entry_id, None)) is not None:
         await runtime.async_stop()
     return True

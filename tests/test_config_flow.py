@@ -41,7 +41,16 @@ def prevent_live_runtime_connections():
     """Onboarding tests never open the production runtime transport."""
     runtime = MagicMock()
     runtime.async_stop = AsyncMock()
-    with patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime):
+    observations = MagicMock()
+    observations.async_refresh = AsyncMock()
+    observations.async_stop = AsyncMock()
+    with (
+        patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime),
+        patch(
+            "custom_components.fluks.RealtimeObservationPublisher",
+            return_value=observations,
+        ),
+    ):
         yield
 
 

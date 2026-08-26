@@ -4,6 +4,7 @@ DOMAIN = "fluks"
 API_BASE_URL = "https://energy-api.grunken.dk"
 API_TIMEOUT_SECONDS = 10
 DATA_RUNTIME = "runtime"
+DATA_OBSERVATIONS = "observations"
 
 CONF_ACCESS_TOKEN = "access_token"
 CONF_ACCESS_TOKEN_EXPIRES_AT = "access_token_expires_at"

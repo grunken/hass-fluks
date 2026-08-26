@@ -266,9 +266,9 @@ class FluksControlEditorPanel extends HTMLElement {
     });
   }
   _selectInputEntity(concept, entityId) {
-    this._captureEditProperties();
+    this._captureInputProperties();
     this._inputDraft[concept].entityId = entityId;
-    this._renderEdit();
+    this._renderInputDraft();
   }
   _cancelEdit() {
     this._inputDraft = undefined;
@@ -284,13 +284,16 @@ class FluksControlEditorPanel extends HTMLElement {
       if (command === "remove") transforms.splice(index, 1);
       if (command === "up" || command === "down") { const destination = command === "up" ? index - 1 : index + 1; const [item] = transforms.splice(index, 1); transforms.splice(destination, 0, item); }
       if (transforms.length) this._inputDraft[concept].transforms = transforms; else delete this._inputDraft[concept].transforms;
-      this._captureEditProperties();
-      this._renderEdit();
+      this._captureInputProperties();
+      this._renderInputDraft();
     });
   }
-  _captureEditProperties() {
-    this._editProperties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()]));
+  _captureInputProperties() {
+    const properties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()]));
+    if (this._view.name === "add" && this._draft) this._draft.properties = properties;
+    else this._editProperties = properties;
   }
+  _renderInputDraft() { this._view.name === "add" ? this._renderAdd() : this._renderEdit(); }
   _commitInputConversion(concept, index, type, raw) {
     let transform;
     if (type === "invert") transform = { type };
@@ -308,7 +311,7 @@ class FluksControlEditorPanel extends HTMLElement {
     const type = dialog.querySelector("#conversion-type"); const parameter = dialog.querySelector("#conversion-parameter");
     const update = () => { parameter.hidden = type.value === "invert"; parameter.firstChild.textContent = this._t(type.value === "scale" ? "factor" : "amount"); }; type.onchange = update; update();
     const close = () => { dialog.close(); dialog.remove(); }; dialog.querySelector(".close").onclick = close; dialog.querySelector("#conversion-cancel").onclick = close;
-    dialog.querySelector("#conversion-save").onclick = () => { if (!this._commitInputConversion(concept, index, type.value, dialog.querySelector("#conversion-value").value)) return; this._captureEditProperties(); close(); this._renderEdit(); };
+    dialog.querySelector("#conversion-save").onclick = () => { if (!this._commitInputConversion(concept, index, type.value, dialog.querySelector("#conversion-value").value)) return; this._captureInputProperties(); close(); this._renderInputDraft(); };
     this.shadowRoot.append(dialog); dialog.showModal(); type.focus();
   }
   _openPicker(kind, selected, onSelect) {
@@ -370,22 +373,25 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     if (type && this._draft && this._view.haDeviceId) {
       const detail = { concepts: this._draft.concepts, mappings: {}, suggestions: this._draft.suggestions };
-      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail)}${this._propertiesForm(this._draft.properties, type.type === "solar")}`;
+      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._propertiesForm(this._draft.properties, type.type === "solar")}`;
     }
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
     this._frame(type ? `${this._t("add_device")} · ${type.name}` : this._t("add_device"), body, true);
     this.shadowRoot.querySelectorAll("[data-type]").forEach((node) => node.onclick = () => {
       this._view = { name: "add", deviceType: node.dataset.type };
       this._draft = undefined;
+      this._inputDraft = undefined;
+      this._inputDraftDevice = undefined;
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
       this._renderAdd();
     });
     this._wirePickers();
+    this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => history.back();
     this.shadowRoot.querySelector("#save").onclick = async () => {
       if (!this._draft || !this._view.haDeviceId) return;
       try {
-        await this._call("fluks/config/add_save", { device_type: this._view.deviceType, ha_device_id: this._view.haDeviceId, ...this._collectForm() });
+        await this._call("fluks/config/add_save", { device_type: this._view.deviceType, ha_device_id: this._view.haDeviceId, ...this._collectForm(true) });
         this._context = await this._call("fluks/config/context"); this._go({ name: "home" });
       } catch (_) { this._renderAdd(); }
     };
@@ -396,6 +402,11 @@ class FluksControlEditorPanel extends HTMLElement {
       const draft = await this._call("fluks/config/add_review", { device_type: this._view.deviceType, ha_device_id: haDeviceId });
       this._draft = draft;
       this._view = { ...this._view, haDeviceId };
+      this._inputDraftDevice = `add:${this._view.deviceType}:${haDeviceId}`;
+      this._inputDraft = Object.fromEntries(draft.concepts.map((concept) => [concept.concept, {
+        version: 1,
+        entityId: draft.suggestions[concept.concept] || "",
+      }]));
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
       this._renderAdd();
     } catch (_) { this._renderAdd(); }

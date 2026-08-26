@@ -27,15 +27,23 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass):
 
     runtime = MagicMock()
     runtime.async_stop = AsyncMock()
+    observations = MagicMock()
+    observations.async_refresh = AsyncMock()
+    observations.async_stop = AsyncMock()
     with (
         patch(
             "custom_components.fluks.api.FluksApiClient.create_integration"
         ) as create_integration,
         patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime),
+        patch(
+            "custom_components.fluks.RealtimeObservationPublisher",
+            return_value=observations,
+        ),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         runtime.start.assert_called_once()
+        observations.async_refresh.assert_awaited_once()
         create_background_task = runtime.start.call_args.args[0]
         pending_runtime = create_background_task(asyncio.Event().wait())
         assert pending_runtime in hass._background_tasks
@@ -45,8 +53,10 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass):
         assert await hass.config_entries.async_unload(entry.entry_id)
         assert pending_runtime.cancelled()
         runtime.async_stop.assert_awaited_once()
+        observations.async_stop.assert_awaited_once()
         runtime.reset_mock()
         runtime.async_stop = AsyncMock()
+        observations.async_stop = AsyncMock()
         assert await hass.config_entries.async_setup(entry.entry_id)
         runtime.start.assert_called_once()
         create_integration.assert_not_called()

@@ -23,6 +23,7 @@ class FakeSocket:
 
     def __init__(self, messages=(), *, hold=False):
         self.closed = False
+        self.sent = []
         self._messages = iter(messages)
         self._hold = hold
         self._released = asyncio.Event()
@@ -41,6 +42,9 @@ class FakeSocket:
     async def close(self):
         self.closed = True
         self._released.set()
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
 
 
 class FakeSession:
@@ -138,4 +142,18 @@ async def test_malformed_and_unsupported_messages_do_not_end_connection():
     await _wait_for(lambda: runtime._socket is socket)
     await asyncio.sleep(0)
     assert not socket.closed
+    await runtime.async_stop()
+
+
+async def test_observation_send_reuses_current_socket_after_reconnect():
+    first = FakeSocket()
+    second = FakeSocket(hold=True)
+    session = FakeSession([first, second])
+    runtime = FluksRuntimeWebSocket(session, KEY, API_BASE_URL, reconnect_delays=(0,))
+    runtime.start(asyncio.create_task)
+    assert not await runtime.async_send({"deviceId": "device", "site.power": 1})
+    await _wait_for(lambda: runtime._socket is second)
+    assert await runtime.async_send({"deviceId": "device", "site.power": 2})
+    assert second.sent == [{"deviceId": "device", "site.power": 2}]
+    assert len(session.calls) == 2
     await runtime.async_stop()

@@ -73,6 +73,17 @@ class FluksRuntimeWebSocket:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
+    async def async_send(self, payload: dict[str, Any]) -> bool:
+        """Send through the currently connected runtime socket, if available."""
+        socket = self._socket
+        if self._stopping or socket is None or socket.closed:
+            return False
+        try:
+            await socket.send_json(payload)
+        except (ClientError, OSError, RuntimeError):
+            return False
+        return True
+
     async def _run(self) -> None:
         attempt = 0
         while not self._stopping:
