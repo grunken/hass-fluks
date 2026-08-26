@@ -103,14 +103,17 @@ def test_catalog_source_semantics_and_local_duplicate_context_are_reused(hass):
     assert not _has_local_context(entry, "ha-a", "solar")
 
 
-async def test_context_is_entry_scoped_and_never_returns_credentials(hass):
-    """Two panel routes receive their own safe ConfigEntry context."""
+async def test_context_contains_required_site_device_separate_from_devices(hass):
+    """The one canonical Device list produces both overview sections."""
     first = make_entry(hass, title="Home", suffix="a")
     second = make_entry(hass, title="Cabin", suffix="b")
     api = MagicMock(spec=FluksApiClient)
-    api.list_devices = AsyncMock(return_value=[])
+    api.list_devices = AsyncMock(
+        return_value=[{"id": "site-device", "type": "site", "properties": {}}]
+    )
     catalog = {
         "battery": {"type": "battery", "concepts": []},
+        "site": {"type": "site", "concepts": []},
     }
     sent = []
 
@@ -123,6 +126,7 @@ async def test_context_is_entry_scoped_and_never_returns_credentials(hass):
                 return_value={
                     "delete_site_title": "Delete {siteName}?",
                     "device_type_battery": "Battery",
+                    "device_type_site": "Site",
                     "device_type_fallback": "Energy device",
                 }
             ),
@@ -137,6 +141,16 @@ async def test_context_is_entry_scoped_and_never_returns_credentials(hass):
             await hass.async_block_till_done()
 
     assert [item["site"]["name"] for item in sent] == ["Home", "Cabin"]
+    assert all(item["site"] == {
+        "id": "site-device",
+        "type": "site",
+        "type_name": "Site",
+        "name": item["site"]["name"],
+        "label": f'Site · {item["site"]["name"]}',
+        "metadata": "",
+    } for item in sent)
+    assert all(item["devices"] == [] for item in sent)
+    assert all(item["device_types"] == [{"type": "battery", "name": "Battery"}] for item in sent)
     assert all(item["translations"]["delete_site_title"] == "Delete {siteName}?" for item in sent)
     serialized = repr(sent)
     assert "integration_key" not in serialized
@@ -424,6 +438,112 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
     assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.power"]
 
 
+async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
+    """Site is presented separately but uses the shared canonical Device detail contract."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "site-device", "type": "site", "properties": {}}
+    )
+    api.list_mappings = AsyncMock(
+        return_value=[
+            {"id": "power-in", "concept": "site.power", "direction": "input", "configuration": {"entityId": "sensor.grid_power"}},
+            {"id": "power-out", "concept": "site.power", "direction": "output", "configuration": output_configuration()},
+            {"id": "import-in", "concept": "site.importEnergy", "direction": "input", "configuration": {"entityId": "sensor.grid_import"}},
+        ]
+    )
+    catalog = {
+        "site": {
+            "type": "site",
+            "concepts": [
+                {"concept": "site.power", "datatype": "number", "unit": "W", "cadence": "realtime", "usages": ["fact", "control"], "source": "mapping"},
+                {"concept": "site.energy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
+                {"concept": "site.importEnergy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
+                {"concept": "site.exportEnergy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
+            ],
+        }
+    }
+    conn = connection()
+    translations = {
+        "device_type_site": "Site",
+        "concept_site.power": "Power",
+        "concept_site.energy": "Energy",
+        "concept_site.importEnergy": "Import energy",
+        "concept_site.exportEnergy": "Export energy",
+    }
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value=translations)),
+    ):
+        websocket_device_detail(
+            hass,
+            conn,
+            {"id": 81, "type": COMMAND_DEVICE_DETAIL, "entry_id": entry.entry_id, "device_id": "site-device"},
+        )
+        await hass.async_block_till_done()
+
+    result = conn.send_result.call_args.args[1]
+    assert result["type"] == "site"
+    assert result["name"] == "Home"
+    assert [item["concept"] for item in result["concepts"]] == [
+        "site.power", "site.energy", "site.importEnergy", "site.exportEnergy"
+    ]
+    assert [item["concept"] for item in result["controls"]] == ["site.power"]
+    assert result["mappings"]["site.power"]["configuration"]["entityId"] == "sensor.grid_power"
+    assert result["output_mappings"]["site.power"]["id"] == "power-out"
+    assert result["suggestions"] == {}
+    api.get_device.assert_awaited_once_with("site-a", "site-device")
+    api.list_mappings.assert_awaited_once_with("site-a", device_id="site-device")
+
+
+async def test_site_input_mapping_uses_shared_incremental_device_save(hass):
+    entry = make_entry(hass)
+    hass.states.async_set(
+        "sensor.grid_power", "1200", {"unit_of_measurement": "W"}
+    )
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "site-device", "type": "site", "properties": {}}
+    )
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+    api.update_device_properties = AsyncMock()
+    catalog = {
+        "site": {
+            "type": "site",
+            "concepts": [
+                {"concept": "site.power", "datatype": "number", "unit": "W", "cadence": "realtime", "usages": ["fact", "control"], "source": "mapping"}
+            ],
+        }
+    }
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        websocket_device_save(
+            hass,
+            conn,
+            {
+                "id": 82,
+                "type": COMMAND_DEVICE_SAVE,
+                "entry_id": entry.entry_id,
+                "device_id": "site-device",
+                "mappings": {"site.power": "sensor.grid_power"},
+                "properties": {},
+            },
+        )
+        await hass.async_block_till_done()
+
+    payload = api.create_mapping.await_args.args[1]
+    assert payload["deviceId"] == "site-device"
+    assert payload["concept"] == "site.power"
+    assert payload["direction"] == "input"
+    assert payload["configuration"]["entityId"] == "sensor.grid_power"
+    api.update_device_properties.assert_not_awaited()
+
+
 def output_configuration(value=50):
     return {
         "version": 1,
@@ -501,6 +621,52 @@ async def test_control_save_creates_documented_output_mapping(hass):
         "configuration": configuration,
     }
     conn.send_result.assert_called_once_with(20, {"changed": True})
+
+
+async def test_site_control_uses_shared_output_mapping_save(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "site-device", "type": "site"})
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+    configuration = output_configuration()
+    catalog = {
+        "site": {
+            "type": "site",
+            "concepts": [
+                {"concept": "site.power", "datatype": "number", "unit": "W", "usages": ["fact", "control"], "source": "mapping"},
+                {"concept": "site.energy", "datatype": "number", "unit": "kWh", "usages": ["fact"], "source": "mapping"},
+            ],
+        }
+    }
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api.async_validate_control_configuration", AsyncMock(return_value=True)),
+    ):
+        websocket_control_save(
+            hass,
+            conn,
+            {
+                "id": 83,
+                "type": COMMAND_CONTROL_SAVE,
+                "entry_id": entry.entry_id,
+                "device_id": "site-device",
+                "concept": "site.power",
+                "configuration": configuration,
+            },
+        )
+        await hass.async_block_till_done()
+
+    payload = api.create_mapping.await_args.args[1]
+    assert payload == {
+        "integrationId": "integration-a",
+        "deviceId": "site-device",
+        "concept": "site.power",
+        "direction": "output",
+        "configuration": configuration,
+    }
 
 
 async def test_control_save_is_noop_for_machine_equal_configuration(hass):

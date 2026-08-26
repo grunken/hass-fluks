@@ -18,7 +18,7 @@ globalThis.removeEventListener = () => {};
 globalThis.history = { back: () => {} };
 
 await import("../../custom_components/fluks/frontend/control-editor-panel.js");
-const Panel = customElements.get("fluks-control-editor-panel");
+const Panel = customElements.get("fluks-control-editor-panel-unversioned");
 
 const translations = async (locale) => {
   const parsed = JSON.parse(await readFile(

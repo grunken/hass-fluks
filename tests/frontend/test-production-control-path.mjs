@@ -10,15 +10,36 @@ globalThis.HTMLElement = class {
   addEventListener() {}
   dispatchEvent() { return true; }
 };
-globalThis.customElements = { define: (name, value) => elements.set(name, value), get: (name) => elements.get(name) };
+globalThis.customElements = {
+  define: (name, value) => { if (elements.has(name)) throw new Error(`duplicate ${name}`); elements.set(name, value); },
+  get: (name) => elements.get(name),
+};
 globalThis.CustomEvent = class {};
 globalThis.addEventListener = () => {};
 globalThis.removeEventListener = () => {};
 globalThis.history = { back: () => {} };
 
+await import("../../custom_components/fluks/frontend/control-action-editor.js?rev=existing-ha-session");
 await import("../../custom_components/fluks/frontend/control-editor-panel.js?rev=production-path-test");
-const Panel = customElements.get("fluks-control-editor-panel");
-const Editor = customElements.get("fluks-control-action-editor");
+const PANEL_TAG = "fluks-control-editor-panel-production-path-test";
+const Panel = customElements.get(PANEL_TAG);
+const CONTROL_EDITOR_TAG = "fluks-control-action-editor-production-path-test";
+const Editor = customElements.get(CONTROL_EDITOR_TAG);
+
+test("long-lived HA session opens the production panel repeatedly without duplicate registration", () => {
+  assert.equal(customElements.get("fluks-control-action-editor"), undefined);
+  assert.ok(Editor);
+  assert.doesNotThrow(() => { new Panel(); new Panel(); });
+});
+
+test("two frontend revisions use their current revision-specific panel classes", async () => {
+  await import("../../custom_components/fluks/frontend/control-editor-panel.js?rev=next-production-path-test");
+  const NextPanel = customElements.get("fluks-control-editor-panel-next-production-path-test");
+  assert.ok(NextPanel);
+  assert.notEqual(NextPanel, Panel);
+  assert.equal(customElements.get(PANEL_TAG), Panel);
+  assert.equal(customElements.get("fluks-control-editor-panel"), undefined);
+});
 
 test("production panel passes discovered actions and compatible entities to actual editor", () => {
   const capability = {
@@ -33,7 +54,7 @@ test("production panel passes discovered actions and compatible entities to actu
   let editor;
   panel._frame = () => {
     editor = new Editor();
-    panel.shadowRoot.querySelector = (selector) => selector === "fluks-control-action-editor" ? editor : null;
+    panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null;
   };
   panel._renderControl();
 
@@ -95,7 +116,7 @@ test("production Controls handoff is independent of fluks Device and input mappi
     panel._view = { name: "control", deviceId: "device", concept: "battery.power" };
     panel._detail = { id: "device", type_name: typeName, controls: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W" }], mappings, output_mappings: {} };
     panel._controlCapabilities = [capability]; let editor;
-    panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === "fluks-control-action-editor" ? editor : null; };
+    panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
     panel._renderControl(); return editor.capabilities;
   };
   assert.deepEqual(renderFor("Battery", { "battery.power": { configuration: { entityId: "sensor.goodwe" } } }), [capability]);
@@ -164,4 +185,117 @@ test("changing Entity retains only proven-compatible Action and clears stale fie
   editor._selectEntity("select.goodwe");
   assert.equal(editor._dialogDraft.service, "");
   assert.deepEqual(editor._dialogDraft.data, {});
+});
+
+test("production overview keeps Site separate and navigates into shared Device detail", () => {
+  const panel = new Panel();
+  panel._context = {
+    translations: { devices: "Devices", site: "Site", add_device: "Add device", site_actions: "Site actions", delete_site: "Delete site" },
+    devices: [{ id: "battery-1", type: "battery", label: "Battery · GoodWe", metadata: "GoodWe" }],
+    site: { id: "site-device", name: "Home" },
+  };
+  let rendered; let destination;
+  const deleteSite = { focus: () => {} };
+  const siteMenu = {};
+  const siteActions = { hidden: true, querySelector: () => deleteSite };
+  const nodes = new Map([
+    ['#add', {}], ['#site-detail', {}], ['#delete-site', deleteSite],
+    ['#site-menu', siteMenu], ['#site-actions', siteActions],
+  ]);
+  const deviceRow = { dataset: { device: "battery-1" } };
+  panel._frame = (title, body) => { rendered = { title, body }; };
+  panel._go = (view) => { destination = view; };
+  panel.shadowRoot.querySelector = (selector) => nodes.get(selector);
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-device]" ? [deviceRow] : [];
+  panel._renderHome();
+
+  assert.match(rendered.body, /data-device="battery-1"/);
+  assert.match(rendered.body, /<button class="site-link" id="site-detail"><img[^>]+\/site\.png[^]*<strong>Home<\/strong>[^]*<span class="chevron">›<\/span><\/button>/);
+  assert.doesNotMatch(rendered.body, /id="site-detail"[^>]*(disabled|aria-disabled)/);
+  assert.doesNotMatch(rendered.body, /data-device="site-device"/);
+  nodes.get('#site-detail').onclick();
+  assert.deepEqual(destination, { name: "device", deviceId: "site-device" });
+
+  destination = undefined;
+  let propagationStopped = false;
+  siteMenu.onclick({ stopPropagation: () => { propagationStopped = true; } });
+  assert.equal(propagationStopped, true);
+  assert.equal(destination, undefined);
+  assert.equal(siteActions.hidden, false);
+
+  deleteSite.onclick();
+  assert.deepEqual(destination, { name: "delete-site", stage: "confirm" });
+  deviceRow.onclick();
+  assert.deepEqual(destination, { name: "device", deviceId: "battery-1" });
+});
+
+test("Site detail reuses shared Mapping and Controls views from catalog data", () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    site_information: "Site information", measurements_energy: "Measurements & energy", controls: "Controls",
+    measurements_count: "measurements", energy_count: "energy mappings", available: "available", delete_site: "Delete site",
+    device_actions: "Actions", configured: "Configured", not_configured: "Not configured", measurements: "Measurements", energy: "Energy",
+  }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._detail = {
+    id: "site-device", type: "site", type_name: "Site", name: "Home", label: "Home", properties: {}, suggestions: {},
+    concepts: [
+      { concept: "site.power", label: "Power", cadence: "realtime" },
+      { concept: "site.energy", label: "Energy", cadence: "interval" },
+      { concept: "site.importEnergy", label: "Import energy", cadence: "interval" },
+      { concept: "site.exportEnergy", label: "Export energy", cadence: "interval" },
+    ],
+    controls: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W" }],
+    mappings: { "site.power": { concept: "site.power", configuration: { entityId: "sensor.grid_power" } } },
+    output_mappings: { "site.power": { concept: "site.power", configuration: { version: 1, actions: [] } } },
+  };
+  let rendered; const destinations = []; const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
+  panel._frame = (title, body) => { rendered = { title, body }; };
+  panel._wireMenu = () => {};
+  panel._go = (view) => destinations.push(view);
+  panel.shadowRoot.querySelector = (selector) => nodes.get(selector);
+  panel._renderDevice();
+  assert.match(rendered.body, /Measurements &amp; energy/);
+  assert.match(rendered.body, /Site information/);
+  assert.match(rendered.body, /Home/);
+  nodes.get('#edit').onclick(); nodes.get('#controls').onclick(); nodes.get('#information').onclick();
+  assert.deepEqual(destinations, [
+    { name: "edit", deviceId: "site-device" },
+    { name: "controls", deviceId: "site-device" },
+    { name: "site-information", deviceId: "site-device" },
+  ]);
+  nodes.get('#delete').onclick();
+  assert.deepEqual(destinations.at(-1), { name: "delete-site", stage: "confirm" });
+
+  const mappingHtml = panel._mappingFields(panel._detail);
+  for (const concept of ["site.power", "site.energy", "site.importEnergy", "site.exportEnergy"]) assert.match(mappingHtml, new RegExp(concept.replace('.', '\\.')));
+  assert.match(mappingHtml, /sensor\.grid_power/);
+
+  const controlNode = { dataset: { control: "site.power" } };
+  panel.shadowRoot.querySelectorAll = () => [controlNode];
+  panel._renderControls();
+  assert.match(rendered.body, /Power/);
+  assert.match(rendered.body, /Configured/);
+  assert.doesNotMatch(rendered.body, /Import energy|Export energy/);
+  controlNode.onclick();
+  assert.deepEqual(destinations.at(-1), { name: "control", deviceId: "site-device", concept: "site.power" });
+});
+
+test("ordinary Device and canonical Site route to their distinct lifecycle deletes", () => {
+  const routeDelete = (type) => {
+    const panel = new Panel(); const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
+    panel._context = { translations: { measurements_energy: "Measurements & energy", controls: "Controls", measurements_count: "measurements", energy_count: "energy", available: "available", device_information: "Device information", site_information: "Site information", device_actions: "Actions", delete_device: "Delete device", delete_site: "Delete site", optional: "Optional" } };
+    panel._detail = { id: `${type}-id`, type, type_name: type === "site" ? "Site" : "Battery", name: "Example", properties: {}, concepts: [], controls: [], mappings: {}, output_mappings: {} };
+    let destination;
+    panel._frame = () => {};
+    panel._wireMenu = () => {};
+    panel._go = (view) => { destination = view; };
+    panel.shadowRoot.querySelector = (selector) => nodes.get(selector);
+    panel._renderDevice();
+    nodes.get('#delete').onclick();
+    return destination;
+  };
+
+  assert.deepEqual(routeDelete("battery"), { name: "delete-device", deviceId: "battery-id", stage: "confirm" });
+  assert.deepEqual(routeDelete("site"), { name: "delete-site", stage: "confirm" });
 });

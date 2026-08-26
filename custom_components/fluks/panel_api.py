@@ -100,7 +100,6 @@ async def _catalog(api: FluksApiClient) -> dict[str, dict[str, Any]]:
         if isinstance(item, dict)
         and isinstance(item.get("type"), str)
         and isinstance(item.get("concepts"), list)
-        and item["type"] != SITE_DEVICE_TYPE
     }
     if not catalog:
         raise PanelCommandError("backend_unavailable")
@@ -134,6 +133,26 @@ async def _panel_translations(hass: HomeAssistant) -> dict[str, str]:
     )
 
 
+def _present_device(
+    device: dict[str, Any], translations: dict[str, str], *, name: str | None = None
+) -> dict[str, str]:
+    """Present one canonical Device without exposing backend-only fields."""
+    identity = name if name is not None else device_identity(device) or ""
+    type_name = device_type_name(device, translations)
+    return {
+        "id": str(device["id"]),
+        "type": str(device["type"]),
+        "type_name": type_name,
+        "name": identity,
+        "label": f"{type_name} · {identity}" if identity else type_name,
+        "metadata": " · ".join(
+            str((device.get("properties") or {}).get(key)).strip()
+            for key in ("vendor", "model")
+            if (device.get("properties") or {}).get(key)
+        ),
+    }
+
+
 async def _present_devices(
     hass: HomeAssistant, devices: list[dict[str, Any]]
 ) -> list[dict[str, str]]:
@@ -146,18 +165,7 @@ async def _present_devices(
         )
     )
     return [
-        {
-            "id": str(item["id"]),
-            "type": str(item["type"]),
-            "type_name": device_type_name(item, translations),
-            "name": device_identity(item) or "",
-            "label": device_display_name(item, translations),
-            "metadata": " · ".join(
-                str((item.get("properties") or {}).get(key)).strip()
-                for key in ("vendor", "model")
-                if (item.get("properties") or {}).get(key)
-            ),
-        }
+        _present_device(item, translations)
         for item in physical
         if isinstance(item.get("id"), str) and isinstance(item.get("type"), str)
     ]
@@ -250,12 +258,19 @@ async def websocket_context(hass, connection, msg):
         api = _api(hass, entry)
         devices, catalog = await api.list_devices(entry.data[CONF_SITE_ID]), await _catalog(api)
         translations = await _panel_translations(hass)
+        site_device = next(
+            item
+            for item in devices
+            if item.get("type") == SITE_DEVICE_TYPE
+            and isinstance(item.get("id"), str)
+        )
         types = [
             {
                 "type": device_type,
                 "name": device_type_name({"type": device_type}, translations),
             }
             for device_type in catalog
+            if device_type != SITE_DEVICE_TYPE
         ]
         registry = dr.async_get(hass)
         entity_registry = er.async_get(hass)
@@ -273,7 +288,11 @@ async def websocket_context(hass, connection, msg):
             {
                 "entry_id": entry.entry_id,
                 "translations": await _panel_translations(hass),
-                "site": {"name": entry.title.strip() or "Site"},
+                "site": _present_device(
+                    site_device,
+                    translations,
+                    name=entry.title.strip() or "Site",
+                ),
                 "devices": await _present_devices(hass, devices),
                 "device_types": sorted(types, key=lambda item: item["name"].casefold()),
                 "ha_devices": sorted(ha_devices, key=lambda item: item["name"].casefold()),
@@ -324,14 +343,13 @@ async def websocket_device_detail(hass, connection, msg):
         entry = _entry(hass, msg["entry_id"])
         api = _api(hass, entry)
         site_id = entry.data[CONF_SITE_ID]
-        device = await api.get_device(site_id, msg["device_id"])
-        if device.get("type") == SITE_DEVICE_TYPE:
-            raise PanelCommandError("not_found")
+        device_id = msg["device_id"]
+        device = await api.get_device(site_id, device_id)
         catalog = await _catalog(api)
         device_type = str(device.get("type"))
         if device_type not in catalog:
             raise PanelCommandError("not_found")
-        mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
+        mappings = await api.list_mappings(site_id, device_id=device_id)
         existing = {
             str(item["concept"]): item
             for item in mappings
@@ -345,7 +363,7 @@ async def websocket_device_detail(hass, connection, msg):
             and isinstance(item.get("concept"), str)
         }
         concepts = _mappable_concepts(catalog[device_type])
-        ha_device_id = _ha_context(entry, msg["device_id"])
+        ha_device_id = _ha_context(entry, device_id)
         missing = [item for item in concepts if item["concept"] not in existing]
         suggestions = suggest_entities(hass, missing, ha_device_id) if ha_device_id else {}
         translations = await _panel_translations(hass)
@@ -355,8 +373,16 @@ async def websocket_device_detail(hass, connection, msg):
                 "id": str(device["id"]),
                 "type": device_type,
                 "type_name": device_type_name(device, translations),
-                "name": device_identity(device) or "",
-                "label": device_display_name(device, translations),
+                "name": (
+                    entry.title.strip() or "Site"
+                    if device_type == SITE_DEVICE_TYPE
+                    else device_identity(device) or ""
+                ),
+                "label": (
+                    entry.title.strip() or "Site"
+                    if device_type == SITE_DEVICE_TYPE
+                    else device_display_name(device, translations)
+                ),
                 "properties": dict(device.get("properties") or {}),
                 "ha_device_id": ha_device_id,
                 "concepts": _present_concepts(concepts, translations),
@@ -399,7 +425,7 @@ async def websocket_add_review(hass, connection, msg):
             raise PanelCommandError("validation_error")
         api = _api(hass, entry)
         catalog = await _catalog(api)
-        if msg["device_type"] not in catalog:
+        if msg["device_type"] not in catalog or msg["device_type"] == SITE_DEVICE_TYPE:
             raise PanelCommandError("validation_error")
         if _has_local_context(entry, msg["ha_device_id"], msg["device_type"]):
             raise PanelCommandError("conflict")
@@ -484,7 +510,7 @@ async def websocket_add_save(hass, connection, msg):
         entry = _entry(hass, msg["entry_id"])
         api = _api(hass, entry)
         catalog = await _catalog(api)
-        if msg["device_type"] not in catalog:
+        if msg["device_type"] not in catalog or msg["device_type"] == SITE_DEVICE_TYPE:
             raise PanelCommandError("validation_error")
         concepts = _mappable_concepts(catalog[msg["device_type"]])
         selected = _validate_selected(concepts, msg["mappings"])
@@ -566,7 +592,7 @@ async def websocket_device_save(hass, connection, msg):
         device = await api.get_device(site_id, msg["device_id"])
         catalog = await _catalog(api)
         device_type = str(device.get("type"))
-        if device_type not in catalog or device_type == SITE_DEVICE_TYPE:
+        if device_type not in catalog:
             raise PanelCommandError("not_found")
         concepts = _mappable_concepts(catalog[device_type])
         selected = _validate_selected(concepts, msg["mappings"])

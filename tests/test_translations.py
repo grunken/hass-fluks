@@ -99,7 +99,7 @@ def test_panel_device_and_concept_presentation_is_translated():
     """The production panel owns localized Device and concept presentation."""
     english = load_translation("en")["panel"]
     danish = load_translation("da")["panel"]
-    physical_types = {
+    canonical_types = {
         "solar",
         "generator",
         "battery",
@@ -107,13 +107,16 @@ def test_panel_device_and_concept_presentation_is_translated():
         "heatPump",
         "waterHeater",
         "appliance",
+        "site",
     }
-    assert {key.removeprefix("device_type_") for key in english if key.startswith("device_type_") and key != "device_type_fallback"} == physical_types
-    assert {key.removeprefix("device_type_") for key in danish if key.startswith("device_type_") and key != "device_type_fallback"} == physical_types
-    for device_type in physical_types:
+    assert {key.removeprefix("device_type_") for key in english if key.startswith("device_type_") and key != "device_type_fallback"} == canonical_types
+    assert {key.removeprefix("device_type_") for key in danish if key.startswith("device_type_") and key != "device_type_fallback"} == canonical_types
+    for device_type in canonical_types:
         assert english[f"device_type_{device_type}"]
         assert danish[f"device_type_{device_type}"]
     assert english["concept_battery.soc"] == "State of charge"
     assert danish["concept_battery.soc"] == "Ladeniveau"
+    assert english["concept_site.importEnergy"] == "Import energy"
+    assert danish["concept_site.exportEnergy"] == "Eksporteret energi"
     assert "options" not in load_translation("en")
     assert "options" not in load_translation("da")

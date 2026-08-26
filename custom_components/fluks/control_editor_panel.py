@@ -47,7 +47,7 @@ async def async_register_control_editor_panel(hass: HomeAssistant) -> None:
     await panel_custom.async_register_panel(
         hass=hass,
         frontend_url_path=PANEL_URL_PATH,
-        webcomponent_name=PANEL_ELEMENT,
+        webcomponent_name=f"{PANEL_ELEMENT}-{revision}",
         module_url=f"{PANEL_STATIC_URL}/control-editor-panel.js?rev={revision}",
         sidebar_title=None,
         sidebar_icon=None,

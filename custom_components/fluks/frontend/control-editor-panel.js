@@ -1,6 +1,12 @@
 /* Embedded fluks administration panel. Backend credentials remain in Python. */
 const MODULE_REVISION = new URL(import.meta.url).searchParams.get("rev");
-await import(`./control-action-editor.js${MODULE_REVISION ? `?rev=${encodeURIComponent(MODULE_REVISION)}` : ""}`);
+const ELEMENT_REVISION = (MODULE_REVISION || "unversioned").toLowerCase().replace(/[^a-z0-9-]/g, "-");
+const PANEL_TAG = `fluks-control-editor-panel-${ELEMENT_REVISION}`;
+const { FluksControlActionEditor } = await import(`./control-action-editor.js${MODULE_REVISION ? `?rev=${encodeURIComponent(MODULE_REVISION)}` : ""}`);
+const CONTROL_ACTION_EDITOR_TAG = `fluks-control-action-editor-${ELEMENT_REVISION}`;
+if (!customElements.get(CONTROL_ACTION_EDITOR_TAG)) {
+  customElements.define(CONTROL_ACTION_EDITOR_TAG, FluksControlActionEditor);
+}
 
 const TAGLINE = "Your Energy. Decides together.";
 const DEVICE_ICON_BASE = "/fluks-device-icons";
@@ -78,7 +84,7 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   async _loadView() {
     if (!this._context) return;
-    if (["device", "edit", "controls", "control", "delete-device"].includes(this._view.name)) {
+    if (["device", "edit", "controls", "control", "site-information", "delete-device"].includes(this._view.name)) {
       try { this._detail = await this._call("fluks/config/device", { device_id: this._view.deviceId }); }
       catch (_) { return this._message(this._error); }
     }
@@ -93,6 +99,7 @@ class FluksControlEditorPanel extends HTMLElement {
       device: () => this._renderDevice(), edit: () => this._renderEdit(),
       add: () => this._renderAdd(), controls: () => this._renderControls(),
       control: () => this._renderControl(), "delete-device": () => this._renderDeleteDevice(),
+      "site-information": () => this._renderSiteInformation(),
       "delete-site": () => this._renderDeleteSite(),
     }[this._view.name] || (() => this._renderHome()))();
   }
@@ -122,15 +129,17 @@ class FluksControlEditorPanel extends HTMLElement {
     this._frame("fluks", `<section><div class="section-title"><h2>${esc(this._t("devices"))}</h2>
       <button class="primary" id="add">＋ ${esc(this._t("add_device"))}</button></div>
       <div class="card list">${devices || `<p>${esc(this._t("no_devices"))}</p>`}</div></section>
-      <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><ha-icon icon="mdi:home-outline"></ha-icon>
-      <strong>${esc(this._context.site.name)}</strong><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>
+      <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><button class="site-link" id="site-detail">${this._typeIcon("site")}
+      <span class="row-copy"><strong>${esc(this._context.site.name)}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>
       <div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div></div></section>`);
     this.shadowRoot.querySelector("#add").onclick = () => this._go({ name: "add" });
     this._wireMenu("site-menu", "site-actions");
     this.shadowRoot.querySelector("#delete-site").onclick = () => this._go({ name: "delete-site", stage: "confirm" });
+    this.shadowRoot.querySelector("#site-detail").onclick = () => this._go({ name: "device", deviceId: this._context.site.id });
     this.shadowRoot.querySelectorAll("[data-device]").forEach((n) => n.onclick = () => this._go({ name: "device", deviceId: n.dataset.device }));
   }
   _renderDevice() {
+    const site = this._detail.type === "site";
     const configured = Object.values(this._detail.mappings);
     const measurementCount = configured.filter((m) => this._detail.concepts.find((c) => c.concept === m.concept)?.cadence !== "interval").length;
     const energyCount = configured.filter((m) => this._detail.concepts.find((c) => c.concept === m.concept)?.cadence === "interval").length;
@@ -138,16 +147,19 @@ class FluksControlEditorPanel extends HTMLElement {
     this._frame("", `<div class="device-heading">${this._typeIcon(this._detail.type, "hero")}<div>
       <h1>${esc(this._detail.type_name)}</h1><p class="device-name">${esc(this._detail.name || this._detail.type_name)}</p>${metadata ? `<p>${esc(metadata)}</p>` : ""}</div>
       <button class="icon overflow" id="device-menu" aria-label="${esc(this._t("device_actions"))}" aria-haspopup="menu">⋮</button>
-      <div class="context-menu device-menu" id="device-actions-menu" role="menu" hidden><button class="menu-danger" id="delete" role="menuitem">${esc(this._t("delete_device"))}</button></div></div>
+      <div class="context-menu device-menu" id="device-actions-menu" role="menu" hidden><button class="menu-danger" id="delete" role="menuitem">${esc(this._t(site ? "delete_site" : "delete_device"))}</button></div></div>
       <div class="card list overview-list">
       <button class="row" id="edit"><ha-icon icon="mdi:chart-line"></ha-icon><span class="row-copy"><strong>${esc(this._t("measurements_energy"))}</strong><span>${measurementCount} ${esc(this._t("measurements_count"))} · ${energyCount} ${esc(this._t("energy_count"))}</span></span><span class="chevron">›</span></button>
       <button class="row" id="controls"><ha-icon icon="mdi:tune-variant"></ha-icon><span class="row-copy"><strong>${esc(this._t("controls"))}</strong><span>${this._detail.controls.length} ${esc(this._t("available"))}</span></span><span class="chevron">›</span></button>
-      <button class="row" id="information"><ha-icon icon="mdi:information-outline"></ha-icon><span class="row-copy"><strong>${esc(this._t("device_information"))}</strong><span>${esc(metadata || this._t("optional"))}</span></span><span class="chevron">›</span></button></div>`, true);
+      <button class="row" id="information"><ha-icon icon="mdi:information-outline"></ha-icon><span class="row-copy"><strong>${esc(this._t(site ? "site_information" : "device_information"))}</strong><span>${esc(site ? this._detail.name : metadata || this._t("optional"))}</span></span><span class="chevron">›</span></button></div>`, true);
     this._wireMenu("device-menu", "device-actions-menu");
     this.shadowRoot.querySelector("#edit").onclick = () => this._go({ name: "edit", deviceId: this._detail.id });
-    this.shadowRoot.querySelector("#information").onclick = () => this._go({ name: "edit", deviceId: this._detail.id });
+    this.shadowRoot.querySelector("#information").onclick = () => this._go({ name: site ? "site-information" : "edit", deviceId: this._detail.id });
     this.shadowRoot.querySelector("#controls").onclick = () => this._go({ name: "controls", deviceId: this._detail.id });
-    this.shadowRoot.querySelector("#delete").onclick = () => this._go({ name: "delete-device", deviceId: this._detail.id, stage: "confirm" });
+    this.shadowRoot.querySelector("#delete").onclick = () => this._go(site ? { name: "delete-site", stage: "confirm" } : { name: "delete-device", deviceId: this._detail.id, stage: "confirm" });
+  }
+  _renderSiteInformation() {
+    this._frame(this._t("site_information"), `<section class="card"><h2>${esc(this._t("name"))}</h2><p>${esc(this._detail.name)}</p></section>`, true);
   }
   _wireMenu(buttonId, menuId) {
     const button = this.shadowRoot.querySelector(`#${buttonId}`);
@@ -265,11 +277,12 @@ class FluksControlEditorPanel extends HTMLElement {
     renderRows(); dialog.showModal(); dialog.querySelector("input").focus();
   }
   _renderEdit() {
-    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail)}${this._propertiesForm(this._detail.properties, this._detail.type === "solar")}${this._actions()}`, true);
+    const site = this._detail.type === "site";
+    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail)}${site ? "" : this._propertiesForm(this._detail.properties, this._detail.type === "solar")}${this._actions()}`, true);
     this._wirePickers();
     this.shadowRoot.querySelector("#cancel").onclick = () => history.back();
     this.shadowRoot.querySelector("#save").onclick = async () => {
-      try { await this._call("fluks/config/device_save", { device_id: this._detail.id, ...this._collectForm() }); history.back(); }
+      try { const form = this._collectForm(); await this._call("fluks/config/device_save", { device_id: this._detail.id, mappings: form.mappings, properties: site ? {} : form.properties }); history.back(); }
       catch (_) { this._renderEdit(); }
     };
   }
@@ -322,8 +335,8 @@ class FluksControlEditorPanel extends HTMLElement {
   _renderControl() {
     const control = this._detail.controls.find((c) => c.concept === this._view.concept);
     if (!control) return this._message(this._t("context_missing"));
-    this._frame(`${this._detail.type_name} · ${this._conceptLabel(control)}`, `<p>${esc(this._t("control_persistence_intro"))}</p><fluks-control-action-editor></fluks-control-action-editor>`, true);
-    const editor = this.shadowRoot.querySelector("fluks-control-action-editor");
+    this._frame(`${this._detail.type_name} · ${this._conceptLabel(control)}`, `<p>${esc(this._t("control_persistence_intro"))}</p><${CONTROL_ACTION_EDITOR_TAG}></${CONTROL_ACTION_EDITOR_TAG}>`, true);
+    const editor = this.shadowRoot.querySelector(CONTROL_ACTION_EDITOR_TAG);
     const key = `${this._detail.id}:${control.concept}`;
     editor.controlName = this._conceptLabel(control);
     editor.strings = Object.fromEntries([
@@ -397,7 +410,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .row{width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}
     .device-icon{display:block;object-fit:contain;flex:none}.device-icon.list{width:38px;height:38px}.device-icon.hero{width:62px;height:62px}.device-icon.header{width:50px;height:50px}.device-icon.picker{width:70px;height:70px}
     .device-heading{position:relative;display:flex;align-items:center;gap:18px;margin:2px 0 24px;padding-right:48px}.device-heading h1,.device-heading h2{margin:0 0 4px}.device-heading p{margin:0}.device-heading .device-name{font-size:16px;color:var(--primary-text-color)}.device-heading.compact{margin-bottom:20px}
-    .site-row{display:grid;grid-template-columns:28px 1fr 44px;align-items:center;gap:12px;padding:12px 14px}.site-row ha-icon{color:var(--secondary-text-color)}
+    .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
     .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
     label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input{width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}
@@ -409,4 +422,4 @@ class FluksControlEditorPanel extends HTMLElement {
     @media(max-width:390px){.type-grid{grid-template-columns:1fr 1fr}.type-option{min-height:108px}.device-icon.picker{width:58px;height:58px}.section-title{flex-wrap:wrap}}
   `; }
 }
-customElements.define("fluks-control-editor-panel", FluksControlEditorPanel);
+customElements.define(PANEL_TAG, FluksControlEditorPanel);

@@ -17,12 +17,12 @@ globalThis.CustomEvent = class {
   constructor(type, init = {}) { this.type = type; this.detail = init.detail; }
 };
 globalThis.customElements = {
-  define: (name, element) => elements.set(name, element),
+  define: (name, element) => { if (elements.has(name)) throw new Error(`duplicate ${name}`); elements.set(name, element); },
   get: (name) => elements.get(name),
 };
 
-await import("../../custom_components/fluks/frontend/control-action-editor.js");
-const Editor = customElements.get("fluks-control-action-editor");
+const { FluksControlActionEditor: Editor } = await import("../../custom_components/fluks/frontend/control-action-editor.js");
+assert.equal(customElements.get("fluks-control-action-editor"), undefined);
 
 const mode = {
   type: "serviceCall",

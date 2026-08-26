@@ -7,6 +7,7 @@ import pytest
 from custom_components.fluks.device import icon_path
 
 PHYSICAL_TYPES = (
+    "site",
     "solar",
     "generator",
     "battery",
@@ -19,7 +20,7 @@ PHYSICAL_TYPES = (
 
 @pytest.mark.parametrize("device_type", PHYSICAL_TYPES)
 def test_device_type_icon_is_valid_transparent_square_png(device_type):
-    """Every current physical type resolves to an approved usable PNG."""
+    """Every current canonical type resolves to an approved usable PNG."""
     path = icon_path(device_type)
     raw = path.read_bytes()
     assert raw[:8] == b"\x89PNG\r\n\x1a\n"

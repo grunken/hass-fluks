@@ -36,7 +36,7 @@ async def test_panel_registration_is_hidden_admin_only_and_domain_scoped(hass):
     register.assert_awaited_once_with(
         hass=hass,
         frontend_url_path=PANEL_URL_PATH,
-        webcomponent_name=PANEL_ELEMENT,
+        webcomponent_name=f"{PANEL_ELEMENT}-content-digest",
         module_url=f"{PANEL_STATIC_URL}/control-editor-panel.js?rev=content-digest",
         sidebar_title=None,
         sidebar_icon=None,
@@ -154,6 +154,24 @@ def test_panel_contains_administration_and_persisted_controls_without_execution(
     assert "WebSocket(" not in source
 
 
+def test_control_editor_registration_is_owned_by_the_revisioned_parent_module():
+    """A fresh frontend generation never redefines the old fixed child tag."""
+    from pathlib import Path
+
+    panel_source = Path(
+        "custom_components/fluks/frontend/control-editor-panel.js"
+    ).read_text()
+    editor_source = Path(
+        "custom_components/fluks/frontend/control-action-editor.js"
+    ).read_text()
+    assert "export class FluksControlActionEditor" in editor_source
+    assert 'customElements.define("fluks-control-action-editor"' not in editor_source
+    assert "fluks-control-action-editor-${" in panel_source
+    assert "customElements.define(CONTROL_ACTION_EDITOR_TAG" in panel_source
+    assert 'customElements.define("fluks-control-editor-panel"' not in panel_source
+    assert "customElements.define(PANEL_TAG" in panel_source
+
+
 def test_production_panel_visual_structure_uses_icons_search_and_context_menus():
     """The panel follows the approved compact mocks without changing identities."""
     source = __import__("pathlib").Path(
@@ -162,6 +180,8 @@ def test_production_panel_visual_structure_uses_icons_search_and_context_menus()
     assert 'const TAGLINE = "Your Energy. Decides together."' in source
     assert 'const DEVICE_ICON_BASE = "/fluks-device-icons"' in source
     assert 'replace(/([a-z0-9])([A-Z])/g, "$1_$2")' in source
+    assert 'this._typeIcon("site")' in source
+    assert 'mdi:home-outline' not in source
     assert 'class="type-grid"' in source
     assert 'class="context-menu" id="site-actions"' in source
     assert 'id="device-actions-menu"' in source
@@ -181,6 +201,7 @@ def test_all_canonical_icon_types_resolve_to_supplied_assets():
     import re
 
     types = (
+        "site",
         "appliance",
         "battery",
         "electricVehicle",
