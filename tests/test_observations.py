@@ -2,24 +2,10 @@
 
 from unittest.mock import AsyncMock
 
-from custom_components.fluks.observations import (
-    RealtimeObservationPublisher,
-    apply_input_transforms,
-)
+from custom_components.fluks.observations import RealtimeObservationPublisher
 
 
-def test_raw_values_and_ordered_input_transforms_are_canonical_json_values():
-    assert apply_input_transforms("4919", [{"type": "invert"}]) == -4919
-    assert apply_input_transforms(
-        "10.5",
-        [{"type": "scale", "factor": 2}, {"type": "offset", "amount": 1}],
-    ) == 22.0
-    assert apply_input_transforms(
-        "on", [{"type": "valueMap", "values": {"on": True, "off": False}}]
-    ) is True
-
-
-async def test_mapped_state_changes_publish_and_refresh_without_duplicate_listeners(hass):
+async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates(hass):
     api = AsyncMock()
     api.list_devices.return_value = [
         {"id": "site-internal", "deviceId": "site-external", "type": "site"},
@@ -32,7 +18,11 @@ async def test_mapped_state_changes_publish_and_refresh_without_duplicate_listen
             "concept": "site.power",
             "configuration": {
                 "entityId": "sensor.grid_power",
-                "transforms": [{"type": "invert"}],
+                "transforms": [
+                    {"type": "invert"},
+                    {"type": "scale", "factor": 2},
+                    {"type": "offset", "amount": 10},
+                ],
             },
         },
         {
@@ -49,7 +39,7 @@ async def test_mapped_state_changes_publish_and_refresh_without_duplicate_listen
     hass.states.async_set("sensor.grid_power", "4919")
     await hass.async_block_till_done()
     send.assert_awaited_once_with(
-        {"deviceId": "site-external", "site.power": -4919}
+        {"deviceId": "site-external", "site.power": 4919}
     )
 
     hass.states.async_set("sensor.unmapped", "12")

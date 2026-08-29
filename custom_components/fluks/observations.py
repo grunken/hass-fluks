@@ -1,4 +1,4 @@
-"""Realtime canonical Fact publishing from persisted input Mappings."""
+"""Realtime raw source publishing for persisted input Mappings."""
 
 from __future__ import annotations
 
@@ -43,43 +43,13 @@ def _numeric_value(value: Any) -> int | float:
     return number
 
 
-def _canonical_value(value: Any) -> str | int | float | bool:
+def _json_value(value: Any) -> str | int | float | bool:
     if isinstance(value, str):
         try:
             return _numeric_value(value)
         except ValueError:
             return value
     return value
-
-
-def apply_input_transforms(
-    raw_state: str, transforms: list[dict[str, Any]]
-) -> str | int | float | bool:
-    """Apply the documented deterministic input transforms in array order."""
-    value: Any = _raw_value(raw_state)
-    for transform in transforms:
-        kind = transform.get("type")
-        if kind == "valueMap":
-            values = transform.get("values", {})
-            key = str(value)
-            if key not in values:
-                raise ValueError("Input value is not mapped")
-            value = values[key]
-            continue
-        value = _numeric_value(value)
-        if kind == "invert":
-            value = -value
-        elif kind == "scale":
-            value *= transform["factor"]
-        elif kind == "offset":
-            value += transform["amount"]
-        else:
-            raise ValueError("Unsupported input transform")
-        if not math.isfinite(value):
-            raise ValueError("Non-finite transformed value")
-    if value is None or isinstance(value, (dict, list)):
-        raise ValueError("Invalid canonical value")
-    return _canonical_value(value)
 
 
 class RealtimeObservationPublisher:
@@ -119,7 +89,7 @@ class RealtimeObservationPublisher:
                 if isinstance(device.get("id"), str)
                 and isinstance(device.get("deviceId"), str)
             }
-            by_entity: dict[str, list[tuple[str, str, list[dict[str, Any]]]]] = defaultdict(list)
+            by_entity: dict[str, list[tuple[str, str]]] = defaultdict(list)
             for mapping in mappings:
                 configuration = mapping.get("configuration")
                 external_id = external_ids.get(str(mapping.get("deviceId")))
@@ -131,11 +101,8 @@ class RealtimeObservationPublisher:
                     or external_id is None
                 ):
                     continue
-                transforms = configuration.get("transforms", [])
-                if not isinstance(transforms, list):
-                    continue
                 by_entity[configuration["entityId"]].append(
-                    (external_id, mapping["concept"], transforms)
+                    (external_id, mapping["concept"])
                 )
             unsubscribe = self._unsubscribe
             self._unsubscribe = None
@@ -158,15 +125,15 @@ class RealtimeObservationPublisher:
     async def _async_state_changed(
         self,
         event: Event,
-        mappings: dict[str, list[tuple[str, str, list[dict[str, Any]]]]],
+        mappings: dict[str, list[tuple[str, str]]],
     ) -> None:
         state: State | None = event.data.get("new_state")
         if self._stopped or state is None:
             return
-        for device_id, concept, transforms in mappings.get(state.entity_id, []):
+        for device_id, concept in mappings.get(state.entity_id, []):
             try:
-                value = apply_input_transforms(state.state, transforms)
-            except (KeyError, TypeError, ValueError):
+                value = _json_value(_raw_value(state.state))
+            except (TypeError, ValueError):
                 continue
             await self._send({"deviceId": device_id, concept: value})
 
