@@ -27,6 +27,7 @@ from .api import (
     FluksValidationError,
 )
 from .const import (
+    CONF_CLEARED_MAPPING_CONCEPTS,
     CONF_DEVICE,
     CONF_DEVICE_CONTEXTS,
     CONF_INTEGRATION_ID,
@@ -183,6 +184,32 @@ def _ha_context(entry: ConfigEntry, internal_id: str) -> str | None:
         value = legacy.get(CONF_HA_DEVICE_ID)
         return value if isinstance(value, str) else None
     return None
+
+
+def _cleared_mapping_concepts(entry: ConfigEntry, internal_id: str) -> set[str]:
+    """Return matcher suggestions the user explicitly cleared."""
+    contexts = entry.options.get(CONF_DEVICE_CONTEXTS, {})
+    context = contexts.get(internal_id, {}) if isinstance(contexts, dict) else {}
+    values = context.get(CONF_CLEARED_MAPPING_CONCEPTS, [])
+    if not isinstance(values, list):
+        return set()
+    return {value for value in values if isinstance(value, str)}
+
+
+def _submitted_clears(submitted: dict[str, Any]) -> set[str]:
+    """Find explicit empty selections in the existing mappings payload."""
+    return {
+        str(concept)
+        for concept, configuration in submitted.items()
+        if isinstance(configuration, dict) and configuration.get("entityId") == ""
+    }
+
+
+def _updated_clears(
+    current: set[str], submitted: dict[str, Any], selected: dict[str, Any]
+) -> list[str]:
+    """Keep explicit clears until the user maps that concept again."""
+    return sorted((current | _submitted_clears(submitted)) - selected.keys())
 
 
 def _safe_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
@@ -365,7 +392,12 @@ async def websocket_device_detail(hass, connection, msg):
         }
         concepts = _mappable_concepts(catalog[device_type])
         ha_device_id = _ha_context(entry, device_id)
-        missing = [item for item in concepts if item["concept"] not in existing]
+        cleared = _cleared_mapping_concepts(entry, device_id)
+        missing = [
+            item
+            for item in concepts
+            if item["concept"] not in existing and item["concept"] not in cleared
+        ]
         suggestions = suggest_entities(hass, missing, ha_device_id) if ha_device_id else {}
         translations = await _panel_translations(hass)
         connection.send_result(
@@ -575,10 +607,13 @@ async def websocket_add_save(hass, connection, msg):
                 await api.create_mapping(site_id, payload)
         options = dict(entry.options)
         updated_contexts = dict(options.get(CONF_DEVICE_CONTEXTS, {}))
-        updated_contexts[internal_id] = {
+        device_context = {
             CONF_HA_DEVICE_ID: msg["ha_device_id"],
             "type": msg["device_type"],
         }
+        if cleared := _updated_clears(set(), msg["mappings"], selected):
+            device_context[CONF_CLEARED_MAPPING_CONCEPTS] = cleared
+        updated_contexts[internal_id] = device_context
         options[CONF_DEVICE_CONTEXTS] = updated_contexts
         options.pop(CONF_DEVICE, None)
         hass.config_entries.async_update_entry(entry, options=options)
@@ -657,6 +692,23 @@ async def websocket_device_save(hass, connection, msg):
                             "configuration": configuration,
                         },
                     )
+        current_clears = _cleared_mapping_concepts(entry, msg["device_id"])
+        cleared = _updated_clears(
+            current_clears,
+            msg["mappings"],
+            selected,
+        )
+        if set(cleared) != current_clears:
+            options = dict(entry.options)
+            contexts = dict(options.get(CONF_DEVICE_CONTEXTS, {}))
+            context = dict(contexts.get(msg["device_id"], {}))
+            if cleared:
+                context[CONF_CLEARED_MAPPING_CONCEPTS] = cleared
+            else:
+                context.pop(CONF_CLEARED_MAPPING_CONCEPTS, None)
+            contexts[msg["device_id"]] = context
+            options[CONF_DEVICE_CONTEXTS] = contexts
+            hass.config_entries.async_update_entry(entry, options=options)
         connection.send_result(msg["id"], {})
         await async_refresh_observations(hass, entry.entry_id)
     except (PanelCommandError, FluksApiError) as err:

@@ -2,11 +2,9 @@
 const MODULE_REVISION = new URL(import.meta.url).searchParams.get("rev");
 const ELEMENT_REVISION = (MODULE_REVISION || "unversioned").toLowerCase().replace(/[^a-z0-9-]/g, "-");
 const PANEL_TAG = `fluks-control-editor-panel-${ELEMENT_REVISION}`;
-const { FluksControlActionEditor } = await import(`./control-action-editor.js${MODULE_REVISION ? `?rev=${encodeURIComponent(MODULE_REVISION)}` : ""}`);
 const CONTROL_ACTION_EDITOR_TAG = `fluks-control-action-editor-${ELEMENT_REVISION}`;
-if (!customElements.get(CONTROL_ACTION_EDITOR_TAG)) {
-  customElements.define(CONTROL_ACTION_EDITOR_TAG, FluksControlActionEditor);
-}
+let controlActionEditorModule;
+const loadControlActionEditor = () => controlActionEditorModule ??= import(`./control-action-editor.js${MODULE_REVISION ? `?rev=${encodeURIComponent(MODULE_REVISION)}` : ""}`);
 
 const TAGLINE = "Your Energy. Decides together.";
 const DEVICE_ICON_BASE = "/fluks-device-icons";
@@ -20,6 +18,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._view = { name: "home" };
     this._pendingControl = undefined;
+    this._clearedInputConcepts = new Set();
     this._popstate = () => {
       this._view = history.state?.fluksView ?? { name: "home" };
       this._detail = this._draft = undefined;
@@ -38,6 +37,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._entryId = entryId;
       this._context = this._detail = this._draft = undefined;
       this._pendingControl = undefined;
+      this._clearedInputConcepts.clear();
       this._view = { name: "home" };
     }
     if (this.isConnected) this._loadContext();
@@ -77,6 +77,10 @@ class FluksControlEditorPanel extends HTMLElement {
       await this._loadView();
     } catch (_) { this._message(this._error); }
   }
+  async _ensureControlActionEditor() {
+    const { FluksControlActionEditor } = await loadControlActionEditor();
+    if (!customElements.get(CONTROL_ACTION_EDITOR_TAG)) customElements.define(CONTROL_ACTION_EDITOR_TAG, FluksControlActionEditor);
+  }
   _go(view, replace = false) {
     this._view = view; this._detail = this._draft = undefined;
     const state = { ...(history.state || {}), fluksView: view };
@@ -90,7 +94,10 @@ class FluksControlEditorPanel extends HTMLElement {
       catch (_) { return this._message(this._error); }
     }
     if (this._view.name === "control") {
-      try { this._controlCapabilities = (await this._call("fluks/config/control_capabilities")).actions; }
+      try {
+        await this._ensureControlActionEditor();
+        this._controlCapabilities = (await this._call("fluks/config/control_capabilities")).actions;
+      }
       catch (_) { return this._message(this._error); }
     }
     this._render();
@@ -241,7 +248,7 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _collectForm(useInputDraft = false) {
     const mappings = useInputDraft
-      ? Object.fromEntries(Object.entries(this._inputDraft).filter(([, value]) => value.entityId).map(([concept, value]) => [concept, clone(value)]))
+      ? Object.fromEntries(Object.entries(this._inputDraft).filter(([concept, value]) => value.entityId || this._clearedInputConcepts.has(concept)).map(([concept, value]) => [concept, clone(value)]))
       : Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-concept]")].map((n) => [n.dataset.concept, n.value]).filter(([, v]) => v));
     const properties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((n) => [n.dataset.property, n.value === "" ? null : n.type === "number" ? Number(n.value) : n.value.trim()]));
     return { mappings, properties };
@@ -268,12 +275,14 @@ class FluksControlEditorPanel extends HTMLElement {
   _selectInputEntity(concept, entityId) {
     this._captureInputProperties();
     this._inputDraft[concept].entityId = entityId;
+    if (entityId) this._clearedInputConcepts.delete(concept); else this._clearedInputConcepts.add(concept);
     this._renderInputDraft();
   }
   _cancelEdit() {
     this._inputDraft = undefined;
     this._inputDraftDevice = undefined;
     this._editProperties = undefined;
+    this._clearedInputConcepts.clear();
     history.back();
   }
   _wireInputConversions() {
@@ -347,6 +356,7 @@ class FluksControlEditorPanel extends HTMLElement {
     const site = this._detail.type === "site";
     if (this._inputDraftDevice !== this._detail.id) {
       this._inputDraftDevice = this._detail.id;
+      this._clearedInputConcepts.clear();
       this._inputDraft = Object.fromEntries(this._detail.concepts.map((concept) => {
         const existing = this._detail.mappings[concept.concept]?.configuration;
         return [concept.concept, clone(existing ?? { version: 1, entityId: this._detail.suggestions[concept.concept] || "" })];
@@ -382,6 +392,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._draft = undefined;
       this._inputDraft = undefined;
       this._inputDraftDevice = undefined;
+      this._clearedInputConcepts.clear();
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
       this._renderAdd();
     });
@@ -403,6 +414,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._draft = draft;
       this._view = { ...this._view, haDeviceId };
       this._inputDraftDevice = `add:${this._view.deviceType}:${haDeviceId}`;
+      this._clearedInputConcepts.clear();
       this._inputDraft = Object.fromEntries(draft.concepts.map((concept) => [concept.concept, {
         version: 1,
         entityId: draft.suggestions[concept.concept] || "",

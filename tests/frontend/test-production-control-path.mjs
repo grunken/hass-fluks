@@ -25,6 +25,8 @@ await import("../../custom_components/fluks/frontend/control-editor-panel.js?rev
 const PANEL_TAG = "fluks-control-editor-panel-production-path-test";
 const Panel = customElements.get(PANEL_TAG);
 const CONTROL_EDITOR_TAG = "fluks-control-action-editor-production-path-test";
+assert.ok(Panel, "the parent panel registers without waiting for its Controls child");
+await new Panel()._ensureControlActionEditor();
 const Editor = customElements.get(CONTROL_EDITOR_TAG);
 
 test("long-lived HA session opens the production panel repeatedly without duplicate registration", () => {
@@ -175,6 +177,7 @@ test("production Add Device edits and persists suggested Input Mapping conversio
 
   panel._selectInputEntity("battery.power", "");
   assert.doesNotMatch(rendered, /Add conversion/);
+  assert.equal(panel._collectForm(true).mappings["battery.power"].entityId, "");
   panel._selectInputEntity("battery.power", "sensor.battery_power");
   assert.match(rendered, /Add conversion/);
   await save.onclick();
@@ -483,7 +486,9 @@ test("clearing a persisted Input Mapping remains cleared until Save or Cancel", 
   assert.equal(panel._inputDraft["battery.power"].entityId, "");
 
   await save.onclick();
-  assert.deepEqual(saved.mappings, {});
+  assert.deepEqual(saved.mappings, {
+    "battery.power": { version: 1, entityId: "", transforms: [{ type: "invert" }] },
+  });
 
   panel._inputDraftDevice = undefined;
   panel._renderEdit();

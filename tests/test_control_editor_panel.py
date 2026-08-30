@@ -75,6 +75,8 @@ def test_panel_frontend_uses_hass_without_credentials_or_direct_backend_calls():
     assert "this._pendingControl = undefined" in source
     assert "MODULE_REVISION" in source
     assert "control-action-editor.js${MODULE_REVISION" in source
+    assert "const { FluksControlActionEditor } = await import" not in source
+    assert "loadControlActionEditor()" in source
 
 
 def test_frontend_revision_changes_when_parent_module_changes(monkeypatch):

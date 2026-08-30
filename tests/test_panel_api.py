@@ -6,6 +6,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.fluks.api import FluksApiClient, FluksNotFound
 from custom_components.fluks.const import (
+    CONF_CLEARED_MAPPING_CONCEPTS,
     CONF_DEVICE_CONTEXTS,
     CONF_INTEGRATION_KEY,
     DOMAIN,
@@ -454,6 +455,98 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
     assert result["mappings"]["battery.soc"]["configuration"]["entityId"] == "sensor.existing_soc"
     assert result["suggestions"] == {"battery.power": "sensor.suggested_power"}
     assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.power"]
+
+
+async def test_explicitly_cleared_suggestion_stays_unmapped(hass):
+    """Deleting a suggested Mapping suppresses only that future suggestion."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "device-a", "type": "battery", "properties": {}}
+    )
+    existing_power = {
+        "id": "power-map",
+        "concept": "battery.power",
+        "direction": "input",
+        "configuration": {"version": 1, "entityId": "sensor.suggested_power"},
+    }
+    api.list_mappings = AsyncMock(side_effect=[[existing_power], [], []])
+    api.delete_mapping = AsyncMock()
+    api.create_mapping = AsyncMock()
+    api.update_mapping = AsyncMock()
+    api.update_device_properties = AsyncMock()
+    catalog = {
+        "battery": {
+            "type": "battery",
+            "concepts": [
+                {"concept": "battery.power", "datatype": "number", "cadence": "realtime", "usages": ["fact"], "source": "mapping"},
+                {"concept": "battery.soc", "datatype": "number", "cadence": "realtime", "usages": ["fact"], "source": "mapping"},
+            ],
+        }
+    }
+    refresh = AsyncMock()
+    matcher = MagicMock(return_value={"battery.soc": "sensor.suggested_soc"})
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={"device_type_battery": "Battery"})),
+        patch("custom_components.fluks.panel_api.suggest_entities", matcher),
+        patch("custom_components.fluks.panel_api.async_refresh_observations", refresh),
+    ):
+        websocket_device_save(
+            hass,
+            connection(),
+            {
+                "id": 90,
+                "type": COMMAND_DEVICE_SAVE,
+                "entry_id": entry.entry_id,
+                "device_id": "device-a",
+                "mappings": {
+                    "battery.power": {"version": 1, "entityId": ""}
+                },
+                "properties": {},
+            },
+        )
+        await hass.async_block_till_done()
+
+        detail_connection = connection()
+        websocket_device_detail(
+            hass,
+            detail_connection,
+            {
+                "id": 91,
+                "type": COMMAND_DEVICE_DETAIL,
+                "entry_id": entry.entry_id,
+                "device_id": "device-a",
+            },
+        )
+        await hass.async_block_till_done()
+
+        websocket_device_save(
+            hass,
+            connection(),
+            {
+                "id": 92,
+                "type": COMMAND_DEVICE_SAVE,
+                "entry_id": entry.entry_id,
+                "device_id": "device-a",
+                "mappings": {},
+                "properties": {},
+            },
+        )
+        await hass.async_block_till_done()
+
+    api.delete_mapping.assert_awaited_once_with("site-a", "power-map")
+    api.create_mapping.assert_not_awaited()
+    api.update_mapping.assert_not_awaited()
+    result = detail_connection.send_result.call_args.args[1]
+    assert result["mappings"] == {}
+    assert result["suggestions"] == {"battery.soc": "sensor.suggested_soc"}
+    assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.soc"]
+    assert entry.options[CONF_DEVICE_CONTEXTS]["device-a"][
+        CONF_CLEARED_MAPPING_CONCEPTS
+    ] == ["battery.power"]
 
 
 async def test_space_heater_uses_catalog_driven_fact_and_control_flows(hass):

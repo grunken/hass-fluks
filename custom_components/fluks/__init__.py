@@ -50,6 +50,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async_get_clientsession(hass), integration_key=integration_key
         ),
         entry.data[CONF_SITE_ID],
+        entry.entry_id,
         runtime.async_send,
     )
     publishers = hass.data[DOMAIN].setdefault(DATA_OBSERVATIONS, {})
