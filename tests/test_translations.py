@@ -105,6 +105,7 @@ def test_panel_device_and_concept_presentation_is_translated():
         "battery",
         "electricVehicle",
         "heatPump",
+        "spaceHeater",
         "waterHeater",
         "appliance",
         "site",
@@ -118,5 +119,7 @@ def test_panel_device_and_concept_presentation_is_translated():
     assert danish["concept_battery.soc"] == "Ladeniveau"
     assert english["concept_site.importEnergy"] == "Import energy"
     assert danish["concept_site.exportEnergy"] == "Eksporteret energi"
+    assert english["concept_spaceHeater.targetTemperature"] == "Target temperature"
+    assert danish["concept_spaceHeater.targetTemperature"] == "Ønsket temperatur"
     assert "options" not in load_translation("en")
     assert "options" not in load_translation("da")

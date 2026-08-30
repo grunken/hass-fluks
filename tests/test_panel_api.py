@@ -113,6 +113,7 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
     )
     catalog = {
         "battery": {"type": "battery", "concepts": []},
+        "spaceHeater": {"type": "spaceHeater", "concepts": []},
         "site": {"type": "site", "concepts": []},
     }
     sent = []
@@ -126,6 +127,7 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
                 return_value={
                     "delete_site_title": "Delete {siteName}?",
                     "device_type_battery": "Battery",
+                    "device_type_spaceHeater": "Space heater",
                     "device_type_site": "Site",
                     "device_type_fallback": "Energy device",
                 }
@@ -150,7 +152,10 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
         "metadata": "",
     } for item in sent)
     assert all(item["devices"] == [] for item in sent)
-    assert all(item["device_types"] == [{"type": "battery", "name": "Battery"}] for item in sent)
+    assert all(item["device_types"] == [
+        {"type": "battery", "name": "Battery"},
+        {"type": "spaceHeater", "name": "Space heater"},
+    ] for item in sent)
     assert all(item["translations"]["delete_site_title"] == "Delete {siteName}?" for item in sent)
     serialized = repr(sent)
     assert "integration_key" not in serialized
@@ -449,6 +454,73 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
     assert result["mappings"]["battery.soc"]["configuration"]["entityId"] == "sensor.existing_soc"
     assert result["suggestions"] == {"battery.power": "sensor.suggested_power"}
     assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.power"]
+
+
+async def test_space_heater_uses_catalog_driven_fact_and_control_flows(hass):
+    """A newly catalogued type uses the existing generic Device detail contract."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "heater-device", "type": "spaceHeater", "properties": {}}
+    )
+    api.list_mappings = AsyncMock(
+        return_value=[
+            {
+                "id": "power-in",
+                "concept": "spaceHeater.power",
+                "direction": "input",
+                "configuration": {"version": 1, "entityId": "sensor.heater_power"},
+            },
+            {
+                "id": "target-out",
+                "concept": "spaceHeater.targetTemperature",
+                "direction": "output",
+                "configuration": output_configuration(),
+            },
+        ]
+    )
+    concepts = [
+        {"concept": "spaceHeater.power", "datatype": "number", "unit": "W", "cadence": "realtime", "usages": ["fact"], "source": "mapping"},
+        {"concept": "spaceHeater.energy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
+        {"concept": "spaceHeater.temperature", "datatype": "number", "unit": "°C", "cadence": "realtime", "usages": ["fact"], "source": "mapping"},
+        {"concept": "spaceHeater.targetTemperature", "datatype": "number", "unit": "°C", "cadence": "realtime", "usages": ["control"]},
+        {"concept": "spaceHeater.state", "datatype": "boolean", "cadence": "realtime", "usages": ["fact", "control"], "source": "mapping"},
+    ]
+    catalog = {"spaceHeater": {"type": "spaceHeater", "concepts": concepts}}
+    translations = {
+        "device_type_spaceHeater": "Space heater",
+        **{f"concept_{item['concept']}": item["concept"].split(".", 1)[1] for item in concepts},
+    }
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value=translations)),
+    ):
+        websocket_device_detail(
+            hass,
+            conn,
+            {"id": 82, "type": COMMAND_DEVICE_DETAIL, "entry_id": entry.entry_id, "device_id": "heater-device"},
+        )
+        await hass.async_block_till_done()
+
+    result = conn.send_result.call_args.args[1]
+    assert result["type"] == "spaceHeater"
+    assert [item["concept"] for item in result["concepts"]] == [
+        "spaceHeater.power",
+        "spaceHeater.energy",
+        "spaceHeater.temperature",
+        "spaceHeater.state",
+    ]
+    assert [item["concept"] for item in result["controls"]] == [
+        "spaceHeater.targetTemperature",
+        "spaceHeater.state",
+    ]
+    assert result["mappings"]["spaceHeater.power"]["configuration"] == {
+        "version": 1,
+        "entityId": "sensor.heater_power",
+    }
+    assert result["output_mappings"]["spaceHeater.targetTemperature"]["id"] == "target-out"
 
 
 async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):

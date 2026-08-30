@@ -207,6 +207,7 @@ def test_all_canonical_icon_types_resolve_to_supplied_assets():
         "electricVehicle",
         "generator",
         "heatPump",
+        "spaceHeater",
         "solar",
         "waterHeater",
     )

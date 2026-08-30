@@ -13,6 +13,7 @@ PHYSICAL_TYPES = (
     "battery",
     "electricVehicle",
     "heatPump",
+    "spaceHeater",
     "waterHeater",
     "appliance",
 )

@@ -9,7 +9,7 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
     api = AsyncMock()
     api.list_devices.return_value = [
         {"id": "site-internal", "deviceId": "site-external", "type": "site"},
-        {"id": "battery-internal", "deviceId": "battery-external", "type": "battery"},
+        {"id": "heater-internal", "deviceId": "heater-external", "type": "spaceHeater"},
     ]
     api.list_mappings.return_value = [
         {
@@ -27,9 +27,9 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
         },
         {
             "direction": "input",
-            "deviceId": "battery-internal",
-            "concept": "battery.soc",
-            "configuration": {"entityId": "sensor.battery_soc"},
+            "deviceId": "heater-internal",
+            "concept": "spaceHeater.power",
+            "configuration": {"entityId": "sensor.heater_power"},
         },
     ]
     send = AsyncMock(return_value=True)
@@ -43,7 +43,7 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
     )
 
     hass.states.async_set("sensor.unmapped", "12")
-    hass.states.async_set("sensor.battery_soc", "unavailable")
+    hass.states.async_set("sensor.heater_power", "unavailable")
     hass.states.async_set("sensor.grid_power", "unknown")
     await hass.async_block_till_done()
     assert send.await_count == 1
@@ -51,8 +51,8 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
     api.list_mappings.return_value = [
         {
             "direction": "input",
-            "deviceId": "battery-internal",
-            "concept": "battery.soc",
+            "deviceId": "heater-internal",
+            "concept": "spaceHeater.power",
             "configuration": {"entityId": "sensor.grid_power"},
         }
     ]
@@ -62,7 +62,7 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
     await hass.async_block_till_done()
     assert send.await_count == 2
     send.assert_awaited_with(
-        {"deviceId": "battery-external", "battery.soc": 21.5}
+        {"deviceId": "heater-external", "spaceHeater.power": 21.5}
     )
 
     await publisher.async_stop()
