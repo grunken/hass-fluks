@@ -270,6 +270,35 @@ async def test_device_management_uses_filtered_incremental_machine_contracts():
 
 
 @pytest.mark.asyncio
+async def test_battery_property_patch_preserves_exact_names_values_and_response():
+    """Battery physical configuration crosses the real HTTP client boundary losslessly."""
+    properties = {
+        "capacityKwh": 18.5,
+        "battery.socMinimum": 12.5,
+        "battery.socMaximum": 94.5,
+    }
+    updated = {
+        "id": "battery-internal",
+        "deviceId": "battery-external",
+        "type": "battery",
+        "properties": properties,
+    }
+    session = FakeSession(FakeResponse(200, {"data": updated}))
+    client = FluksApiClient(session, integration_key="machine-key")
+
+    assert await client.update_device_properties(
+        "site-id", "battery-internal", properties
+    ) == updated
+    method, url, request = session.requests[0]
+    assert (method, url) == (
+        "PATCH",
+        f"{API_BASE_URL}/sites/site-id/devices/battery-internal",
+    )
+    assert request["json"] == {"properties": properties}
+    assert request["headers"] == {"Authorization": "Bearer machine-key"}
+
+
+@pytest.mark.asyncio
 async def test_device_lifecycle_delete_uses_only_human_auth():
     """The administrative DELETE never uses the Integration credential."""
     session = FakeSession(FakeResponse(204, None))

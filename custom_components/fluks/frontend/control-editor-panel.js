@@ -239,12 +239,28 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
   }
-  _propertiesForm(properties, solar) {
+  _editableDeviceProperties(properties, deviceType) {
+    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : [])];
+    return Object.fromEntries(keys.filter((key) => Object.hasOwn(properties, key)).map((key) => [key, properties[key]]));
+  }
+  _propertiesForm(properties, deviceType, learned = {}) {
+    const physicalField = (key, suggestionKey, label, hint, unit, constraints) => {
+      const configured = properties[key]; const suggestion = learned[suggestionKey];
+      const displaySuggestion = suggestion == null ? "" : String(Math.trunc(Number(suggestion) * 100) / 100);
+      const placeholder = displaySuggestion ? `~${displaySuggestion}` : "";
+      return `<label class="physical-property">${esc(this._t(label))}<span class="property-input"><input type="number" step="any" ${constraints} data-property="${esc(key)}" value="${esc(configured ?? "")}" ${placeholder ? `placeholder="${esc(placeholder)}"` : ""}><span>${esc(unit)}</span></span>${displaySuggestion ? `<small>${esc(this._t(hint))}: ${esc(displaySuggestion)} ${esc(unit)}</small>` : ""}</label>`;
+    };
     return `<section class="card"><h2>${esc(this._t("device_information"))}</h2><div class="fields three">
       ${[["displayName", "name"], ["vendor", "vendor"], ["model", "model"]].map(([key, label]) => `<label>${esc(this._t(label))}<input data-property="${key}" value="${esc(properties[key] || "")}"></label>`).join("")}</div></section>
-      ${solar ? `<section class="card"><h2>${esc(this._t("installation"))}</h2><div class="fields two">
+      ${deviceType === "solar" ? `<section class="card"><h2>${esc(this._t("installation"))}</h2><div class="fields three">
+      ${physicalField("installedKWp", "solar.installedKwpEstimated", "installed_solar_capacity", "estimated_by_fluks", "kWp", 'min="0"')}
       <label>${esc(this._t("direction"))}<input type="number" min="0" max="359.999" data-property="azimuthDegrees" value="${esc(properties.azimuthDegrees ?? "")}"></label>
-      <label>${esc(this._t("panel_angle"))}<input type="number" min="0" max="90" data-property="tiltDegrees" value="${esc(properties.tiltDegrees ?? "")}"></label></div></section>` : ""}`;
+      <label>${esc(this._t("panel_angle"))}<input type="number" min="0" max="90" data-property="tiltDegrees" value="${esc(properties.tiltDegrees ?? "")}"></label></div></section>` : ""}
+      ${deviceType === "battery" ? `<section class="card"><h2>${esc(this._t("battery_configuration"))}</h2><div class="fields three">
+      ${physicalField("capacityKwh", "battery.capacityKwhEstimated", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}
+      ${physicalField("battery.socMinimum", "battery.socMinimumObserved", "minimum_soc", "lowest_observed_by_fluks", "%", 'min="0" max="100"')}
+      ${physicalField("battery.socMaximum", "battery.socMaximumObserved", "maximum_soc", "highest_observed_by_fluks", "%", 'min="0" max="100"')}
+      </div></section>` : ""}`;
   }
   _collectForm(useInputDraft = false) {
     const mappings = useInputDraft
@@ -298,7 +314,8 @@ class FluksControlEditorPanel extends HTMLElement {
     });
   }
   _captureInputProperties() {
-    const properties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()]));
+    const current = this._view.name === "add" ? this._draft?.properties : this._editProperties;
+    const properties = { ...(current ?? {}), ...Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()])) };
     if (this._view.name === "add" && this._draft) this._draft.properties = properties;
     else this._editProperties = properties;
   }
@@ -361,14 +378,24 @@ class FluksControlEditorPanel extends HTMLElement {
         const existing = this._detail.mappings[concept.concept]?.configuration;
         return [concept.concept, clone(existing ?? { version: 1, entityId: this._detail.suggestions[concept.concept] || "" })];
       }));
-      this._editProperties = clone(this._detail.properties);
+      this._editProperties = clone(this._editableDeviceProperties(this._detail.properties, this._detail.type));
     }
-    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type === "solar")}${this._actions("save_mapping")}`, true);
+    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties)}${this._actions("save_mapping")}`, true);
     this._wirePickers();
     this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => this._cancelEdit();
     this.shadowRoot.querySelector("#save").onclick = async () => {
-      try { const form = this._collectForm(true); await this._call("fluks/config/device_save", { device_id: this._detail.id, mappings: form.mappings, properties: site ? {} : form.properties }); history.back(); }
+      try {
+        const form = this._collectForm(true);
+        const payload = { device_id: this._detail.id, mappings: form.mappings, properties: site ? {} : form.properties };
+        const result = await this._call("fluks/config/device_save", payload);
+        if (result?.properties) this._detail = { ...this._detail, properties: clone(result.properties) };
+        this._inputDraft = undefined;
+        this._inputDraftDevice = undefined;
+        this._editProperties = undefined;
+        this._clearedInputConcepts.clear();
+        history.back();
+      }
       catch (_) { this._renderEdit(); }
     };
   }
@@ -383,7 +410,7 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     if (type && this._draft && this._view.haDeviceId) {
       const detail = { concepts: this._draft.concepts, mappings: {}, suggestions: this._draft.suggestions };
-      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._propertiesForm(this._draft.properties, type.type === "solar")}`;
+      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._propertiesForm(this._draft.properties, type.type)}`;
     }
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
     this._frame(type ? `${this._t("add_device")} · ${type.name}` : this._t("add_device"), body, true);
@@ -508,8 +535,8 @@ class FluksControlEditorPanel extends HTMLElement {
     .device-heading{position:relative;display:flex;align-items:center;gap:18px;margin:2px 0 24px;padding-right:48px}.device-heading h1,.device-heading h2{margin:0 0 4px}.device-heading p{margin:0}.device-heading .device-name{font-size:16px;color:var(--primary-text-color)}.device-heading.compact{margin-bottom:20px}
     .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
-    .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
-    label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input,select{width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}
+    .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+    label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input,select{box-sizing:border-box;width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}.property-input{position:relative;display:block;min-width:0}.property-input input{min-width:0;padding-right:54px}.property-input>span{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--secondary-text-color);font-weight:500;pointer-events:none}.physical-property small{font-weight:400}
     .mapping-field{min-width:0}.input-conversions{display:grid;gap:10px;margin-top:10px}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}.input-conversions li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.input-conversions .order{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--primary-color);color:#fff;font-weight:700}.conversion-copy{display:grid;min-width:0}.conversion-copy strong,.conversion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.input-conversions .row-actions{display:flex;gap:4px;flex-wrap:wrap}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.add-conversion{justify-self:start}.conversion-editor{padding:8px 18px 18px}.conversion-editor [hidden]{display:none}
     .picker-value{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;padding:10px 12px;background:var(--secondary-background-color);overflow:hidden}.source-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;color:var(--primary-color)}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}

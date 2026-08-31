@@ -508,13 +508,24 @@ def _validate_input_mappings(
         raise PanelCommandError("invalid_mapping") from err
 
 
-def _device_properties(hass, ha_device_id: str, submitted: dict[str, Any]) -> dict[str, Any]:
+def _editable_property_keys(device_type: str) -> set[str]:
+    """Return the documented writable properties exposed by this panel."""
+    keys = {"displayName", "vendor", "model"}
+    if device_type == "solar":
+        keys.update({"installedKWp", "azimuthDegrees", "tiltDegrees"})
+    elif device_type == "battery":
+        keys.update({"capacityKwh", "battery.socMinimum", "battery.socMaximum"})
+    return keys
+
+
+def _device_properties(
+    hass, ha_device_id: str, device_type: str, submitted: dict[str, Any]
+) -> dict[str, Any]:
     device = dr.async_get(hass).async_get(ha_device_id)
     properties = {
         key: value
         for key, value in submitted.items()
-        if key in {"displayName", "vendor", "model", "azimuthDegrees", "tiltDegrees"}
-        and value is not None
+        if key in _editable_property_keys(device_type) and value is not None
     }
     if device is not None:
         properties.setdefault("displayName", device.name_by_user or device.name)
@@ -525,11 +536,18 @@ def _device_properties(hass, ha_device_id: str, submitted: dict[str, Any]) -> di
 
 def _validate_solar_properties(device_type: str, properties: dict[str, Any]) -> None:
     if device_type != "solar" and any(
-        key in properties for key in ("azimuthDegrees", "tiltDegrees")
+        key in properties for key in ("installedKWp", "azimuthDegrees", "tiltDegrees")
     ):
         raise PanelCommandError("validation_error")
+    installed = properties.get("installedKWp")
     azimuth = properties.get("azimuthDegrees")
     tilt = properties.get("tiltDegrees")
+    if installed is not None and (
+        not isinstance(installed, (int, float))
+        or isinstance(installed, bool)
+        or installed <= 0
+    ):
+        raise PanelCommandError("validation_error")
     if azimuth is not None and (
         not isinstance(azimuth, (int, float)) or not 0 <= azimuth < 360
     ):
@@ -538,6 +556,26 @@ def _validate_solar_properties(device_type: str, properties: dict[str, Any]) -> 
         not isinstance(tilt, (int, float)) or not 0 <= tilt <= 90
     ):
         raise PanelCommandError("validation_error")
+
+
+def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -> None:
+    """Validate only the backend-documented Battery physical constraints."""
+    battery_keys = {"capacityKwh", "battery.socMinimum", "battery.socMaximum"}
+    if device_type != "battery" and any(key in properties for key in battery_keys):
+        raise PanelCommandError("validation_error")
+    capacity = properties.get("capacityKwh")
+    if capacity is not None and (
+        not isinstance(capacity, (int, float)) or isinstance(capacity, bool) or capacity <= 0
+    ):
+        raise PanelCommandError("validation_error")
+    for key in ("battery.socMinimum", "battery.socMaximum"):
+        value = properties.get(key)
+        if value is not None and (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not 0 <= value <= 100
+        ):
+            raise PanelCommandError("validation_error")
 
 
 @websocket_api.websocket_command(
@@ -564,6 +602,7 @@ async def websocket_add_save(hass, connection, msg):
         concepts = _mappable_concepts(catalog[msg["device_type"]])
         selected = _validate_input_mappings(hass, concepts, msg["mappings"])
         _validate_solar_properties(msg["device_type"], msg["properties"])
+        _validate_battery_properties(msg["device_type"], msg["properties"])
         external_id = stable_device_id(
             entry.data[CONF_INTEGRATION_ID], msg["device_type"], msg["ha_device_id"]
         )
@@ -578,7 +617,12 @@ async def websocket_add_save(hass, connection, msg):
                     site_id,
                     external_id,
                     msg["device_type"],
-                    _device_properties(hass, msg["ha_device_id"], msg["properties"]),
+                    _device_properties(
+                        hass,
+                        msg["ha_device_id"],
+                        msg["device_type"],
+                        msg["properties"],
+                    ),
                 )
             except FluksConflict:
                 refreshed = await api.list_devices(site_id)
@@ -652,17 +696,21 @@ async def websocket_device_save(hass, connection, msg):
         submitted = {
             key: value
             for key, value in msg["properties"].items()
-            if key in {"displayName", "vendor", "model", "azimuthDegrees", "tiltDegrees"}
+            if key in _editable_property_keys(device_type)
         }
         _validate_solar_properties(device_type, submitted)
+        _validate_battery_properties(device_type, submitted)
         changed = {
             key: value
             for key, value in submitted.items()
             if original_properties.get(key) != value
             and (value is not None or key in original_properties)
         }
+        updated_device = device
         if changed:
-            await api.update_device_properties(site_id, msg["device_id"], changed)
+            updated_device = await api.update_device_properties(
+                site_id, msg["device_id"], changed
+            )
         mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
         existing = {
             str(item["concept"]): item
@@ -709,7 +757,10 @@ async def websocket_device_save(hass, connection, msg):
             contexts[msg["device_id"]] = context
             options[CONF_DEVICE_CONTEXTS] = contexts
             hass.config_entries.async_update_entry(entry, options=options)
-        connection.send_result(msg["id"], {})
+        connection.send_result(
+            msg["id"],
+            {"properties": dict(updated_device.get("properties") or {})},
+        )
         await async_refresh_observations(hass, entry.entry_id)
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)

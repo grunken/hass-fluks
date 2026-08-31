@@ -433,6 +433,179 @@ test("production Edit mappings path saves and restores ordered input conversions
   assert.match(body, /sensor\.grid_power/);
 });
 
+test("Battery physical fields keep learned knowledge separate from editable values", () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    edit_mappings: "Edit mappings and properties", device_information: "Device information",
+    battery_configuration: "Battery configuration", battery_capacity: "Battery capacity",
+    minimum_soc: "Minimum SOC", maximum_soc: "Maximum SOC", estimated_by_fluks: "Estimated by fluks",
+    lowest_observed_by_fluks: "Lowest observed by fluks", highest_observed_by_fluks: "Highest observed by fluks",
+    name: "Name", vendor: "Vendor", model: "Model", save_mapping: "Save mapping", cancel: "Cancel",
+  }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._detail = {
+    id: "battery-device", type: "battery", type_name: "Battery", label: "Battery · Test",
+    properties: {
+      "battery.capacityKwhEstimated": 15.8,
+      "battery.socMinimumObserved": 15,
+      "battery.socMaximumObserved": 97,
+    }, concepts: [], mappings: {}, suggestions: {}, controls: [], output_mappings: {},
+  };
+  let body;
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" || selector === "#save" ? {} : null;
+  panel._renderEdit();
+
+  assert.match(body, /data-property="capacityKwh" value="" placeholder="~15\.8"/);
+  assert.match(body, /data-property="battery\.socMinimum" value="" placeholder="~15"/);
+  assert.match(body, /data-property="battery\.socMaximum" value="" placeholder="~97"/);
+  assert.match(body, /Estimated by fluks: 15\.8 kWh/);
+  assert.match(body, /Lowest observed by fluks: 15 %/);
+  assert.match(body, /Highest observed by fluks: 97 %/);
+  assert.deepEqual(panel._editProperties, {});
+
+  panel._inputDraft = {};
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [
+    { dataset: { property: "capacityKwh" }, value: "", type: "number" },
+    { dataset: { property: "battery.socMinimum" }, value: "", type: "number" },
+    { dataset: { property: "battery.socMaximum" }, value: "", type: "number" },
+  ] : [];
+  assert.deepEqual(panel._collectForm(true).properties, {
+    capacityKwh: null, "battery.socMinimum": null, "battery.socMaximum": null,
+  });
+});
+
+test("configured Battery values take precedence, clear to hints, and remain Battery-only", () => {
+  const panel = new Panel(); panel._context = { translations: {} };
+  const learned = {
+    "battery.capacityKwhEstimated": 14.038032,
+    "battery.socMinimumObserved": 15.129,
+    "battery.socMaximumObserved": 97.987,
+  };
+  const configured = { capacityKwh: 20, "battery.socMinimum": 10, "battery.socMaximum": 90 };
+  const body = panel._propertiesForm(configured, "battery", learned);
+  assert.match(body, /data-property="capacityKwh" value="20"/);
+  assert.match(body, /data-property="battery\.socMinimum" value="10"/);
+  assert.match(body, /data-property="battery\.socMaximum" value="90"/);
+  assert.match(body, /data-property="capacityKwh" value="20" placeholder="~14\.03"/);
+
+  const cleared = panel._propertiesForm({}, "battery", learned);
+  assert.match(cleared, /placeholder="~14\.03"/);
+  assert.match(cleared, /placeholder="~15\.12"/);
+  assert.match(cleared, /placeholder="~97\.98"/);
+  assert.match(cleared, /estimated by fluks: 14\.03 kWh/i);
+  assert.doesNotMatch(cleared, /14\.038032|15\.129|97\.987/);
+  const unknown = panel._propertiesForm({}, "battery", {});
+  assert.doesNotMatch(unknown, /placeholder="~/);
+  assert.doesNotMatch(panel._propertiesForm({}, "heatPump"), /Battery configuration|capacityKwh|socMinimum|socMaximum/);
+});
+
+test("Solar installed capacity keeps learned suggestion separate and round-trips backend state", async () => {
+  const learned = { "solar.installedKwpEstimated": 14.038032 };
+  const panel = new Panel();
+  panel._context = { translations: {}, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._view = { name: "edit" };
+  panel._detail = {
+    id: "solar-device", type: "solar", type_name: "Solar", label: "Solar · Test",
+    properties: learned, concepts: [], mappings: {}, suggestions: {},
+  };
+  const cancel = {}; const save = {}; let body; let saved;
+  const installedInput = { dataset: { property: "installedKWp" }, value: "", type: "number" };
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [installedInput] : [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+  panel._call = async (_type, payload) => { saved = payload; return { properties: learned }; };
+
+  panel._renderEdit();
+  assert.match(body, /<div class="fields three">/);
+  assert.match(body, /data-property="installedKWp" value="" placeholder="~14\.03"/);
+  assert.match(body, /estimated by fluks: 14\.03 kWp/i);
+  const styles = panel._styles();
+  assert.match(styles, /\.fields\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\);align-items:start;gap:14px\}/);
+  assert.match(styles, /input,select\{box-sizing:border-box;width:100%/);
+  assert.match(styles, /\.property-input\{position:relative;display:block;min-width:0\}/);
+  assert.match(styles, /\.property-input input\{min-width:0;padding-right:54px\}/);
+  assert.match(styles, /\.property-input>span\{position:absolute;right:12px;top:50%/);
+  assert.deepEqual(panel._editProperties, {});
+  await save.onclick();
+  assert.deepEqual(saved.properties, { installedKWp: null });
+  assert.equal(Object.hasOwn(saved.properties, "solar.installedKwpEstimated"), false);
+
+  panel._detail = { ...panel._detail, properties: learned };
+  panel._inputDraftDevice = undefined;
+  installedInput.value = "16.75";
+  panel._call = async (_type, payload) => {
+    saved = payload;
+    return { properties: { ...learned, installedKWp: 16.75 } };
+  };
+  panel._renderEdit();
+  await save.onclick();
+  assert.equal(saved.properties.installedKWp, 16.75);
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel._renderEdit();
+  assert.match(body, /data-property="installedKWp" value="16\.75" placeholder="~14\.03"/);
+
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [{ ...installedInput, value: "" }] : [];
+  panel._call = async (_type, payload) => {
+    saved = payload;
+    return { properties: learned };
+  };
+  await save.onclick();
+  assert.equal(saved.properties.installedKWp, null);
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel._renderEdit();
+  assert.match(body, /data-property="installedKWp" value="" placeholder="~14\.03"/);
+});
+
+test("successful Battery property Save discards the stale draft before reopening", async () => {
+  const panel = new Panel();
+  panel._context = { translations: {}, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._view = { name: "edit" };
+  panel._detail = {
+    id: "battery-device", type: "battery", type_name: "Battery", label: "Battery · Test",
+    properties: { capacityKwh: 16.058507, "battery.capacityKwhEstimated": 14.038032 },
+    concepts: [], mappings: {}, suggestions: {},
+  };
+  const cancel = {}; const save = {}; let body; let saved;
+  const propertyInputs = [
+    { dataset: { property: "capacityKwh" }, value: "18.5", type: "number" },
+    { dataset: { property: "battery.socMinimum" }, value: "12.5", type: "number" },
+    { dataset: { property: "battery.socMaximum" }, value: "94.5", type: "number" },
+  ];
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? propertyInputs : [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+  panel._call = async (_type, payload) => {
+    saved = payload;
+    return { properties: {
+      capacityKwh: 18.5, "battery.socMinimum": 12.5, "battery.socMaximum": 94.5,
+      "battery.capacityKwhEstimated": 14.038032,
+    } };
+  };
+
+  panel._renderEdit();
+  assert.match(body, /data-property="capacityKwh" value="16\.058507"/);
+  await save.onclick();
+  assert.deepEqual(saved.properties, {
+    capacityKwh: 18.5, "battery.socMinimum": 12.5, "battery.socMaximum": 94.5,
+  });
+  assert.equal(panel._detail.properties.capacityKwh, 18.5);
+  assert.equal(panel._detail.properties["battery.socMinimum"], 12.5);
+  assert.equal(panel._detail.properties["battery.socMaximum"], 94.5);
+  assert.equal(panel._inputDraftDevice, undefined);
+  assert.equal(panel._editProperties, undefined);
+
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel._renderEdit();
+  assert.match(body, /data-property="capacityKwh" value="18\.5"/);
+  assert.match(body, /data-property="battery\.socMinimum" value="12\.5"/);
+  assert.match(body, /data-property="battery\.socMaximum" value="94\.5"/);
+  assert.doesNotMatch(body, /data-property="capacityKwh" value="16\.058507"/);
+});
+
 test("Input Mapping conversions follow the unsaved Entity draft immediately", () => {
   const panel = new Panel();
   panel._context = { translations: {}, entities: [] };

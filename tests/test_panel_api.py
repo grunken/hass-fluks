@@ -266,7 +266,7 @@ async def test_device_noop_save_performs_no_mutations(hass):
         )
         await hass.async_block_till_done()
 
-    conn.send_result.assert_called_once_with(5, {})
+    conn.send_result.assert_called_once_with(5, {"properties": {}})
     api.update_device_properties.assert_not_awaited()
     api.create_mapping.assert_not_awaited()
     api.update_mapping.assert_not_awaited()
@@ -329,13 +329,22 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
                         ],
                     }
                 },
-                "properties": {},
+                "properties": {
+                    "capacityKwh": 15.8,
+                    "battery.socMinimum": 15,
+                    "battery.socMaximum": 97,
+                },
             },
         )
         await hass.async_block_till_done()
 
     expected_id = stable_device_id("external-a", "battery", "ha-new")
     assert api.create_device.await_args.args[:3] == ("site-a", expected_id, "battery")
+    assert api.create_device.await_args.args[3] == {
+        "capacityKwh": 15.8,
+        "battery.socMinimum": 15,
+        "battery.socMaximum": 97,
+    }
     payload = api.create_mapping.await_args.args[1]
     assert payload["concept"] == "battery.soc"
     assert payload["configuration"]["entityId"] == "sensor.new_soc"
@@ -370,7 +379,10 @@ async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(h
             {"id": "power-map", "concept": "battery.power", "direction": "input", "configuration": {"entityId": "sensor.old_power"}},
         ]
     )
-    api.update_device_properties = AsyncMock()
+    api.update_device_properties = AsyncMock(return_value={
+        "id": "device-a", "type": "battery",
+        "properties": {"vendor": "GoodWe", "model": "New"},
+    })
     api.update_mapping = AsyncMock()
     api.delete_mapping = AsyncMock()
     api.create_mapping = AsyncMock()
@@ -414,6 +426,146 @@ async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(h
     api.delete_mapping.assert_awaited_once_with("site-a", "power-map")
     assert api.create_mapping.await_args.args[1]["concept"] == "battery.energy"
     api.create_device.assert_not_called()
+
+
+async def test_battery_physical_properties_patch_without_writing_learned_values(hass):
+    """Battery configuration uses Device PATCH while learned properties stay read-only."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={
+        "id": "device-a", "type": "battery", "properties": {
+            "battery.capacityKwhEstimated": 15.8,
+            "battery.socMinimumObserved": 15,
+            "battery.socMaximumObserved": 97,
+        },
+    })
+    api.list_mappings = AsyncMock(return_value=[])
+    updated_properties = {
+        "capacityKwh": 20,
+        "battery.socMinimum": 10,
+        "battery.socMaximum": 90,
+        "battery.capacityKwhEstimated": 15.8,
+        "battery.socMinimumObserved": 15,
+        "battery.socMaximumObserved": 97,
+    }
+    api.update_device_properties = AsyncMock(return_value={
+        "id": "device-a", "type": "battery", "properties": updated_properties,
+    })
+    catalog = {"battery": {"type": "battery", "concepts": []}}
+    conn = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        websocket_device_save(hass, conn, {
+            "id": 70, "type": COMMAND_DEVICE_SAVE, "entry_id": entry.entry_id,
+            "device_id": "device-a", "mappings": {}, "properties": {
+                "capacityKwh": 20,
+                "battery.socMinimum": 10,
+                "battery.socMaximum": 90,
+                "battery.capacityKwhEstimated": 999,
+                "battery.socMinimumObserved": 1,
+                "battery.socMaximumObserved": 100,
+            },
+        })
+        await hass.async_block_till_done()
+
+    api.update_device_properties.assert_awaited_once_with("site-a", "device-a", {
+        "capacityKwh": 20,
+        "battery.socMinimum": 10,
+        "battery.socMaximum": 90,
+    })
+    conn.send_result.assert_called_once_with(70, {"properties": updated_properties})
+
+
+async def test_battery_suggestions_are_noop_and_configured_values_can_be_cleared(hass):
+    """Suggestion-only Save is inert; null removes only manual configuration."""
+    entry = make_entry(hass)
+    learned = {
+        "battery.capacityKwhEstimated": 15.8,
+        "battery.socMinimumObserved": 15,
+        "battery.socMaximumObserved": 97,
+    }
+    configured = {
+        **learned,
+        "capacityKwh": 20,
+        "battery.socMinimum": 10,
+        "battery.socMaximum": 90,
+    }
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(side_effect=[
+        {"id": "device-a", "type": "battery", "properties": learned},
+        {"id": "device-a", "type": "battery", "properties": configured},
+    ])
+    api.list_mappings = AsyncMock(return_value=[])
+    api.update_device_properties = AsyncMock(return_value={
+        "id": "device-a", "type": "battery", "properties": learned,
+    })
+    catalog = {"battery": {"type": "battery", "concepts": []}}
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        for msg_id in (71, 72):
+            websocket_device_save(hass, connection(), {
+                "id": msg_id, "type": COMMAND_DEVICE_SAVE,
+                "entry_id": entry.entry_id, "device_id": "device-a", "mappings": {},
+                "properties": {
+                    "capacityKwh": None,
+                    "battery.socMinimum": None,
+                    "battery.socMaximum": None,
+                },
+            })
+            await hass.async_block_till_done()
+
+    api.update_device_properties.assert_awaited_once_with("site-a", "device-a", {
+        "capacityKwh": None,
+        "battery.socMinimum": None,
+        "battery.socMaximum": None,
+    })
+
+
+async def test_solar_installed_capacity_uses_existing_patch_and_keeps_estimate_read_only(hass):
+    """Solar configuration writes only installedKWp and supports explicit clearing."""
+    entry = make_entry(hass)
+    learned = {"solar.installedKwpEstimated": 14.038032}
+    configured = {**learned, "installedKWp": 16.75}
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(side_effect=[
+        {"id": "solar-a", "type": "solar", "properties": learned},
+        {"id": "solar-a", "type": "solar", "properties": configured},
+    ])
+    api.list_mappings = AsyncMock(return_value=[])
+    api.update_device_properties = AsyncMock(side_effect=[
+        {"id": "solar-a", "type": "solar", "properties": configured},
+        {"id": "solar-a", "type": "solar", "properties": learned},
+    ])
+    catalog = {"solar": {"type": "solar", "concepts": []}}
+    connections = [connection(), connection()]
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        for msg_id, properties, conn in (
+            (73, {"installedKWp": 16.75, "solar.installedKwpEstimated": 999}, connections[0]),
+            (74, {"installedKWp": None, "solar.installedKwpEstimated": 999}, connections[1]),
+        ):
+            websocket_device_save(hass, conn, {
+                "id": msg_id, "type": COMMAND_DEVICE_SAVE,
+                "entry_id": entry.entry_id, "device_id": "solar-a",
+                "mappings": {}, "properties": properties,
+            })
+            await hass.async_block_till_done()
+
+    assert [call.args for call in api.update_device_properties.await_args_list] == [
+        ("site-a", "solar-a", {"installedKWp": 16.75}),
+        ("site-a", "solar-a", {"installedKWp": None}),
+    ]
+    connections[0].send_result.assert_called_once_with(73, {"properties": configured})
+    connections[1].send_result.assert_called_once_with(74, {"properties": learned})
 
 
 async def test_device_detail_preserves_existing_mapping_and_matches_only_missing(hass):
