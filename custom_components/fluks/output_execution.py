@@ -47,6 +47,7 @@ class RuntimeOutputExecutor:
         self._hass = hass
         self._api = api
         self._site_id = site_id
+        self._balance_active = False
 
     async def async_handle(self, payload: dict[str, Any]) -> None:
         """Execute a supported Decision snapshot without disrupting transport."""
@@ -77,9 +78,10 @@ class RuntimeOutputExecutor:
             for item in catalog
             if isinstance(item, dict) and isinstance(item.get("type"), str)
         }
-        for decision in payload["decisions"]:
-            if not isinstance(decision, dict):
-                continue
+        decisions = [item for item in payload["decisions"] if isinstance(item, dict)]
+        ownership = [item for item in decisions if self._is_balance_ownership(item)]
+        remaining = [item for item in decisions if not self._is_balance_ownership(item)]
+        for decision in ownership + remaining:
             device = device_by_external_id.get(str(decision.get("deviceId")))
             device_type = decision.get("deviceType")
             if device is None or device.get("type") != device_type:
@@ -90,6 +92,8 @@ class RuntimeOutputExecutor:
                 concept = f"{device_type}.{field}"
                 definition = definitions.get(str(device_type), {}).get(concept)
                 if definition is None or "control" not in definition.get("usages", []):
+                    continue
+                if self._balance_active and concept == "battery.power":
                     continue
                 mapping = next(
                     (
@@ -108,8 +112,21 @@ class RuntimeOutputExecutor:
                     value = _canonical_value(raw_value, str(definition.get("datatype")))
                     configuration = validate_output_configuration(mapping.get("configuration"))
                     await self._async_execute(configuration, value)
+                    if concept == "site.power" and decision.get("mode") == "balance":
+                        self._balance_active = True
+                    elif concept == "site.power" and decision.get("mode") == "release":
+                        self._balance_active = False
                 except Exception:  # noqa: BLE001 - one action must not end runtime transport
                     _LOGGER.warning("Unable to execute fluks output Mapping for %s", concept)
+
+    @staticmethod
+    def _is_balance_ownership(decision: dict[str, Any]) -> bool:
+        """Return whether this Decision can change Site balance ownership."""
+        return (
+            decision.get("deviceType") == "site"
+            and "power" in decision
+            and decision.get("mode") in {"balance", "release"}
+        )
 
     async def _async_execute(
         self, configuration: dict[str, Any], requested_value: Any

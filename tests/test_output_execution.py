@@ -97,3 +97,101 @@ async def test_decision_mode_selects_only_the_exact_mapping_behavior(hass):
         "deviceId": "external-battery", "deviceType": "battery", "power": 0, "mode": None,
     }]})
     assert calls == ["target", "eco"]
+
+
+def _ownership_api():
+    def action(entity_id):
+        return {"version": 1, "actions": [{
+            "type": "serviceCall", "service": "test.execute",
+            "target": {"entityId": entity_id}, "data": {},
+        }]}
+
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[
+        {"id": "site-internal", "deviceId": "site-external", "type": "site"},
+        {"id": "battery-internal", "deviceId": "battery-external", "type": "battery"},
+    ])
+    api.list_mappings = AsyncMock(return_value=[
+        {"deviceId": "site-internal", "concept": "site.power", "direction": "output", "mode": "balance", "configuration": action("number.balance")},
+        {"deviceId": "site-internal", "concept": "site.power", "direction": "output", "mode": "release", "configuration": action("button.release")},
+        {"deviceId": "battery-internal", "concept": "battery.power", "direction": "output", "mode": None, "configuration": action("number.battery")},
+    ])
+    api.get_device_type_catalog = AsyncMock(return_value=[
+        {"type": "site", "concepts": [{"concept": "site.power", "datatype": "number", "usages": ["control"]}]},
+        {"type": "battery", "concepts": [{"concept": "battery.power", "datatype": "number", "usages": ["control"]}]},
+    ])
+    return api
+
+
+def _decision(device_type, mode, value=0):
+    return {
+        "deviceId": f"{device_type}-external", "deviceType": device_type,
+        "power": value, "mode": mode,
+    }
+
+
+async def test_site_balance_executes_first_and_suppresses_battery_power(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    executor = RuntimeOutputExecutor(hass, _ownership_api(), "site-a")
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", None, 1200), _decision("site", "balance"),
+    ]})
+
+    assert calls == ["number.balance"]
+
+
+async def test_site_release_clears_ownership_and_resumes_battery_power(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    executor = RuntimeOutputExecutor(hass, _ownership_api(), "site-a")
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance")]})
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", None, 1200), _decision("site", "release"),
+    ]})
+
+    assert calls == ["number.balance", "button.release", "number.battery"]
+
+
+async def test_reconnect_balance_snapshot_establishes_suppression(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    reconnected = RuntimeOutputExecutor(hass, _ownership_api(), "site-a")
+
+    await reconnected.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", None), _decision("site", "balance"),
+    ]})
+
+    assert calls == ["number.balance"]
+
+
+async def test_reconnect_release_snapshot_clears_existing_suppression(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    executor = RuntimeOutputExecutor(hass, _ownership_api(), "site-a")
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance")]})
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", None), _decision("site", "release"),
+    ]})
+
+    assert calls[-2:] == ["button.release", "number.battery"]
+
+
+async def test_unmapped_balance_does_not_take_ownership(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    api = _ownership_api()
+    api.list_mappings.return_value = [
+        item for item in api.list_mappings.return_value if item["mode"] != "balance"
+    ]
+
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({
+        "type": "decision.snapshot", "decisions": [
+            _decision("battery", None), _decision("site", "balance"),
+        ],
+    })
+
+    assert calls == ["number.battery"]
