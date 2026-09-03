@@ -16,6 +16,32 @@ class OutputMappingValidationError(ValueError):
     """The output Mapping configuration is not structurally valid."""
 
 
+def apply_output_transforms(value: Any, transforms: list[dict[str, Any]]) -> Any:
+    """Apply a validated requested-value transform sequence in order."""
+    current = value
+    for transform in transforms:
+        transform_type = transform["type"]
+        if transform_type == "invert":
+            current = -current
+        elif transform_type == "scale":
+            current *= transform["factor"]
+        elif transform_type == "offset":
+            current += transform["amount"]
+        elif transform_type == "powerToCurrent":
+            current /= transform["phases"] * transform["voltage"]
+        elif transform_type == "nearest":
+            current = min(transform["values"], key=lambda item: (abs(item - current), item))
+        elif transform_type == "valueMap":
+            match = next(
+                (item for item in transform["values"] if _datatype(item["from"]) == _datatype(current) and item["from"] == current),
+                None,
+            )
+            if match is None:
+                raise OutputMappingValidationError("valueMap has no matching input")
+            current = match["to"]
+    return current
+
+
 def _is_number(value: Any) -> bool:
     return isinstance(value, NUMERIC_TYPES) and not isinstance(value, bool)
 

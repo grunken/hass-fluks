@@ -4,8 +4,17 @@ import pytest
 
 from custom_components.fluks.output_mapping import (
     OutputMappingValidationError,
+    apply_output_transforms,
     validate_output_configuration,
 )
+
+
+def test_requested_value_transforms_execute_in_persisted_order():
+    assert apply_output_transforms(6500, [
+        {"type": "powerToCurrent", "phases": 3, "voltage": 230},
+        {"type": "nearest", "values": [6, 8, 10, 13, 16]},
+        {"type": "valueMap", "values": [{"from": 10, "to": "ten"}]},
+    ]) == "ten"
 
 
 def action(binding, *, service="number.set_value", parameter="value"):

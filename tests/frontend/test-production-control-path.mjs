@@ -73,6 +73,28 @@ test("production panel passes discovered actions and compatible entities to actu
   assert.doesNotMatch(rendered, /selectOption|setNumber|water heater temperature/i);
 });
 
+test("production control path groups backend mode mappings into behavior sections", () => {
+  const panel = new Panel(); panel._context = { translations: {} };
+  panel._view = { name: "control", deviceId: "device-1", concept: "battery.power" };
+  panel._detail = {
+    id: "device-1", type_name: "Battery",
+    controls: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", mappingModes: [null, "target", "limit", "balance", "release"] }],
+    output_mappings: {
+      "battery.power": [
+        { mode: null, configuration: { version: 1, actions: [] } },
+        { mode: "release", configuration: { version: 1, actions: [{ type: "serviceCall", service: "switch.turn_off", target: { entityId: "switch.control" }, data: {} }] } },
+      ],
+    },
+  };
+  let editor;
+  panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
+  panel._renderControl();
+  assert.deepEqual(editor.allowedModes, [null, "target", "limit", "balance", "release"]);
+  assert.deepEqual(editor.behaviors.map(({ mode }) => mode), [null, "release"]);
+  assert.match(editor.shadowRoot.innerHTML, /default behavior/i);
+  assert.match(editor.shadowRoot.innerHTML, /behavior release/i);
+});
+
 test("production action and entity searches filter immediately and restore globally", () => {
   const editor = new Editor();
   assert.match(editor._styles(), /\.choice\[hidden\]\{display:none\}/);
@@ -329,7 +351,7 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
     ],
     controls: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W" }],
     mappings: { "site.power": { concept: "site.power", configuration: { entityId: "sensor.grid_power" } } },
-    output_mappings: { "site.power": { concept: "site.power", configuration: { version: 1, actions: [] } } },
+    output_mappings: { "site.power": [{ concept: "site.power", mode: null, configuration: { version: 1, actions: [] } }] },
   };
   let rendered; const destinations = []; const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
   panel._frame = (title, body) => { rendered = { title, body }; };

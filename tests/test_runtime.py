@@ -123,7 +123,9 @@ async def test_decision_snapshot_is_parsed_without_execution():
     session = FakeSession([socket])
     runtime = FluksRuntimeWebSocket(session, KEY, API_BASE_URL, reconnect_delays=(0,))
     handled = []
-    runtime._handle_message = handled.append
+    async def handle(payload):
+        handled.append(payload)
+    runtime._message_handler = handle
     runtime.start(asyncio.create_task)
     await _wait_for(lambda: len(handled) == 1)
     assert handled == [{"type": "decision.snapshot", "decisions": []}]

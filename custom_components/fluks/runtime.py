@@ -39,12 +39,14 @@ class FluksRuntimeWebSocket:
         *,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         reconnect_delays: tuple[float, ...] = RECONNECT_DELAYS,
+        message_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._session = session
         self._integration_key = integration_key
         self._url = runtime_websocket_url(base_url)
         self._sleep = sleep
         self._reconnect_delays = reconnect_delays
+        self._message_handler = message_handler
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
         self._socket: ClientWebSocketResponse | None = None
@@ -126,16 +128,17 @@ class FluksRuntimeWebSocket:
                 except (TypeError, ValueError):
                     _LOGGER.debug("Ignoring malformed fluks runtime message")
                     continue
-                self._handle_message(payload)
+                await self._handle_message(payload)
             elif message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
                 break
 
-    def _handle_message(self, payload: Any) -> None:
-        """Validate the envelope without executing runtime messages yet."""
+    async def _handle_message(self, payload: Any) -> None:
+        """Validate and deliver supported runtime message envelopes."""
         if not isinstance(payload, dict) or not isinstance(payload.get("type"), str):
             _LOGGER.debug("Ignoring malformed fluks runtime message envelope")
             return
         if payload["type"] == "decision.snapshot":
-            _LOGGER.debug("Received fluks decision snapshot")
+            if self._message_handler is not None:
+                await self._message_handler(payload)
             return
         _LOGGER.debug("Ignoring unsupported fluks runtime message type %s", payload["type"])

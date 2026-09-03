@@ -119,10 +119,12 @@ usage. Action, entity, and field choices come from Home Assistant's registered
 service descriptions and live entity metadata; incomplete and opaque schemas are
 excluded by a small capability filter. It edits output configuration v1 directly:
 ordered `serviceCall` actions, typed literal/requested values, and ordered
-deterministic transforms. Explicit Save reconciles one output Mapping through
-the existing POST/PATCH/DELETE APIs; machine-equal state is a no-op. Cancel
-discards the draft. Credentials and persistence remain in Python. Home Assistant
-action execution remains outside this milestone.
+deterministic transforms. Explicit Save reconciles mode-specific output Mappings
+through the existing POST/PATCH/DELETE APIs; machine-equal state is a no-op.
+Cancel discards the draft. Credentials and persistence remain in Python.
+Runtime Decision snapshots resolve the external Device identity and exact
+Decision mode to one output Mapping, apply requested-value transforms, and call
+the configured Home Assistant services sequentially.
 
 ## Rejected mechanisms
 

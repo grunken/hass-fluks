@@ -148,7 +148,7 @@ def test_panel_contains_administration_and_persisted_controls_without_execution(
         assert command in source
     assert "fluks-control-action-editor" in source
     assert "control-saved" in source
-    assert "e.detail.configuration" in source
+    assert "e.detail.behaviors" in source
     assert "output_mappings" in source
     assert "@media(max-width:700px)" in source
     assert "history.pushState" in source

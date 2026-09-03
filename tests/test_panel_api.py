@@ -765,7 +765,7 @@ async def test_space_heater_uses_catalog_driven_fact_and_control_flows(hass):
         "version": 1,
         "entityId": "sensor.heater_power",
     }
-    assert result["output_mappings"]["spaceHeater.targetTemperature"]["id"] == "target-out"
+    assert result["output_mappings"]["spaceHeater.targetTemperature"][0]["id"] == "target-out"
 
 
 async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
@@ -821,7 +821,7 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
     ]
     assert [item["concept"] for item in result["controls"]] == ["site.power"]
     assert result["mappings"]["site.power"]["configuration"]["entityId"] == "sensor.grid_power"
-    assert result["output_mappings"]["site.power"]["id"] == "power-out"
+    assert result["output_mappings"]["site.power"][0]["id"] == "power-out"
     assert result["suggestions"] == {}
     api.get_device.assert_awaited_once_with("site-a", "site-device")
     api.list_mappings.assert_awaited_once_with("site-a", device_id="site-device")
@@ -912,6 +912,7 @@ def control_catalog():
                     "unit": "W",
                     "usages": ["fact", "control"],
                     "source": "mapping",
+                    "mappingModes": [None, "target", "limit", "balance", "release", "charge", "discharge"],
                 }
             ],
         }
@@ -927,8 +928,9 @@ async def run_control_save(hass, entry, api, configuration, *, msg_id=20):
         "device_id": "device-a",
         "concept": "battery.power",
     }
-    if configuration is not None:
-        message["configuration"] = configuration
+    message["behaviors"] = [] if configuration is None else [
+        {"mode": None, "configuration": configuration}
+    ]
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
         patch(
@@ -961,9 +963,49 @@ async def test_control_save_creates_documented_output_mapping(hass):
         "deviceId": "device-a",
         "concept": "battery.power",
         "direction": "output",
+        "mode": None,
         "configuration": configuration,
     }
     conn.send_result.assert_called_once_with(20, {"changed": True})
+
+
+async def test_control_save_reconciles_separate_mode_mapping_records(hass):
+    entry = make_entry(hass)
+    default = output_configuration(40)
+    target = output_configuration(60)
+    release = output_configuration(0)
+    charge = output_configuration(80)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(return_value=[
+        {"id": "default-map", "concept": "battery.power", "direction": "output", "mode": None, "configuration": default},
+        {"id": "limit-map", "concept": "battery.power", "direction": "output", "mode": "limit", "configuration": output_configuration(50)},
+    ])
+    api.create_mapping = AsyncMock()
+    api.update_mapping = AsyncMock()
+    api.delete_mapping = AsyncMock()
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=control_catalog())),
+        patch("custom_components.fluks.panel_api.async_validate_control_configuration", AsyncMock(return_value=True)),
+    ):
+        websocket_control_save(hass, conn, {
+            "id": 24, "type": COMMAND_CONTROL_SAVE, "entry_id": entry.entry_id,
+            "device_id": "device-a", "concept": "battery.power",
+            "behaviors": [
+                {"mode": None, "configuration": default},
+                {"mode": "target", "configuration": target},
+                {"mode": "release", "configuration": release},
+                {"mode": "charge", "configuration": charge},
+            ],
+        })
+        await hass.async_block_till_done()
+
+    api.update_mapping.assert_not_awaited()
+    api.delete_mapping.assert_awaited_once_with("site-a", "limit-map")
+    assert [call.args[1]["mode"] for call in api.create_mapping.await_args_list] == ["target", "release", "charge"]
+    conn.send_result.assert_called_once_with(24, {"changed": True})
 
 
 async def test_site_control_uses_shared_output_mapping_save(hass):
@@ -997,7 +1039,7 @@ async def test_site_control_uses_shared_output_mapping_save(hass):
                 "entry_id": entry.entry_id,
                 "device_id": "site-device",
                 "concept": "site.power",
-                "configuration": configuration,
+                "behaviors": [{"mode": None, "configuration": configuration}],
             },
         )
         await hass.async_block_till_done()
@@ -1008,6 +1050,7 @@ async def test_site_control_uses_shared_output_mapping_save(hass):
         "deviceId": "site-device",
         "concept": "site.power",
         "direction": "output",
+        "mode": None,
         "configuration": configuration,
     }
 
@@ -1098,7 +1141,7 @@ async def test_control_save_rejects_non_control_concept(hass):
                 "entry_id": entry.entry_id,
                 "device_id": "device-a",
                 "concept": "battery.soc",
-                "configuration": {"version": 1, "actions": []},
+                "behaviors": [{"mode": None, "configuration": {"version": 1, "actions": []}}],
             },
         )
         await hass.async_block_till_done()

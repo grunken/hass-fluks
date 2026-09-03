@@ -216,6 +216,7 @@ def _safe_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(mapping["id"]),
         "concept": str(mapping["concept"]),
+        "mode": mapping.get("mode"),
         "configuration": dict(mapping.get("configuration") or {}),
     }
 
@@ -384,12 +385,10 @@ async def websocket_device_detail(hass, connection, msg):
             if item.get("direction") == "input"
             and isinstance(item.get("concept"), str)
         }
-        output_mappings = {
-            str(item["concept"]): item
-            for item in mappings
-            if item.get("direction") == "output"
-            and isinstance(item.get("concept"), str)
-        }
+        output_mappings: dict[str, list[dict[str, Any]]] = {}
+        for item in mappings:
+            if item.get("direction") == "output" and isinstance(item.get("concept"), str):
+                output_mappings.setdefault(str(item["concept"]), []).append(item)
         concepts = _mappable_concepts(catalog[device_type])
         ha_device_id = _ha_context(entry, device_id)
         cleared = _cleared_mapping_concepts(entry, device_id)
@@ -428,8 +427,8 @@ async def websocket_device_detail(hass, connection, msg):
                     name: _safe_mapping(mapping) for name, mapping in existing.items()
                 },
                 "output_mappings": {
-                    name: _safe_mapping(mapping)
-                    for name, mapping in output_mappings.items()
+                    name: [_safe_mapping(mapping) for mapping in mappings]
+                    for name, mappings in output_mappings.items()
                 },
                 "suggestions": suggestions,
             },
@@ -772,13 +771,13 @@ async def websocket_device_save(hass, connection, msg):
         **BASE_SCHEMA,
         vol.Required("device_id"): str,
         vol.Required("concept"): str,
-        vol.Optional("configuration"): dict,
+        vol.Required("behaviors"): list,
     }
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_control_save(hass, connection, msg):
-    """Incrementally persist one catalog-declared output Mapping."""
+    """Incrementally persist mode-specific Mappings for one catalog control."""
     entry = None
     try:
         entry = _entry(hass, msg["entry_id"])
@@ -787,53 +786,41 @@ async def websocket_control_save(hass, connection, msg):
         device = await api.get_device(site_id, msg["device_id"])
         catalog = await _catalog(api)
         device_type = str(device.get("type"))
-        if device_type not in catalog or not any(
-            isinstance(item, dict)
-            and item.get("concept") == msg["concept"]
-            and "control" in item.get("usages", [])
-            for item in catalog[device_type]["concepts"]
-        ):
+        definition = next((item for item in catalog.get(device_type, {}).get("concepts", [])
+            if isinstance(item, dict) and item.get("concept") == msg["concept"]
+            and "control" in item.get("usages", [])), None)
+        if definition is None:
             raise PanelCommandError("not_found")
+        allowed_modes = set(definition.get("mappingModes") or [None])
+        allowed_modes.add(None)
         mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
-        existing = next(
-            (
-                item
-                for item in mappings
-                if item.get("direction") == "output"
-                and item.get("concept") == msg["concept"]
-            ),
-            None,
-        )
-        submitted = msg.get("configuration")
-        configuration = (
-            validate_output_configuration(submitted) if submitted is not None else None
-        )
-        if existing is None and configuration is None:
-            connection.send_result(msg["id"], {"changed": False})
-            return
-        if existing is not None and configuration == existing.get("configuration"):
-            connection.send_result(msg["id"], {"changed": False})
-            return
-        if configuration is not None and not await async_validate_control_configuration(
-            hass, configuration
-        ):
-            raise PanelCommandError("invalid_mapping")
-        if configuration is None:
-            await api.delete_mapping(site_id, str(existing["id"]))
-        elif existing is not None:
-            await api.update_mapping(site_id, str(existing["id"]), configuration)
-        else:
-            await api.create_mapping(
-                site_id,
-                {
-                    "integrationId": entry.data[CONF_INTEGRATION_INTERNAL_ID],
-                    "deviceId": msg["device_id"],
-                    "concept": msg["concept"],
-                    "direction": "output",
-                    "configuration": configuration,
-                },
-            )
-        connection.send_result(msg["id"], {"changed": True})
+        existing = {item.get("mode"): item for item in mappings
+            if item.get("direction") == "output" and item.get("concept") == msg["concept"]}
+        submitted: dict[str | None, dict[str, Any]] = {}
+        for behavior in msg["behaviors"]:
+            if not isinstance(behavior, dict) or set(behavior) != {"mode", "configuration"}:
+                raise PanelCommandError("invalid_mapping")
+            mode = behavior["mode"]
+            if mode not in allowed_modes or mode in submitted:
+                raise PanelCommandError("invalid_mapping")
+            configuration = validate_output_configuration(behavior["configuration"])
+            if not await async_validate_control_configuration(hass, configuration):
+                raise PanelCommandError("invalid_mapping")
+            submitted[mode] = configuration
+        changed = False
+        for mode, mapping in existing.items():
+            configuration = submitted.pop(mode, None)
+            if configuration is None:
+                await api.delete_mapping(site_id, str(mapping["id"])); changed = True
+            elif configuration != mapping.get("configuration"):
+                await api.update_mapping(site_id, str(mapping["id"]), configuration); changed = True
+        for mode, configuration in submitted.items():
+            await api.create_mapping(site_id, {
+                "integrationId": entry.data[CONF_INTEGRATION_INTERNAL_ID],
+                "deviceId": msg["device_id"], "concept": msg["concept"],
+                "direction": "output", "mode": mode, "configuration": configuration,
+            }); changed = True
+        connection.send_result(msg["id"], {"changed": changed})
     except OutputMappingValidationError:
         _send_error(
             hass, entry, connection, msg["id"], PanelCommandError("invalid_mapping")

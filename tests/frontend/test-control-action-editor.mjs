@@ -163,3 +163,74 @@ test("production editor removal remains a draft until Save", () => {
   editor._command("cancel", 0);
   assert.deepEqual(editor.actions, [mode, target]);
 });
+
+test("mode mappings render as behavior sections and save as separate records", () => {
+  const editor = new Editor();
+  editor.valueType = { datatype: "number", unit: "W" };
+  editor.strings = {
+    default_behavior: "Default behavior", behavior_target: "When targeting power",
+    behavior_release: "When fluks releases control", no_actions: "No actions configured",
+    add_action: "Add action", add_behavior: "Add behavior", behavior: "Behavior",
+  };
+  editor.allowedModes = [null, "target", "release"];
+  editor.behaviors = [
+    { mode: null, actions: [target] },
+    { mode: "release", actions: [mode] },
+  ];
+  const html = editor.shadowRoot.innerHTML;
+  assert.match(html, /Default behavior/);
+  assert.match(html, /When fluks releases control/);
+  assert.match(html, /Add behavior/);
+  assert.doesNotMatch(html, /mode: null/);
+
+  editor.render = () => {};
+  editor._workingBehaviors.push({ mode: "target", actions: [] });
+  editor._command("save", 0);
+  assert.deepEqual(editor.lastEvent.detail.behaviors, [
+    { mode: null, configuration: { version: 1, actions: [target] } },
+    { mode: "release", configuration: { version: 1, actions: [mode] } },
+  ]);
+});
+
+test("each behavior keeps its own deterministic action order", () => {
+  const editor = new Editor();
+  editor.behaviors = [
+    { mode: null, actions: [mode, target] },
+    { mode: "target", actions: [target, mode] },
+  ];
+  editor.render = () => {};
+  editor._command("up", 1, "target");
+  assert.deepEqual(editor.behaviors, [
+    { mode: null, actions: [mode, target] },
+    { mode: "target", actions: [mode, target] },
+  ]);
+});
+
+test("empty Power behaviors stay compact and catalog modes open as intent choices", () => {
+  const editor = new Editor();
+  editor.controlName = "Power";
+  editor.allowedModes = [null, "target", "limit", "release"];
+  editor.behaviors = [];
+  assert.match(editor.shadowRoot.innerHTML, /empty-behavior/);
+  assert.doesNotMatch(editor.shadowRoot.innerHTML, /<div class="empty">/);
+  assert.doesNotMatch(editor.shadowRoot.innerHTML, /<select id="behavior-mode"/);
+
+  editor._addingBehavior = true;
+  editor.render();
+  const dialog = editor.shadowRoot.innerHTML;
+  assert.match(dialog, /data-behavior-choice="target"/);
+  assert.match(dialog, /data-behavior-choice="limit"/);
+  assert.match(dialog, /data-behavior-choice="release"/);
+  assert.doesNotMatch(dialog, /data-behavior-choice="balance"/);
+});
+
+test("backend-provided Mapping execution modes include charge and discharge", () => {
+  const editor = new Editor();
+  editor.controlName = "Power";
+  editor.allowedModes = [null, "target", "charge", "discharge"];
+  editor.behaviors = [];
+  editor._addingBehavior = true;
+  editor.render();
+  assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="charge"/);
+  assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="discharge"/);
+});

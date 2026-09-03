@@ -473,20 +473,26 @@ class FluksControlEditorPanel extends HTMLElement {
       "number_type", "text_type", "boolean_type", "null_type", "factor", "amount",
       "add_adjustment", "save_adjustment", "invalid_adjustment",
       "invalid_pipeline",
+      "default_behavior", "default_behavior_description", "add_behavior", "remove_behavior", "choose_behavior", "choose_behavior_help",
+      "behavior_target", "behavior_target_choice", "behavior_target_description",
+      "behavior_limit", "behavior_limit_choice", "behavior_limit_description",
+      "behavior_balance", "behavior_balance_choice", "behavior_balance_description",
+      "behavior_release", "behavior_release_choice", "behavior_release_description",
+      "behavior_charge", "behavior_charge_choice", "behavior_charge_description",
+      "behavior_discharge", "behavior_discharge_choice", "behavior_discharge_description",
     ].map((key) => [key, this._t(key)]));
     editor.capabilities = this._controlCapabilities ?? [];
     editor.valueType = { datatype: control.datatype, unit: control.unit ?? null };
-    const persisted = this._detail.output_mappings[control.concept]?.configuration;
-    editor.actions = this._pendingControl?.key === key
-      ? this._pendingControl.configuration?.actions ?? []
-      : persisted?.actions ?? [];
+    editor.allowedModes = control.mappingModes ?? [];
+    const persisted = (this._detail.output_mappings[control.concept] ?? []).map((mapping) => ({ mode: mapping.mode ?? null, actions: mapping.configuration?.actions ?? [] }));
+    editor.behaviors = this._pendingControl?.key === key ? this._pendingControl.behaviors : persisted;
     editor.addEventListener("control-saved", async (e) => {
-      this._pendingControl = { key, configuration: e.detail.configuration };
+      this._pendingControl = { key, behaviors: e.detail.behaviors };
       try {
         await this._call("fluks/config/control_save", {
           device_id: this._detail.id,
           concept: control.concept,
-          ...(e.detail.configuration ? { configuration: e.detail.configuration } : {}),
+          behaviors: e.detail.behaviors,
         });
         this._pendingControl = undefined;
         history.back();

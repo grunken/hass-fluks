@@ -17,6 +17,7 @@ from .const import (
 )
 from .control_editor_panel import async_register_control_editor_panel
 from .observations import RealtimeObservationPublisher
+from .output_execution import RuntimeOutputExecutor
 from .panel_api import async_register_panel_commands
 from .runtime import FluksRuntimeWebSocket
 
@@ -32,8 +33,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a fluks config entry and start its background runtime transport."""
     if not (integration_key := entry.data.get(CONF_INTEGRATION_KEY)):
         raise ConfigEntryAuthFailed("The fluks Integration credential is missing")
+    api = FluksApiClient(
+        async_get_clientsession(hass), integration_key=integration_key
+    )
+    output = RuntimeOutputExecutor(hass, api, entry.data[CONF_SITE_ID])
     runtime = FluksRuntimeWebSocket(
-        async_get_clientsession(hass), integration_key, API_BASE_URL
+        async_get_clientsession(hass), integration_key, API_BASE_URL,
+        message_handler=output.async_handle,
     )
     runtimes = hass.data.setdefault(DOMAIN, {}).setdefault(DATA_RUNTIME, {})
     if (previous := runtimes.pop(entry.entry_id, None)) is not None:
@@ -46,9 +52,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     observations = RealtimeObservationPublisher(
         hass,
-        FluksApiClient(
-            async_get_clientsession(hass), integration_key=integration_key
-        ),
+        api,
         entry.data[CONF_SITE_ID],
         entry.entry_id,
         runtime.async_send,
