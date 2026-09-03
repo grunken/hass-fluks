@@ -121,5 +121,22 @@ def test_panel_device_and_concept_presentation_is_translated():
     assert danish["concept_site.exportEnergy"] == "Eksporteret energi"
     assert english["concept_spaceHeater.targetTemperature"] == "Target temperature"
     assert danish["concept_spaceHeater.targetTemperature"] == "Ønsket temperatur"
+    assert english["concept_heatPump.bufferTemperature"] == "Buffer temperature"
+    assert danish["concept_heatPump.tankTemperature"] == "Beholdertemperatur"
+    expected_heat_pump_concepts = {
+        "power",
+        "energy",
+        "bufferEnergy",
+        "tankEnergy",
+        "bufferTemperature",
+        "tankTemperature",
+        "state",
+    }
+    for translations in (english, danish):
+        assert {
+            key.removeprefix("concept_heatPump.")
+            for key in translations
+            if key.startswith("concept_heatPump.")
+        } == expected_heat_pump_concepts
     assert "options" not in load_translation("en")
     assert "options" not in load_translation("da")

@@ -385,6 +385,56 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
   assert.deepEqual(destinations.at(-1), { name: "control", deviceId: "site-device", concept: "site.power" });
 });
 
+test("heat pump mapping UI renders only finalized catalog concepts", () => {
+  const panel = new Panel();
+  panel._context = { translations: { measurements: "Measurements", energy: "Energy", configured: "Configured", not_configured: "Not configured" }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._detail = {
+    id: "heat-pump", type: "heatPump", type_name: "Heat pump", properties: {}, suggestions: {}, mappings: {}, output_mappings: {},
+    concepts: [
+      { concept: "heatPump.power", label: "Power", cadence: "realtime" },
+      { concept: "heatPump.energy", label: "Energy", cadence: "interval" },
+      { concept: "heatPump.bufferEnergy", label: "Buffer energy", cadence: "interval" },
+      { concept: "heatPump.tankEnergy", label: "Tank energy", cadence: "interval" },
+      { concept: "heatPump.bufferTemperature", label: "Buffer temperature", cadence: "realtime" },
+      { concept: "heatPump.tankTemperature", label: "Tank temperature", cadence: "realtime" },
+      { concept: "heatPump.state", label: "Operating state", cadence: "realtime" },
+    ],
+    controls: [
+      { concept: "heatPump.power", label: "Power" },
+      { concept: "heatPump.bufferTemperature", label: "Buffer temperature" },
+      { concept: "heatPump.tankTemperature", label: "Tank temperature" },
+    ],
+  };
+  let rendered = "";
+  panel._frame = (_title, body) => { rendered = body; };
+  panel.shadowRoot.querySelectorAll = () => [];
+  const mappings = panel._mappingFields(panel._detail);
+  panel._renderControls();
+  const controls = rendered;
+  for (const label of ["Power", "Buffer temperature", "Tank temperature"]) {
+    assert.match(mappings, new RegExp(label));
+    assert.match(controls, new RegExp(label));
+  }
+  assert.match(mappings, /Energy/);
+  assert.match(mappings, /Buffer energy/);
+  assert.match(mappings, /Tank energy/);
+  assert.match(mappings, /Operating state/);
+  assert.doesNotMatch(controls, /Buffer energy|Tank energy/);
+  assert.deepEqual(
+    new Set([...`${mappings}${controls}`.matchAll(/heatPump\.[A-Za-z]+/g)].map(([concept]) => concept)),
+    new Set([
+      "heatPump.power",
+      "heatPump.energy",
+      "heatPump.bufferEnergy",
+      "heatPump.tankEnergy",
+      "heatPump.bufferTemperature",
+      "heatPump.tankTemperature",
+      "heatPump.state",
+    ]),
+  );
+});
+
 test("ordinary Device and canonical Site route to their distinct lifecycle deletes", () => {
   const routeDelete = (type) => {
     const panel = new Panel(); const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
