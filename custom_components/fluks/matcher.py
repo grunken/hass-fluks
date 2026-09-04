@@ -173,12 +173,20 @@ def input_configuration(
     concept: dict[str, Any],
     entity_id: str,
     transforms: list[dict[str, Any]] | None = None,
+    attribute: str | None = None,
 ) -> dict[str, Any]:
     """Build exactly the documented Home Assistant input configuration."""
     configuration: dict[str, Any] = {"version": 1, "entityId": entity_id}
+    if attribute is not None:
+        configuration["attribute"] = attribute
     state = hass.states.get(entity_id)
+    source_value = (
+        state.attributes.get(attribute)
+        if state is not None and attribute is not None
+        else state.state if state is not None else None
+    )
     if concept.get("datatype") == "boolean" and (
-        state is not None and state.state in {"on", "off"}
+        isinstance(source_value, str) and source_value in {"on", "off"}
         or entity_id.split(".", 1)[0] in {"binary_sensor", "switch", "input_boolean"}
     ):
         configuration["transforms"] = [
@@ -207,6 +215,11 @@ def normalize_input_configuration(
     entity_id = submitted.get("entityId")
     if not isinstance(entity_id, str) or "." not in entity_id:
         raise ValueError("Invalid input entity")
+    attribute = submitted.get("attribute")
+    if attribute is not None and (
+        not isinstance(attribute, str) or not attribute.strip()
+    ):
+        raise ValueError("Invalid input attribute")
     transforms = submitted.get("transforms")
     if transforms is not None:
         if not isinstance(transforms, list) or not 1 <= len(transforms) <= 16:
@@ -232,4 +245,4 @@ def normalize_input_configuration(
             else:
                 raise ValueError("Unsupported input transform")
         transforms = normalized
-    return input_configuration(hass, concept, entity_id, transforms)
+    return input_configuration(hass, concept, entity_id, transforms, attribute)

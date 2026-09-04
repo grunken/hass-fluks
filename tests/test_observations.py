@@ -89,6 +89,135 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
     assert send.await_count == 2
 
 
+async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
+    """Input Mappings default to state and optionally select one HA attribute."""
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "heater-internal", "deviceId": "heater-external"}
+    ]
+    api.list_mappings.return_value = [
+        {
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "heatPump.state",
+            "configuration": {"entityId": "climate.buffer"},
+        },
+        {
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "heatPump.bufferTemperature",
+            "configuration": {
+                "entityId": "climate.buffer",
+                "attribute": "current_temperature",
+                "transforms": [{"type": "offset", "amount": -1}],
+            },
+        },
+    ]
+    api.get_device_type_catalog.return_value = [{
+        "type": "heatPump",
+        "concepts": [
+            {
+                "concept": "heatPump.bufferTemperature",
+                "datatype": "number",
+                "unit": "°C",
+            }
+        ],
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "climate.buffer",
+        "heat",
+        {"temperature": 50, "current_temperature": 56},
+    )
+    await hass.async_block_till_done()
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "heater-external", "heatPump.state": "heat"},
+        {"deviceId": "heater-external", "heatPump.bufferTemperature": 56},
+    ]
+
+
+async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
+    """Only canonical temperature attributes use HA temperature units."""
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "heater-internal", "deviceId": "heater-external"}
+    ]
+    api.list_mappings.return_value = [
+        {
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "heatPump.bufferTemperature",
+            "configuration": {
+                "entityId": "climate.buffer",
+                "attribute": "current_temperature",
+            },
+        },
+        {
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "heatPump.tankTemperature",
+            "configuration": {
+                "entityId": "sensor.controller_temperature",
+                "attribute": "reading",
+            },
+        },
+        {
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "spaceHeater.temperature",
+            "configuration": {"entityId": "sensor.tank_temperature"},
+        },
+        {
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "heatPump.power",
+            "configuration": {
+                "entityId": "sensor.controller",
+                "attribute": "raw_value",
+            },
+        },
+    ]
+    api.get_device_type_catalog.return_value = [{
+        "type": "heatPump",
+        "concepts": [
+            {"concept": "heatPump.bufferTemperature", "datatype": "number", "unit": "°C"},
+            {"concept": "heatPump.tankTemperature", "datatype": "number", "unit": "°C"},
+            {"concept": "heatPump.power", "datatype": "number", "unit": "W"},
+        ],
+    }, {
+        "type": "spaceHeater",
+        "concepts": [
+            {"concept": "spaceHeater.temperature", "datatype": "number", "unit": "°C"},
+        ],
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "climate.buffer",
+        "heat",
+        {"current_temperature": 68, "current_temperature_unit": "°F"},
+    )
+    hass.states.async_set(
+        "sensor.tank_temperature", "68", {"unit_of_measurement": "°F"}
+    )
+    hass.states.async_set("sensor.controller_temperature", "online", {"reading": 68})
+    hass.states.async_set("sensor.controller", "idle", {"raw_value": 68})
+    await hass.async_block_till_done()
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "heater-external", "heatPump.bufferTemperature": 20},
+        {"deviceId": "heater-external", "spaceHeater.temperature": 68},
+        {"deviceId": "heater-external", "heatPump.tankTemperature": 68},
+        {"deviceId": "heater-external", "heatPump.power": 68},
+    ]
+
+
 async def test_cumulative_energy_starts_at_source_and_survives_resets(hass):
     api = AsyncMock()
     api.list_devices.return_value = [

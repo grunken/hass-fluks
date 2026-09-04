@@ -11,21 +11,57 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from homeassistant.core import Event, HomeAssistant, State, callback
+from homeassistant.const import UnitOfTemperature
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
+from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .api import FluksApiClient
 from .const import DATA_OBSERVATIONS, DOMAIN, ENERGY_LIFETIME_STORAGE_VERSION
 
 INVALID_STATES = {"", "unknown", "unavailable", "none", "null"}
+TEMPERATURE_UNITS = {
+    UnitOfTemperature.CELSIUS,
+    UnitOfTemperature.FAHRENHEIT,
+    UnitOfTemperature.KELVIN,
+}
 _LOGGER = logging.getLogger(__name__)
 
 
-def _raw_value(state: str) -> str:
-    value = state.strip()
-    if value.lower() in INVALID_STATES:
-        raise ValueError("Invalid Home Assistant state")
+def _raw_value(value: Any) -> Any:
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower() in INVALID_STATES:
+            raise ValueError("Invalid Home Assistant state")
+    if value is None or isinstance(value, (dict, list)):
+        raise ValueError("Home Assistant value is not scalar")
     return value
+
+
+def _source_value(state: State, attribute: str | None) -> Any:
+    """Read the configured state or attribute value."""
+    if attribute is None:
+        return _raw_value(state.state)
+    if attribute not in state.attributes:
+        raise ValueError("Home Assistant attribute is unavailable")
+    return _raw_value(state.attributes[attribute])
+
+
+def _attribute_temperature_unit(
+    hass: HomeAssistant, state: State, attribute: str
+) -> str | None:
+    """Return a reliable explicit or HA-native temperature attribute unit."""
+    for key in (f"{attribute}_unit", "temperature_unit", "unit_of_measurement"):
+        unit = state.attributes.get(key)
+        if unit in TEMPERATURE_UNITS:
+            return str(unit)
+    domain = state.entity_id.split(".", 1)[0]
+    if domain in {"climate", "water_heater"} or state.attributes.get(
+        "device_class"
+    ) == "temperature":
+        unit = hass.config.units.temperature_unit
+        return str(unit) if unit in TEMPERATURE_UNITS else None
+    return None
 
 
 def _numeric_value(value: Any) -> int | float:
@@ -108,11 +144,11 @@ class RealtimeObservationPublisher:
         return str(marker) if marker is not None else None
 
     @staticmethod
-    def _decimal_value(state: State) -> Decimal:
-        value = _raw_value(state.state)
+    def _decimal_value(state: State, attribute: str | None) -> Decimal:
+        value = _source_value(state, attribute)
         try:
-            number = Decimal(value)
-        except InvalidOperation as err:
+            number = Decimal(str(value))
+        except (InvalidOperation, ValueError) as err:
             raise ValueError("Energy state is not numeric") from err
         if not number.is_finite() or number < 0:
             raise ValueError("Energy state must be a finite non-negative number")
@@ -121,6 +157,23 @@ class RealtimeObservationPublisher:
     @staticmethod
     def _json_decimal(value: Decimal) -> int | float:
         return int(value) if value == value.to_integral_value() else float(value)
+
+    def _mapped_value(
+        self,
+        state: State,
+        attribute: str | None,
+        canonical_temperature_unit: str | None,
+    ) -> Any:
+        value = _source_value(state, attribute)
+        if attribute is None or canonical_temperature_unit is None:
+            return value
+        source_unit = _attribute_temperature_unit(self._hass, state, attribute)
+        if source_unit is None:
+            return value
+        number = _numeric_value(value)
+        return TemperatureConverter.convert(
+            number, source_unit, canonical_temperature_unit
+        )
 
     async def async_refresh(self) -> None:
         """Replace subscriptions from the current persisted input Mappings."""
@@ -131,6 +184,15 @@ class RealtimeObservationPublisher:
             try:
                 devices = await self._api.list_devices(self._site_id)
                 mappings = await self._api.list_mappings(self._site_id)
+                catalog = (
+                    await self._api.get_device_type_catalog()
+                    if any(
+                        isinstance(item.get("configuration"), dict)
+                        and item["configuration"].get("attribute")
+                        for item in mappings
+                    )
+                    else []
+                )
             except Exception:  # noqa: BLE001 - discovery outage must not break HA
                 _LOGGER.debug("Unable to refresh fluks realtime input Mappings")
                 return
@@ -142,8 +204,20 @@ class RealtimeObservationPublisher:
                 if isinstance(device.get("id"), str)
                 and isinstance(device.get("deviceId"), str)
             }
-            by_entity: dict[str, list[tuple[str, str, bool]]] = defaultdict(list)
-            baselines: list[tuple[str, str, str]] = []
+            temperature_units = {
+                str(concept["concept"]): str(concept["unit"])
+                for device_type in catalog
+                if isinstance(device_type, dict)
+                for concept in device_type.get("concepts", [])
+                if isinstance(concept, dict)
+                and concept.get("datatype") == "number"
+                and concept.get("unit") in TEMPERATURE_UNITS
+                and isinstance(concept.get("concept"), str)
+            }
+            by_entity: dict[
+                str, list[tuple[str, str, bool, str | None, str | None]]
+            ] = defaultdict(list)
+            baselines: list[tuple[str, str, str, str | None]] = []
             for mapping in mappings:
                 configuration = mapping.get("configuration")
                 external_id = external_ids.get(str(mapping.get("deviceId")))
@@ -156,14 +230,26 @@ class RealtimeObservationPublisher:
                 ):
                     continue
                 entity_id = configuration["entityId"]
+                attribute = configuration.get("attribute")
+                if attribute is not None and not isinstance(attribute, str):
+                    continue
                 concept = mapping["concept"]
                 cumulative = (
                     (configuration.get("source") or {}).get("kind") == "cumulative"
                 )
-                by_entity[entity_id].append((external_id, concept, cumulative))
+                by_entity[entity_id].append(
+                    (
+                        external_id,
+                        concept,
+                        cumulative,
+                        attribute,
+                        temperature_units.get(concept),
+                    )
+                )
                 stream = self._lifetime.get(self._stream_key(external_id, concept))
-                if cumulative and (stream is None or stream.get("source") != entity_id):
-                    baselines.append((entity_id, external_id, concept))
+                source = self._source_id(entity_id, attribute)
+                if cumulative and (stream is None or stream.get("source") != source):
+                    baselines.append((entity_id, external_id, concept, attribute))
             unsubscribe = self._unsubscribe
             self._unsubscribe = None
             if unsubscribe is not None:
@@ -181,33 +267,47 @@ class RealtimeObservationPublisher:
                     list(by_entity),
                     _state_changed,
                 )
-            for entity_id, device_id, concept in baselines:
+            for entity_id, device_id, concept, attribute in baselines:
                 if (state := self._hass.states.get(entity_id)) is not None:
-                    await self._async_publish_cumulative(state, device_id, concept)
+                    await self._async_publish_cumulative(
+                        state, device_id, concept, attribute
+                    )
 
     async def _async_state_changed(
         self,
         event: Event,
-        mappings: dict[str, list[tuple[str, str, bool]]],
+        mappings: dict[
+            str, list[tuple[str, str, bool, str | None, str | None]]
+        ],
     ) -> None:
         state: State | None = event.data.get("new_state")
         if self._stopped or state is None:
             return
-        for device_id, concept, cumulative in mappings.get(state.entity_id, []):
+        for device_id, concept, cumulative, attribute, temperature_unit in mappings.get(
+            state.entity_id, []
+        ):
             if cumulative:
-                await self._async_publish_cumulative(state, device_id, concept)
+                await self._async_publish_cumulative(
+                    state, device_id, concept, attribute
+                )
                 continue
             try:
-                value = _json_value(_raw_value(state.state))
+                value = _json_value(
+                    self._mapped_value(state, attribute, temperature_unit)
+                )
             except (TypeError, ValueError):
                 continue
             await self._send({"deviceId": device_id, concept: value})
 
     async def _async_publish_cumulative(
-        self, state: State, device_id: str, concept: str
+        self,
+        state: State,
+        device_id: str,
+        concept: str,
+        attribute: str | None = None,
     ) -> None:
         try:
-            raw = self._decimal_value(state)
+            raw = self._decimal_value(state, attribute)
         except ValueError:
             return
         key = self._stream_key(device_id, concept)
@@ -217,7 +317,7 @@ class RealtimeObservationPublisher:
             changed = True
             if stream is None:
                 lifetime = raw
-            elif stream["source"] != state.entity_id:
+            elif stream["source"] != self._source_id(state.entity_id, attribute):
                 lifetime = Decimal(stream["lifetime"])
             else:
                 lifetime = Decimal(stream["lifetime"])
@@ -240,7 +340,7 @@ class RealtimeObservationPublisher:
             if changed:
                 self._lifetime[key] = {
                     "lifetime": str(lifetime),
-                    "source": state.entity_id,
+                    "source": self._source_id(state.entity_id, attribute),
                     "last": str(raw),
                     "last_reset": marker,
                 }
@@ -248,6 +348,10 @@ class RealtimeObservationPublisher:
         await self._send(
             {"deviceId": device_id, concept: self._json_decimal(lifetime)}
         )
+
+    @staticmethod
+    def _source_id(entity_id: str, attribute: str | None) -> str:
+        return entity_id if attribute is None else f"{entity_id}#{attribute}"
 
     async def async_stop(self) -> None:
         """Remove all listeners and prevent later refreshes."""

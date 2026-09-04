@@ -263,6 +263,7 @@
     "choose_entity": "Vælg en entitet",
     "entity": "Entitet",
     "value_source": "Værdikilde",
+    "entity_state": "Entitetstilstand",
     "control_value": "Styringsværdi",
     "fixed_value": "Fast værdi",
     "fixed": "Fast",

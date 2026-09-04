@@ -4,6 +4,7 @@ from custom_components.fluks.matcher import (
     EntityCandidate,
     SUGGESTION_THRESHOLD,
     input_configuration,
+    normalize_input_configuration,
     score_candidate,
 )
 
@@ -96,3 +97,36 @@ async def test_standard_on_off_uses_documented_value_map(hass):
             {"type": "valueMap", "values": {"on": True, "off": False}}
         ],
     }
+
+
+async def test_input_configuration_preserves_optional_attribute(hass):
+    """Attribute sources use the existing input Mapping shape and transforms."""
+    hass.states.async_set(
+        "climate.buffer",
+        "heat",
+        {"temperature": 50, "current_temperature": 56},
+    )
+    concept = {
+        "concept": "heatPump.bufferTemperature",
+        "datatype": "number",
+        "cadence": "realtime",
+    }
+
+    assert normalize_input_configuration(
+        hass,
+        concept,
+        {
+            "version": 1,
+            "entityId": "climate.buffer",
+            "attribute": "current_temperature",
+            "transforms": [{"type": "offset", "amount": -1}],
+        },
+    ) == {
+        "version": 1,
+        "entityId": "climate.buffer",
+        "attribute": "current_temperature",
+        "transforms": [{"type": "offset", "amount": -1}],
+    }
+    assert normalize_input_configuration(
+        hass, concept, {"version": 1, "entityId": "climate.buffer"}
+    ) == {"version": 1, "entityId": "climate.buffer"}

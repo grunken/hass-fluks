@@ -263,6 +263,7 @@
     "choose_entity": "Choose an entity",
     "entity": "Entity",
     "value_source": "Value source",
+    "entity_state": "Entity state",
     "control_value": "Control value",
     "fixed_value": "Fixed value",
     "fixed": "Fixed",

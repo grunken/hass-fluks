@@ -190,6 +190,7 @@ class FluksControlEditorPanel extends HTMLElement {
       trailing: this._formatState(state),
       deviceId: registry?.device_id,
       icon: state?.attributes.icon,
+      deviceClass: registry?.device_class || state?.attributes.device_class,
     } : undefined;
   }
   _formatState(state) {
@@ -208,17 +209,64 @@ class FluksControlEditorPanel extends HTMLElement {
       ...Object.keys(this._hass.states).filter((entityId) => !registryIds.has(entityId)).map((entityId) => this._entityRecord(entityId)),
     ].filter(Boolean);
   }
-  _pickerValue(kind, id, key) {
+  _temperatureUnit(state, attribute) {
+    const units = new Set(["°C", "°F", "K"]);
+    for (const key of [`${attribute}_unit`, "temperature_unit", "unit_of_measurement"]) {
+      const unit = state?.attributes?.[key];
+      if (units.has(unit)) return unit;
+    }
+    const domain = state?.entity_id?.split(".", 1)[0];
+    if (["climate", "water_heater"].includes(domain) || state?.attributes?.device_class === "temperature") {
+      const unit = this._hass.config?.unit_system?.temperature;
+      return units.has(unit) ? unit : "";
+    }
+    return "";
+  }
+  _isTemperatureAttribute(state, attribute, value) {
+    if (!Number.isFinite(Number(value))) return false;
+    const explicitUnit = state?.attributes?.[`${attribute}_unit`];
+    if (["°C", "°F", "K"].includes(explicitUnit)) return true;
+    return /temperature|(^|_)temp($|_)/i.test(attribute);
+  }
+  _isTemperatureState(item, state) {
+    return ["°C", "°F", "K"].includes(state?.attributes?.unit_of_measurement)
+      || item.deviceClass === "temperature";
+  }
+  _entitySources(item, canonicalTemperature = false) {
+    const state = this._hass.states[item.id];
+    const sources = canonicalTemperature && !this._isTemperatureState(item, state)
+      ? []
+      : [{ ...item, attribute: "", secondary: `${this._t("entity_state")} · ${item.id}`, trailing: this._formatState(state) }];
+    for (const [attribute, value] of Object.entries(state?.attributes ?? {})) {
+      if (canonicalTemperature && !this._isTemperatureAttribute(state, attribute, value)) continue;
+      const formatted = this._formatSourceValue(value);
+      const unit = canonicalTemperature ? this._temperatureUnit({ ...state, entity_id: item.id }, attribute) : "";
+      const trailing = [formatted, unit].filter(Boolean).join(" ");
+      if (trailing) sources.push({ ...item, attribute, secondary: `${attribute} · ${item.id}`, trailing });
+    }
+    return sources;
+  }
+  _pickerValue(kind, id, key, attribute = "") {
     const item = kind === "device"
       ? this._context.ha_devices.find((device) => device.id === id)
       : this._entityRecord(id);
     const name = item?.name || this._t(kind === "device" ? "choose_ha_device_button" : "choose_entity");
     const secondary = kind === "device"
       ? [item?.manufacturer, item?.model].filter(Boolean).join(" · ")
-      : item?.secondary;
-    return `<button type="button" class="picker-value" data-picker-kind="${kind}" data-picker-key="${esc(key)}" data-picker-value="${esc(id || "")}">
+      : item ? `${attribute || this._t("entity_state")} · ${item.secondary}` : undefined;
+    const sourceValue = item && attribute
+      ? this._formatSourceValue(this._hass.states[id]?.attributes?.[attribute])
+      : item?.trailing;
+    return `<button type="button" class="picker-value" data-picker-kind="${kind}" data-picker-key="${esc(key)}" data-picker-value="${esc(id || "")}" data-picker-attribute="${esc(attribute)}">
       <span class="source-icon"><ha-icon icon="${esc(item?.icon || (kind === "device" ? "mdi:devices" : "mdi:chart-bell-curve-cumulative"))}"></ha-icon></span>
-      <span class="row-copy"><strong title="${esc(name)}">${esc(name)}</strong><span title="${esc(secondary || this._t("optional"))}">${esc(secondary || this._t("optional"))}</span></span><span class="chevron">⌄</span></button>`;
+      <span class="row-copy"><strong title="${esc(name)}">${esc(name)}</strong><span title="${esc(secondary || this._t("optional"))}">${esc(secondary || this._t("optional"))}</span></span>${sourceValue ? `<span class="trailing" title="${esc(sourceValue)}">${esc(sourceValue)}</span>` : ""}<span class="chevron">⌄</span></button>`;
+  }
+  _formatSourceValue(value) {
+    if (value === undefined || value === null) return "";
+    const numeric = Number(value);
+    return Number.isFinite(numeric)
+      ? new Intl.NumberFormat(this._hass.language, { maximumFractionDigits: 3 }).format(numeric)
+      : typeof value === "string" || typeof value === "boolean" ? String(value) : "";
   }
   _inputConversions(concept, configuration) {
     const transforms = configuration.transforms ?? [];
@@ -231,11 +279,13 @@ class FluksControlEditorPanel extends HTMLElement {
   _mappingFields(detail, editableConversions = false) {
     const groups = { measurements: [], energy: [] };
     for (const concept of detail.concepts) {
-      const configuration = editableConversions ? this._inputDraft[concept.concept] : undefined;
+      const configuration = editableConversions
+        ? this._inputDraft[concept.concept]
+        : detail.mappings[concept.concept]?.configuration ?? {};
       const selected = editableConversions
         ? configuration?.entityId ?? ""
         : detail.mappings[concept.concept]?.configuration?.entityId || detail.suggestions[concept.concept] || "";
-      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${editableConversions && selected ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
+      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept, configuration.attribute)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${editableConversions && selected ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
     }
     return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
   }
@@ -271,7 +321,7 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _wirePickers() {
     this.shadowRoot.querySelectorAll("[data-picker-kind]").forEach((button) => {
-      button.onclick = () => this._openPicker(button.dataset.pickerKind, button.dataset.pickerValue, (value) => {
+      button.onclick = () => this._openPicker(button.dataset.pickerKind, button.dataset.pickerValue, (value, attribute) => {
         if (button.dataset.pickerKind === "device") {
           this._selectAddHaDevice(value);
           return;
@@ -279,18 +329,20 @@ class FluksControlEditorPanel extends HTMLElement {
         const hidden = this.shadowRoot.querySelector(`[data-concept="${CSS.escape(button.dataset.pickerKey)}"]`);
         hidden.value = value;
         if (this._inputDraft?.[button.dataset.pickerKey]) {
-          this._selectInputEntity(button.dataset.pickerKey, value);
+          this._selectInputEntity(button.dataset.pickerKey, value, attribute);
           return;
         }
         const replacement = document.createRange().createContextualFragment(this._pickerValue("entity", value, button.dataset.pickerKey));
         button.replaceWith(replacement);
         this._wirePickers();
-      });
+      }, button.dataset.pickerAttribute, button.dataset.pickerKey);
     });
   }
-  _selectInputEntity(concept, entityId) {
+  _selectInputEntity(concept, entityId, attribute = "") {
     this._captureInputProperties();
     this._inputDraft[concept].entityId = entityId;
+    if (attribute) this._inputDraft[concept].attribute = attribute;
+    else delete this._inputDraft[concept].attribute;
     if (entityId) this._clearedInputConcepts.delete(concept); else this._clearedInputConcepts.add(concept);
     this._renderInputDraft();
   }
@@ -340,14 +392,14 @@ class FluksControlEditorPanel extends HTMLElement {
     dialog.querySelector("#conversion-save").onclick = () => { if (!this._commitInputConversion(concept, index, type.value, dialog.querySelector("#conversion-value").value)) return; this._captureInputProperties(); close(); this._renderInputDraft(); };
     this.shadowRoot.append(dialog); dialog.showModal(); type.focus();
   }
-  _openPicker(kind, selected, onSelect) {
+  _openPicker(kind, selected, onSelect, selectedAttribute = "", concept = "") {
     this.shadowRoot.querySelector("dialog.picker-dialog")?.remove();
     const dialog = document.createElement("dialog");
     dialog.className = "picker-dialog";
     dialog.setAttribute("aria-label", this._t(kind === "device" ? "choose_ha_device_button" : "choose_entity"));
     const renderRows = (query = "") => {
       const normalized = query.trim().toLocaleLowerCase(this._hass.language);
-      const items = kind === "device"
+      let items = kind === "device"
         ? this._context.ha_devices.map((item) => ({ id: item.id, name: item.name, secondary: [item.manufacturer, item.model].filter(Boolean).join(" · "), icon: "mdi:devices" }))
         : this._allEntities();
       const ordered = items.sort((a, b) => {
@@ -358,9 +410,14 @@ class FluksControlEditorPanel extends HTMLElement {
         }
         return a.name.localeCompare(b.name, this._hass.language, { sensitivity: "base" });
       });
-      const filtered = ordered.filter((item) => `${item.name} ${item.secondary} ${item.id}`.toLocaleLowerCase(this._hass.language).includes(normalized));
-      dialog.querySelector(".picker-results").innerHTML = `${kind === "entity" ? `<button class="picker-row clear" data-value=""><span class="source-icon"><ha-icon icon="mdi:close-circle-outline"></ha-icon></span><span class="row-copy"><strong>${esc(this._t("clear_selection"))}</strong><span>${esc(this._t("optional"))}</span></span></button>` : ""}${filtered.map((item) => `<button class="picker-row ${item.id === selected ? "selected" : ""}" data-value="${esc(item.id)}"><span class="source-icon"><ha-icon icon="${esc(item.icon || "mdi:devices")}"></ha-icon></span><span class="row-copy"><strong title="${esc(item.name)}">${esc(item.name)}</strong><span title="${esc(item.secondary || item.id)}">${esc(item.secondary || item.id)}</span></span>${item.trailing ? `<span class="trailing" title="${esc(item.trailing)}">${esc(item.trailing)}</span>` : ""}</button>`).join("") || `<p class="empty-results">${esc(this._t("no_results"))}</p>`}`;
-      dialog.querySelectorAll("[data-value]").forEach((row) => row.onclick = () => { const value = row.dataset.value; dialog.close(); dialog.remove(); onSelect(value); });
+      const definitions = this._detail?.concepts ?? this._draft?.concepts ?? [];
+      const definition = definitions.find((item) => item.concept === concept);
+      const canonicalTemperature = definition?.datatype === "number" && ["°C", "°F", "K"].includes(definition?.unit);
+      if (kind === "entity") items = ordered.flatMap((item) => this._entitySources(item, canonicalTemperature));
+      else items = ordered;
+      const filtered = items.filter((item) => `${item.name} ${item.secondary} ${item.id} ${item.trailing ?? ""}`.toLocaleLowerCase(this._hass.language).includes(normalized));
+      dialog.querySelector(".picker-results").innerHTML = `${kind === "entity" ? `<button class="picker-row clear" data-value="" data-attribute=""><span class="source-icon"><ha-icon icon="mdi:close-circle-outline"></ha-icon></span><span class="row-copy"><strong>${esc(this._t("clear_selection"))}</strong><span>${esc(this._t("optional"))}</span></span></button>` : ""}${filtered.map((item) => `<button class="picker-row ${item.id === selected && (item.attribute ?? "") === selectedAttribute ? "selected" : ""}" data-value="${esc(item.id)}" data-attribute="${esc(item.attribute ?? "")}"><span class="source-icon"><ha-icon icon="${esc(item.icon || "mdi:devices")}"></ha-icon></span><span class="row-copy"><strong title="${esc(item.name)}">${esc(item.name)}</strong><span title="${esc(item.secondary || item.id)}">${esc(item.secondary || item.id)}</span></span>${item.trailing ? `<span class="trailing" title="${esc(item.trailing)}">${esc(item.trailing)}</span>` : ""}</button>`).join("") || `<p class="empty-results">${esc(this._t("no_results"))}</p>`}`;
+      dialog.querySelectorAll("[data-value]").forEach((row) => row.onclick = () => { const value = row.dataset.value; const attribute = row.dataset.attribute; dialog.close(); dialog.remove(); onSelect(value, attribute); });
     };
     dialog.innerHTML = `<div class="dialog-heading"><h2>${esc(this._t(kind === "device" ? "choose_ha_device_button" : "choose_entity"))}</h2><button class="icon close" aria-label="${esc(this._t("cancel"))}">×</button></div><label class="search"><span class="visually-hidden">${esc(this._t("search"))}</span><input type="search" placeholder="${esc(this._t(kind === "device" ? "search_devices" : "search_entities"))}"></label><div class="picker-results"></div>`;
     this.shadowRoot.append(dialog);

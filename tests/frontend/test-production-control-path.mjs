@@ -704,6 +704,75 @@ test("Input Mapping conversions follow the unsaved Entity draft immediately", ()
   assert.equal(panel._inputDraft["battery.power"].entityId, "");
 });
 
+test("production Input Mapping picker offers entity state and attributes directly", () => {
+  const panel = new Panel();
+  panel._context = { translations: { entity_state: "State" }, entities: [] };
+  panel._hass = {
+    states: { "climate.buffer": { state: "heat", attributes: {
+      temperature: 50,
+      current_temperature: 56,
+      target_temp_high: 58,
+      target_temp_low: 47,
+      ambient: 51,
+      ambient_unit: "°C",
+      hvac_modes: ["off", "heat"],
+      fan_mode: "auto",
+      friendly_name: "Buffer",
+      supported_features: 385,
+    } } },
+    config: { unit_system: { temperature: "°C" } }, language: "en", localize: () => undefined,
+  };
+  panel._inputDraft = {
+    "heatPump.bufferTemperature": { version: 1, entityId: "climate.buffer" },
+  };
+  panel._renderInputDraft = () => {};
+  const detail = {
+    concepts: [{ concept: "heatPump.bufferTemperature", label: "Buffer temperature", cadence: "realtime" }],
+    mappings: {}, suggestions: {},
+  };
+
+  const sources = panel._entitySources({ id: "climate.buffer", name: "Buffer", secondary: "climate.buffer" }, true);
+  assert.deepEqual(sources.map(({ attribute, trailing }) => ({ attribute, trailing })), [
+    { attribute: "temperature", trailing: "50 °C" },
+    { attribute: "current_temperature", trailing: "56 °C" },
+    { attribute: "target_temp_high", trailing: "58 °C" },
+    { attribute: "target_temp_low", trailing: "47 °C" },
+    { attribute: "ambient", trailing: "51 °C" },
+  ]);
+  const nonTemperatureSources = panel._entitySources({ id: "climate.buffer", name: "Buffer", secondary: "climate.buffer" });
+  assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "fan_mode"));
+  assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "friendly_name"));
+  assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "supported_features"));
+
+  panel._hass.states["sensor.room_temperature"] = { state: "21.5", attributes: { unit_of_measurement: "°C" } };
+  assert.deepEqual(
+    panel._entitySources({ id: "sensor.room_temperature", name: "Room", secondary: "sensor.room_temperature", deviceClass: "temperature" }, true)
+      .map(({ attribute, trailing }) => ({ attribute, trailing })),
+    [{ attribute: "", trailing: "21.5 °C" }],
+  );
+  panel._hass.states["sensor.accumulated_energy"] = { state: "1234", attributes: { unit_of_measurement: "kWh", device_class: "energy" } };
+  panel._hass.states["binary_sensor.heating"] = { state: "on", attributes: { device_class: "heat" } };
+  panel._hass.states["sensor.cycle_count"] = { state: "42", attributes: { friendly_name: "Cycle count" } };
+  for (const item of [
+    { id: "sensor.accumulated_energy", deviceClass: "energy" },
+    { id: "binary_sensor.heating", deviceClass: "heat" },
+    { id: "sensor.cycle_count" },
+  ]) assert.deepEqual(panel._entitySources({ name: item.id, secondary: item.id, ...item }, true), []);
+
+  panel._selectInputEntity("heatPump.bufferTemperature", "climate.buffer", "current_temperature");
+  assert.equal(panel._inputDraft["heatPump.bufferTemperature"].attribute, "current_temperature");
+  assert.equal(panel._collectForm(true).mappings["heatPump.bufferTemperature"].attribute, "current_temperature");
+  const rendered = panel._mappingFields(detail, true);
+  assert.match(rendered, /current_temperature · climate\.buffer/);
+  assert.match(rendered, /data-picker-attribute="current_temperature"/);
+
+  panel._selectInputEntity("heatPump.bufferTemperature", "climate.buffer");
+  assert.equal(Object.hasOwn(panel._inputDraft["heatPump.bufferTemperature"], "attribute"), false);
+  assert.deepEqual(panel._collectForm(true).mappings["heatPump.bufferTemperature"], {
+    version: 1, entityId: "climate.buffer",
+  });
+});
+
 test("clearing a persisted Input Mapping remains cleared until Save or Cancel", async () => {
   const persisted = { version: 1, entityId: "sensor.saved_power", transforms: [{ type: "invert" }] };
   const panel = new Panel();

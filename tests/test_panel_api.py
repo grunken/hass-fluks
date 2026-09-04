@@ -363,8 +363,12 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
 async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(hass):
     """Production Edit performs PATCH, POST, and DELETE without recreating Device."""
     entry = make_entry(hass)
-    for entity in ("sensor.new_soc", "sensor.new_energy"):
-        hass.states.async_set(entity, "10", {"unit_of_measurement": "kWh"})
+    hass.states.async_set(
+        "sensor.new_soc", "online", {"battery_level": 10}
+    )
+    hass.states.async_set(
+        "sensor.new_energy", "10", {"unit_of_measurement": "kWh"}
+    )
     api = MagicMock(spec=FluksApiClient)
     api.get_device = AsyncMock(
         return_value={
@@ -411,7 +415,11 @@ async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(h
                 "entry_id": entry.entry_id,
                 "device_id": "device-a",
                 "mappings": {
-                    "battery.soc": {"version": 1, "entityId": "sensor.new_soc"},
+                    "battery.soc": {
+                        "version": 1,
+                        "entityId": "sensor.new_soc",
+                        "attribute": "battery_level",
+                    },
                     "battery.energy": {"version": 1, "entityId": "sensor.new_energy"},
                 },
                 "properties": {"vendor": "GoodWe", "model": "New"},
@@ -423,6 +431,11 @@ async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(h
         "site-a", "device-a", {"model": "New"}
     )
     assert api.update_mapping.await_args.args[:2] == ("site-a", "soc-map")
+    assert api.update_mapping.await_args.args[2] == {
+        "version": 1,
+        "entityId": "sensor.new_soc",
+        "attribute": "battery_level",
+    }
     api.delete_mapping.assert_awaited_once_with("site-a", "power-map")
     assert api.create_mapping.await_args.args[1]["concept"] == "battery.energy"
     api.create_device.assert_not_called()
