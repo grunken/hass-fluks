@@ -215,7 +215,8 @@ class RealtimeObservationPublisher:
                 and isinstance(concept.get("concept"), str)
             }
             by_entity: dict[
-                str, list[tuple[str, str, bool, str | None, str | None]]
+                str,
+                list[tuple[str, str, bool, str | None, str | None]],
             ] = defaultdict(list)
             baselines: list[tuple[str, str, str, str | None]] = []
             for mapping in mappings:
@@ -277,15 +278,20 @@ class RealtimeObservationPublisher:
         self,
         event: Event,
         mappings: dict[
-            str, list[tuple[str, str, bool, str | None, str | None]]
+            str,
+            list[tuple[str, str, bool, str | None, str | None]],
         ],
     ) -> None:
         state: State | None = event.data.get("new_state")
         if self._stopped or state is None:
             return
-        for device_id, concept, cumulative, attribute, temperature_unit in mappings.get(
-            state.entity_id, []
-        ):
+        for (
+            device_id,
+            concept,
+            cumulative,
+            attribute,
+            temperature_unit,
+        ) in mappings.get(state.entity_id, []):
             if cumulative:
                 await self._async_publish_cumulative(
                     state, device_id, concept, attribute
