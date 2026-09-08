@@ -168,12 +168,16 @@ class RealtimeObservationPublisher:
         if attribute is None or canonical_temperature_unit is None:
             return value
         source_unit = _attribute_temperature_unit(self._hass, state, attribute)
+        try:
+            number = _numeric_value(value)
+        except ValueError:
+            return value
         if source_unit is None:
             return value
-        number = _numeric_value(value)
-        return TemperatureConverter.convert(
+        converted = TemperatureConverter.convert(
             number, source_unit, canonical_temperature_unit
         )
+        return f"{converted:g} {canonical_temperature_unit}"
 
     async def async_refresh(self) -> None:
         """Replace subscriptions from the current persisted input Mappings."""

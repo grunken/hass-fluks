@@ -241,7 +241,7 @@ class FluksControlEditorPanel extends HTMLElement {
       if (canonicalTemperature && !this._isTemperatureAttribute(state, attribute, value)) continue;
       const formatted = this._formatSourceValue(value);
       const unit = canonicalTemperature ? this._temperatureUnit({ ...state, entity_id: item.id }, attribute) : "";
-      const trailing = [formatted, unit].filter(Boolean).join(" ");
+      const trailing = canonicalTemperature ? this._formatTemperatureSource(value, unit) : formatted;
       if (trailing) sources.push({ ...item, attribute, unit, secondary: `${attribute} · ${item.id}`, trailing });
     }
     return sources;
@@ -255,7 +255,7 @@ class FluksControlEditorPanel extends HTMLElement {
       ? [item?.manufacturer, item?.model].filter(Boolean).join(" · ")
       : item ? `${attribute || this._t("entity_state")} · ${item.secondary}` : undefined;
     const sourceValue = item && attribute
-      ? [this._formatSourceValue(this._hass.states[id]?.attributes?.[attribute]), this._temperatureUnit({ ...this._hass.states[id], entity_id: id }, attribute)].filter(Boolean).join(" ")
+      ? this._formatTemperatureSource(this._hass.states[id]?.attributes?.[attribute], this._temperatureUnit({ ...this._hass.states[id], entity_id: id }, attribute))
       : item?.trailing;
     return `<button type="button" class="picker-value" data-picker-kind="${kind}" data-picker-key="${esc(key)}" data-picker-value="${esc(id || "")}" data-picker-attribute="${esc(attribute)}">
       <span class="source-icon"><ha-icon icon="${esc(item?.icon || (kind === "device" ? "mdi:devices" : "mdi:chart-bell-curve-cumulative"))}"></ha-icon></span>
@@ -267,6 +267,12 @@ class FluksControlEditorPanel extends HTMLElement {
     return Number.isFinite(numeric)
       ? new Intl.NumberFormat(this._hass.language, { maximumFractionDigits: 3 }).format(numeric)
       : typeof value === "string" || typeof value === "boolean" ? String(value) : "";
+  }
+  _formatTemperatureSource(value, unit) {
+    const formatted = this._formatSourceValue(value);
+    return formatted && unit && Number.isFinite(Number(value))
+      ? `${formatted} ${unit}`
+      : formatted;
   }
   _inputConversions(concept, configuration) {
     const transforms = configuration.transforms ?? [];

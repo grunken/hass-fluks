@@ -136,7 +136,7 @@ async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
 
     assert [call.args[0] for call in send.await_args_list] == [
         {"deviceId": "heater-external", "heatPump.state": "heat"},
-        {"deviceId": "heater-external", "heatPump.bufferTemperature": 56},
+        {"deviceId": "heater-external", "heatPump.bufferTemperature": "56 °C"},
     ]
 
 
@@ -211,11 +211,33 @@ async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
     await hass.async_block_till_done()
 
     assert [call.args[0] for call in send.await_args_list] == [
-        {"deviceId": "heater-external", "heatPump.bufferTemperature": 20},
+        {"deviceId": "heater-external", "heatPump.bufferTemperature": "20 °C"},
         {"deviceId": "heater-external", "spaceHeater.temperature": 68},
         {"deviceId": "heater-external", "heatPump.tankTemperature": 68},
         {"deviceId": "heater-external", "heatPump.power": 68},
     ]
+
+
+async def test_non_numeric_temperature_attribute_keeps_text_without_unit(hass):
+    """HVAC action text is not mislabeled as a temperature."""
+    api = AsyncMock()
+    api.list_devices.return_value = [{"id": "heater", "deviceId": "heater"}]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "heater",
+        "concept": "heatPump.bufferTemperature",
+        "configuration": {"entityId": "climate.buffer", "attribute": "hvac_action"},
+    }]
+    api.get_device_type_catalog.return_value = [{
+        "type": "heatPump",
+        "concepts": [{"concept": "heatPump.bufferTemperature", "datatype": "number", "unit": "°C"}],
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+    hass.states.async_set("climate.buffer", "heat", {"hvac_action": "heating"})
+    await hass.async_block_till_done()
+    send.assert_awaited_once_with({"deviceId": "heater", "heatPump.bufferTemperature": "heating"})
 
 
 async def test_cumulative_energy_starts_at_source_and_survives_resets(hass):

@@ -713,6 +713,7 @@ test("production Input Mapping picker offers entity state and attributes directl
       current_temperature: 56,
       target_temp_high: 58,
       target_temp_low: 47,
+      hvac_action: "heating",
       ambient: 51,
       ambient_unit: "°C",
       hvac_modes: ["off", "heat"],
@@ -739,6 +740,8 @@ test("production Input Mapping picker offers entity state and attributes directl
     { attribute: "target_temp_low", trailing: "47 °C" },
     { attribute: "ambient", trailing: "51 °C" },
   ]);
+  assert.match(panel._pickerValue("entity", "climate.buffer", "heatPump.bufferTemperature", "hvac_action"), /heating/);
+  assert.doesNotMatch(panel._pickerValue("entity", "climate.buffer", "heatPump.bufferTemperature", "hvac_action"), /heating °C/);
   const nonTemperatureSources = panel._entitySources({ id: "climate.buffer", name: "Buffer", secondary: "climate.buffer" });
   assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "fan_mode"));
   assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "friendly_name"));
