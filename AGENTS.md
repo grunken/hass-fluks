@@ -165,7 +165,7 @@ Examples include:
 - `electricVehicle.distanceToSite`
 - `heatPump.targetTemperature`
 - `heatPump.waterTargetTemperature`
-- `waterHeater.targetTemperature`
+- `waterHeater.temperature`
 
 Do not introduce aliases such as:
 

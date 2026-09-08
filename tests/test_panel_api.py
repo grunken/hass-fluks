@@ -22,6 +22,7 @@ from custom_components.fluks.panel_api import (
     COMMAND_DEVICE_SAVE,
     COMMAND_SITE_DELETE,
     _has_local_context,
+    _migrate_water_heater_temperature_mappings,
     _mappable_concepts,
     async_register_panel_commands,
     websocket_context,
@@ -785,6 +786,43 @@ async def test_space_heater_uses_catalog_driven_fact_and_control_flows(hass):
 def test_space_heater_rated_power_uses_existing_device_property_allowlist():
     assert "ratedPowerW" in _editable_property_keys("spaceHeater")
     assert "ratedPowerW" not in _editable_property_keys("battery")
+
+
+async def test_legacy_water_heater_temperature_mapping_is_migrated():
+    """Existing backend mapping records move to the renamed canonical concept."""
+    legacy = {
+        "id": "legacy-temperature",
+        "concept": "waterHeater.targetTemperature",
+        "direction": "output",
+        "mode": "target",
+        "configuration": {"version": 1, "actions": []},
+    }
+    replacement = {
+        "id": "new-temperature",
+        "concept": "waterHeater.temperature",
+        "direction": "output",
+        "mode": "target",
+        "configuration": legacy["configuration"],
+    }
+    api = MagicMock(spec=FluksApiClient)
+    api.create_mapping = AsyncMock(return_value=replacement)
+    api.delete_mapping = AsyncMock()
+    api.list_mappings = AsyncMock(return_value=[replacement])
+
+    result = await _migrate_water_heater_temperature_mappings(
+        api, "site-a", "device-a", "integration-a", [legacy]
+    )
+
+    api.create_mapping.assert_awaited_once_with("site-a", {
+        "integrationId": "integration-a",
+        "deviceId": "device-a",
+        "concept": "waterHeater.temperature",
+        "direction": "output",
+        "mode": "target",
+        "configuration": legacy["configuration"],
+    })
+    api.delete_mapping.assert_awaited_once_with("site-a", "legacy-temperature")
+    assert result == [replacement]
 
 
 async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):

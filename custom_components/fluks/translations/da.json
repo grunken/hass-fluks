@@ -158,7 +158,6 @@
     "concept_waterHeater.power": "Effekt",
     "concept_waterHeater.state": "Driftstilstand",
     "concept_waterHeater.temperature": "Vandtemperatur",
-    "concept_waterHeater.targetTemperature": "Ønsket temperatur",
     "concept_waterHeater.energy": "Energi",
     "concept_appliance.power": "Effekt",
     "concept_appliance.state": "Driftstilstand",

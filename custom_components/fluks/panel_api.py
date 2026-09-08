@@ -221,6 +221,48 @@ def _safe_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _migrate_water_heater_temperature_mappings(
+    api: FluksApiClient,
+    site_id: str,
+    device_id: str,
+    integration_id: str,
+    mappings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Move legacy Water Heater temperature mappings to the canonical concept."""
+    legacy = [
+        item
+        for item in mappings
+        if item.get("concept") == "waterHeater.targetTemperature"
+        and item.get("direction") in {"input", "output"}
+    ]
+    if not legacy:
+        return mappings
+    for item in legacy:
+        replacement = next(
+            (
+                candidate
+                for candidate in mappings
+                if candidate.get("concept") == "waterHeater.temperature"
+                and candidate.get("direction") == item.get("direction")
+                and candidate.get("mode") == item.get("mode")
+            ),
+            None,
+        )
+        if replacement is None:
+            payload = {
+                "integrationId": integration_id,
+                "deviceId": device_id,
+                "concept": "waterHeater.temperature",
+                "direction": item["direction"],
+                "configuration": dict(item.get("configuration") or {}),
+            }
+            if item.get("direction") == "output":
+                payload["mode"] = item.get("mode")
+            await api.create_mapping(site_id, payload)
+        await api.delete_mapping(site_id, str(item["id"]))
+    return await api.list_mappings(site_id, device_id=device_id)
+
+
 def _send_error(
     hass: HomeAssistant,
     entry: ConfigEntry | None,
@@ -379,6 +421,14 @@ async def websocket_device_detail(hass, connection, msg):
         if device_type not in catalog:
             raise PanelCommandError("not_found")
         mappings = await api.list_mappings(site_id, device_id=device_id)
+        if device_type == "waterHeater":
+            mappings = await _migrate_water_heater_temperature_mappings(
+                api,
+                site_id,
+                device_id,
+                entry.data[CONF_INTEGRATION_INTERNAL_ID],
+                mappings,
+            )
         existing = {
             str(item["concept"]): item
             for item in mappings
@@ -713,6 +763,14 @@ async def websocket_device_save(hass, connection, msg):
                 site_id, msg["device_id"], changed
             )
         mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
+        if device_type == "waterHeater":
+            mappings = await _migrate_water_heater_temperature_mappings(
+                api,
+                site_id,
+                msg["device_id"],
+                entry.data[CONF_INTEGRATION_INTERNAL_ID],
+                mappings,
+            )
         existing = {
             str(item["concept"]): item
             for item in mappings

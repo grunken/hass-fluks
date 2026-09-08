@@ -102,7 +102,7 @@ test("transform availability follows canonical datatype, unit, and ordered pipel
   assert.ok(!power._availableTransforms(converted).includes("powerToCurrent"));
   assert.ok(power._availableTransforms(converted).includes("nearest"));
 
-  for (const concept of ["heatPump.bufferTemperature", "heatPump.tankTemperature", "waterHeater.targetTemperature"]) {
+  for (const concept of ["heatPump.bufferTemperature", "heatPump.tankTemperature", "waterHeater.temperature"]) {
     const temperature = new Editor(); temperature.controlName = concept; temperature.valueType = { datatype: "number", unit: "°C" };
     assert.ok(!temperature._availableTransforms([]).includes("powerToCurrent"));
     assert.deepEqual(temperature._pipeline([{ type: "offset", amount: 1 }]), { valid: true, datatype: "number", unit: "°C" });

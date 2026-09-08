@@ -158,7 +158,6 @@
     "concept_waterHeater.power": "Power",
     "concept_waterHeater.state": "Operating state",
     "concept_waterHeater.temperature": "Water temperature",
-    "concept_waterHeater.targetTemperature": "Target temperature",
     "concept_waterHeater.energy": "Energy",
     "concept_appliance.power": "Power",
     "concept_appliance.state": "Operating state",

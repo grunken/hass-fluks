@@ -83,7 +83,7 @@ The live catalog currently exposes `battery.power` as a control and
 `battery.soc` as fact-only. It has no battery target-SOC/charge-target canonical
 control. Therefore the GoodWe sequence is a clearly marked UX fixture only; it
 must not ship as a production Mapping for `battery.soc` or be misrepresented as
-`battery.power`. `waterHeater.targetTemperature` is an existing control and is a
+`battery.power`. `waterHeater.temperature` is an existing control and is a
 valid production-oriented UX example.
 
 ## Embedded review

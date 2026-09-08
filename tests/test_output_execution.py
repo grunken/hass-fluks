@@ -99,6 +99,55 @@ async def test_decision_mode_selects_only_the_exact_mapping_behavior(hass):
     assert calls == ["target", "eco"]
 
 
+async def test_water_heater_temperature_decision_uses_renamed_canonical_field(hass):
+    calls = []
+
+    async def record(call):
+        calls.append(call.data)
+
+    hass.services.async_register("water_heater", "set_temperature", record)
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[
+        {"id": "heater-internal", "deviceId": "heater-external", "type": "waterHeater"},
+    ])
+    api.list_mappings = AsyncMock(return_value=[{
+        "deviceId": "heater-internal",
+        "concept": "waterHeater.temperature",
+        "direction": "output",
+        "mode": "target",
+        "configuration": {
+            "version": 1,
+            "actions": [{
+                "type": "serviceCall",
+                "service": "water_heater.set_temperature",
+                "target": {"entityId": "water_heater.tank"},
+                "data": {"temperature": {"kind": "requestedValue"}},
+            }],
+        },
+    }])
+    api.get_device_type_catalog = AsyncMock(return_value=[{
+        "type": "waterHeater",
+        "concepts": [{
+            "concept": "waterHeater.temperature",
+            "datatype": "number",
+            "unit": "°C",
+            "usages": ["fact", "control"],
+        }],
+    }])
+
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "heater-external",
+            "deviceType": "waterHeater",
+            "temperature": "55",
+            "mode": "target",
+        }],
+    })
+
+    assert calls == [{"temperature": 55, "entity_id": "water_heater.tank"}]
+
+
 def _ownership_api():
     def action(entity_id):
         return {"version": 1, "actions": [{
