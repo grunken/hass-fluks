@@ -36,7 +36,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api = FluksApiClient(
         async_get_clientsession(hass), integration_key=integration_key
     )
-    output = RuntimeOutputExecutor(hass, api, entry.data[CONF_SITE_ID])
+    output = RuntimeOutputExecutor(
+        hass,
+        api,
+        entry.data[CONF_SITE_ID],
+        entry.entry_id,
+    )
     runtime = FluksRuntimeWebSocket(
         async_get_clientsession(hass), integration_key, API_BASE_URL,
         message_handler=output.async_handle,

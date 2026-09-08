@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import logging
 import math
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .api import FluksApiClient
 from .output_mapping import (
     apply_output_transforms,
     validate_output_configuration,
 )
+from .const import DOMAIN, TEMPERATURE_OWNERSHIP_STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
 _DECISION_FIELDS = {"deviceId", "deviceType", "mode"}
+_TEMPERATURE_CONTROLS = {
+    "heatPump.temperature",
+    "heatPump.tankTemperature",
+    "waterHeater.temperature",
+    "spaceHeater.temperature",
+}
 
 
 def _canonical_value(value: Any, datatype: str) -> Any:
@@ -42,12 +51,100 @@ class RuntimeOutputExecutor:
     """Resolve runtime Decisions to this Integration's output Mappings."""
 
     def __init__(
-        self, hass: HomeAssistant, api: FluksApiClient, site_id: str
+        self,
+        hass: HomeAssistant,
+        api: FluksApiClient,
+        site_id: str,
+        entry_id: str | None = None,
+        *,
+        ownership_store: Store[dict[str, Any]] | None = None,
     ) -> None:
         self._hass = hass
         self._api = api
         self._site_id = site_id
         self._balance_active = False
+        self._temperature_store = ownership_store or Store(
+            hass,
+            TEMPERATURE_OWNERSHIP_STORAGE_VERSION,
+            f"{DOMAIN}.temperature_ownership.{entry_id or site_id}",
+            atomic_writes=True,
+        )
+        self._temperature_ownership: dict[str, dict[str, int | float]] = {}
+        self._temperature_loaded = False
+
+    async def _async_load_temperature_ownership(self) -> None:
+        if self._temperature_loaded:
+            return
+        stored = await self._temperature_store.async_load()
+        records = stored.get("controls", {}) if isinstance(stored, dict) else {}
+        if isinstance(records, dict):
+            self._temperature_ownership = {
+                str(key): dict(value)
+                for key, value in records.items()
+                if isinstance(value, dict)
+                and "previous" in value
+                and "applied" in value
+                and self._numeric(value["previous"]) is not None
+                and self._numeric(value["applied"]) is not None
+            }
+        self._temperature_loaded = True
+
+    async def _async_save_temperature_ownership(self) -> None:
+        await self._temperature_store.async_save({"controls": self._temperature_ownership})
+
+    @staticmethod
+    def _numeric(value: Any) -> int | float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not number.is_finite():
+            return None
+        return int(number) if number == number.to_integral_value() else float(number)
+
+    @classmethod
+    def _same_numeric(cls, left: Any, right: Any) -> bool:
+        left_number = cls._numeric(left)
+        right_number = cls._numeric(right)
+        return (
+            left_number is not None
+            and right_number is not None
+            and Decimal(str(left_number)) == Decimal(str(right_number))
+        )
+
+    @staticmethod
+    def _temperature_binding(configuration: dict[str, Any]) -> tuple[str, str] | None:
+        bindings = [
+            (action["target"]["entityId"], field)
+            for action in configuration.get("actions", [])
+            for field, source in action.get("data", {}).items()
+            if source.get("kind") == "requestedValue"
+        ]
+        return bindings[0] if len(bindings) == 1 else None
+
+    def _temperature_setpoint(
+        self, configuration: dict[str, Any]
+    ) -> int | float | None:
+        binding = self._temperature_binding(configuration)
+        if binding is None:
+            return None
+        entity_id, field = binding
+        state = self._hass.states.get(entity_id)
+        if state is None:
+            return None
+        value = state.attributes.get(field)
+        if value is None:
+            domain = entity_id.split(".", 1)[0]
+            if domain in {"climate", "water_heater"}:
+                return None
+            value = state.state
+        return self._numeric(value)
+
+    @staticmethod
+    def _temperature_key(device: dict[str, Any], concept: str) -> str:
+        return f"{device['deviceId']}|{concept}"
 
     async def async_handle(self, payload: dict[str, Any]) -> None:
         """Execute a supported Decision snapshot without disrupting transport."""
@@ -55,6 +152,7 @@ class RuntimeOutputExecutor:
             payload.get("decisions"), list
         ):
             return
+        await self._async_load_temperature_ownership()
         try:
             devices = await self._api.list_devices(self._site_id)
             mappings = await self._api.list_mappings(self._site_id)
@@ -95,6 +193,9 @@ class RuntimeOutputExecutor:
                     continue
                 if self._balance_active and concept == "battery.power":
                     continue
+                mapping_mode = decision.get("mode")
+                if concept in _TEMPERATURE_CONTROLS and mapping_mode == "release":
+                    mapping_mode = "target"
                 mapping = next(
                     (
                         item
@@ -102,22 +203,85 @@ class RuntimeOutputExecutor:
                         if item.get("direction") == "output"
                         and item.get("deviceId") == device["id"]
                         and item.get("concept") == concept
-                        and item.get("mode") == decision.get("mode")
+                        and item.get("mode") == mapping_mode
                     ),
                     None,
                 )
                 if mapping is None:
+                    if concept in _TEMPERATURE_CONTROLS and decision.get("mode") == "release":
+                        self._temperature_ownership.pop(
+                            self._temperature_key(device, concept), None
+                        )
+                        await self._async_save_temperature_ownership()
                     continue
                 try:
-                    value = _canonical_value(raw_value, str(definition.get("datatype")))
+                    ownership_key = self._temperature_key(device, concept)
                     configuration = validate_output_configuration(mapping.get("configuration"))
-                    await self._async_execute(configuration, value)
+                    if concept in _TEMPERATURE_CONTROLS:
+                        if decision.get("mode") == "release":
+                            value = None
+                        else:
+                            value = _canonical_value(raw_value, str(definition.get("datatype")))
+                        await self._async_temperature_decision(
+                            ownership_key,
+                            configuration,
+                            value,
+                            decision.get("mode"),
+                        )
+                    else:
+                        value = _canonical_value(raw_value, str(definition.get("datatype")))
+                        await self._async_execute(configuration, value)
                     if concept == "site.power" and decision.get("mode") == "balance":
                         self._balance_active = True
                     elif concept == "site.power" and decision.get("mode") == "release":
                         self._balance_active = False
                 except Exception:  # noqa: BLE001 - one action must not end runtime transport
                     _LOGGER.warning("Unable to execute fluks output Mapping for %s", concept)
+
+    async def _async_temperature_decision(
+        self,
+        ownership_key: str,
+        configuration: dict[str, Any],
+        requested_value: Any,
+        mode: Any,
+    ) -> None:
+        """Apply or safely release one temporary temperature override."""
+        if mode == "release":
+            ownership = self._temperature_ownership.get(ownership_key)
+            current = self._temperature_setpoint(configuration)
+            if not ownership or current is None:
+                self._temperature_ownership.pop(ownership_key, None)
+                await self._async_save_temperature_ownership()
+                return
+            if self._same_numeric(current, ownership["applied"]):
+                await self._async_execute(configuration, ownership["previous"])
+            self._temperature_ownership.pop(ownership_key, None)
+            await self._async_save_temperature_ownership()
+            return
+
+        if mode != "target":
+            await self._async_execute(configuration, requested_value)
+            return
+        current = self._temperature_setpoint(configuration)
+        if current is None:
+            raise ValueError("Temperature writable setpoint is unavailable")
+        ownership = self._temperature_ownership.get(ownership_key)
+        previous = current
+        if ownership and self._same_numeric(current, ownership["applied"]):
+            previous = ownership["previous"]
+        elif ownership:
+            self._temperature_ownership.pop(ownership_key, None)
+            await self._async_save_temperature_ownership()
+        await self._async_execute(configuration, requested_value)
+        await self._hass.async_block_till_done()
+        applied = self._temperature_setpoint(configuration)
+        if applied is None:
+            raise ValueError("Temperature applied setpoint is unavailable")
+        self._temperature_ownership[ownership_key] = {
+            "previous": previous,
+            "applied": applied,
+        }
+        await self._async_save_temperature_ownership()
 
     @staticmethod
     def _is_balance_ownership(decision: dict[str, Any]) -> bool:

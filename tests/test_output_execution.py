@@ -1,8 +1,56 @@
 """Tests for runtime execution of persisted output Mappings."""
 
 from unittest.mock import AsyncMock, MagicMock
+from copy import deepcopy
 
 from custom_components.fluks.output_execution import RuntimeOutputExecutor
+
+
+class MemoryStore:
+    def __init__(self, data=None):
+        self.data = deepcopy(data)
+
+    async def async_load(self):
+        return deepcopy(self.data)
+
+    async def async_save(self, data):
+        self.data = deepcopy(data)
+
+
+def temperature_mapping(concept="heatPump.temperature", entity="climate.zone"):
+    return {
+        "deviceId": "temperature-internal", "concept": concept,
+        "direction": "output", "mode": "target",
+        "configuration": {"version": 1, "actions": [{
+            "type": "serviceCall", "service": "climate.set_temperature",
+            "target": {"entityId": entity},
+            "data": {"temperature": {"kind": "requestedValue"}},
+        }]},
+    }
+
+
+def temperature_api(mapping, device_type="heatPump"):
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[{
+        "id": "temperature-internal", "deviceId": "temperature-external",
+        "type": device_type,
+    }])
+    api.list_mappings = AsyncMock(return_value=[mapping])
+    api.get_device_type_catalog = AsyncMock(return_value=[{
+        "type": device_type,
+        "concepts": [{
+            "concept": mapping["concept"], "datatype": "number",
+            "usages": ["fact", "control"],
+        }],
+    }])
+    return api
+
+
+def temperature_decision(device_type="heatPump", field="temperature", value="22.05", mode="target"):
+    return {
+        "deviceId": "temperature-external", "deviceType": device_type,
+        field: value, "mode": mode,
+    }
 
 
 def _catalog():
@@ -99,6 +147,177 @@ async def test_decision_mode_selects_only_the_exact_mapping_behavior(hass):
     assert calls == ["target", "eco"]
 
 
+async def test_temperature_target_persists_previous_and_actual_applied_value(hass):
+    store = MemoryStore()
+    api = temperature_api(temperature_mapping())
+    calls = []
+
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        accepted = round(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": accepted})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        temperature_decision(),
+    ]})
+
+    assert calls == [22.05]
+    assert store.data == {"controls": {"temperature-external|heatPump.temperature": {
+        "previous": 21, "applied": 22,
+    }}}
+
+
+async def test_temperature_release_restores_matching_applied_value_and_clears_state(hass):
+    store = MemoryStore()
+    api = temperature_api(temperature_mapping())
+    calls = []
+
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": call.data["temperature"]})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision()]})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        temperature_decision(value=None, mode="release"),
+    ]})
+
+    assert calls == [22.05, 21]
+    assert store.data == {"controls": {}}
+
+
+async def test_temperature_release_preserves_manual_override(hass):
+    store = MemoryStore()
+    api = temperature_api(temperature_mapping())
+    calls = []
+
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": call.data["temperature"]})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision()]})
+    hass.states.async_set("climate.zone", "heat", {"temperature": 23})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        temperature_decision(value=None, mode="release"),
+    ]})
+
+    assert calls == [22.05]
+    assert hass.states.get("climate.zone").attributes["temperature"] == 23
+    assert store.data == {"controls": {}}
+
+
+async def test_consecutive_temperature_targets_preserve_original_previous(hass):
+    store = MemoryStore()
+    api = temperature_api(temperature_mapping())
+
+    async def apply(call):
+        hass.states.async_set("climate.zone", "heat", {"temperature": round(call.data["temperature"])})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision()]})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision(value="23.1")]})
+    assert store.data["controls"]["temperature-external|heatPump.temperature"] == {
+        "previous": 21, "applied": 23,
+    }
+
+
+async def test_lost_temperature_ownership_starts_a_new_period(hass):
+    store = MemoryStore()
+    api = temperature_api(temperature_mapping())
+
+    async def apply(call):
+        hass.states.async_set("climate.zone", "heat", {"temperature": round(call.data["temperature"])})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision()]})
+    hass.states.async_set("climate.zone", "heat", {"temperature": 23})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision(value="24.2")]})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision(value=None, mode="release")]})
+
+    assert hass.states.get("climate.zone").attributes["temperature"] == 23
+    assert store.data == {"controls": {}}
+
+
+async def test_temperature_ownership_survives_executor_reload_and_numeric_equivalence(hass):
+    store = MemoryStore()
+    api = temperature_api(temperature_mapping())
+    calls = []
+
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": round(call.data["temperature"])})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    first = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await first.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision()]})
+    hass.states.async_set("climate.zone", "heat", {"temperature": 22})
+    reloaded = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await reloaded.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision(value=None, mode="release")]})
+
+    assert calls == [22.05, 21]
+    assert store.data == {"controls": {}}
+
+
+async def test_temperature_release_without_valid_ownership_is_fail_safe(hass):
+    store = MemoryStore({"controls": {"temperature-external|heatPump.temperature": {"previous": "bad"}}})
+    api = temperature_api(temperature_mapping())
+    calls = []
+    hass.services.async_register("climate", "set_temperature", lambda call: calls.append(call))
+    hass.states.async_set("climate.zone", "heat", {"temperature": 22})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        temperature_decision(value=None, mode="release"),
+    ]})
+
+    assert calls == []
+    assert store.data == {"controls": {}}
+
+
+async def test_all_supported_temperature_controls_use_temporary_ownership(hass):
+    store = MemoryStore()
+    calls = []
+
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": call.data["temperature"]})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 20})
+    for device_type, concept in (
+        ("heatPump", "heatPump.temperature"),
+        ("heatPump", "heatPump.tankTemperature"),
+        ("waterHeater", "waterHeater.temperature"),
+        ("spaceHeater", "spaceHeater.temperature"),
+    ):
+        api = temperature_api(temperature_mapping(concept), device_type)
+        executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+        await executor.async_handle({"type": "decision.snapshot", "decisions": [
+            temperature_decision(device_type=device_type, field=concept.rsplit(".", 1)[1]),
+        ]})
+
+    assert calls == [22.05, 22.05, 22.05, 22.05]
+    assert set(store.data["controls"]) == {
+        "temperature-external|heatPump.temperature",
+        "temperature-external|heatPump.tankTemperature",
+        "temperature-external|waterHeater.temperature",
+        "temperature-external|spaceHeater.temperature",
+    }
+
+
 async def test_water_heater_temperature_decision_uses_renamed_canonical_field(hass):
     calls = []
 
@@ -106,6 +325,7 @@ async def test_water_heater_temperature_decision_uses_renamed_canonical_field(ha
         calls.append(call.data)
 
     hass.services.async_register("water_heater", "set_temperature", record)
+    hass.states.async_set("water_heater.tank", "idle", {"temperature": 50})
     api = MagicMock()
     api.list_devices = AsyncMock(return_value=[
         {"id": "heater-internal", "deviceId": "heater-external", "type": "waterHeater"},
@@ -155,6 +375,8 @@ async def test_heat_pump_temperature_and_tank_temperature_decisions_remain_disti
         calls.append((call.service, call.data))
 
     hass.services.async_register("number", "set_value", record)
+    hass.states.async_set("number.flow_target", "20", {})
+    hass.states.async_set("number.tank_target", "20", {})
     api = MagicMock()
     api.list_devices = AsyncMock(return_value=[
         {"id": "heat-internal", "deviceId": "heat-external", "type": "heatPump"},
