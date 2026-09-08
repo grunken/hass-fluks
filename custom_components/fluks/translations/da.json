@@ -179,6 +179,7 @@
     "measurements": "Målinger",
     "energy": "Energi",
     "installation": "Installation",
+    "rated_power": "Nominel effekt",
     "device_information": "Enhedsoplysninger",
     "site_information": "Siteoplysninger",
     "name": "Navn",

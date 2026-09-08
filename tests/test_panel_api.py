@@ -32,6 +32,7 @@ from custom_components.fluks.panel_api import (
     websocket_device_delete,
     websocket_device_save,
     websocket_site_delete,
+    _editable_property_keys,
 )
 from custom_components.fluks.device import stable_device_id
 
@@ -779,6 +780,11 @@ async def test_space_heater_uses_catalog_driven_fact_and_control_flows(hass):
         "entityId": "sensor.heater_power",
     }
     assert result["output_mappings"]["spaceHeater.targetTemperature"][0]["id"] == "target-out"
+
+
+def test_space_heater_rated_power_uses_existing_device_property_allowlist():
+    assert "ratedPowerW" in _editable_property_keys("spaceHeater")
+    assert "ratedPowerW" not in _editable_property_keys("battery")
 
 
 async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):

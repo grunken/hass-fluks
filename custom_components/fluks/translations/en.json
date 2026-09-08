@@ -179,6 +179,7 @@
     "measurements": "Measurements",
     "energy": "Energy",
     "installation": "Installation",
+    "rated_power": "Rated power",
     "device_information": "Device information",
     "site_information": "Site information",
     "name": "Name",

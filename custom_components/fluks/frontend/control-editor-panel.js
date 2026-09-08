@@ -296,7 +296,7 @@ class FluksControlEditorPanel extends HTMLElement {
     return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
   }
   _editableDeviceProperties(properties, deviceType) {
-    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : [])];
+    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : [])];
     return Object.fromEntries(keys.filter((key) => Object.hasOwn(properties, key)).map((key) => [key, properties[key]]));
   }
   _propertiesForm(properties, deviceType, learned = {}) {
@@ -312,6 +312,7 @@ class FluksControlEditorPanel extends HTMLElement {
       ${physicalField("installedKWp", "solar.installedKwpEstimated", "installed_solar_capacity", "estimated_by_fluks", "kWp", 'min="0"')}
       <label>${esc(this._t("direction"))}<input type="number" min="0" max="359.999" data-property="azimuthDegrees" value="${esc(properties.azimuthDegrees ?? "")}"></label>
       <label>${esc(this._t("panel_angle"))}<input type="number" min="0" max="90" data-property="tiltDegrees" value="${esc(properties.tiltDegrees ?? "")}"></label></div></section>` : ""}
+      ${deviceType === "spaceHeater" ? `<section class="card"><h2>${esc(this._t("installation"))}</h2><div class="fields three"><label>${esc(this._t("rated_power"))}<span class="property-input"><input type="number" step="any" min="0" data-property="ratedPowerW" value="${esc(properties.ratedPowerW ?? "")}"><span>W</span></span></label></div></section>` : ""}
       ${deviceType === "battery" ? `<section class="card"><h2>${esc(this._t("battery_configuration"))}</h2><div class="fields three">
       ${physicalField("capacityKwh", "battery.capacityKwhEstimated", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}
       ${physicalField("battery.socMinimum", "battery.socMinimumObserved", "minimum_soc", "lowest_observed_by_fluks", "%", 'min="0" max="100"')}

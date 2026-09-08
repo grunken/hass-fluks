@@ -631,6 +631,48 @@ test("Solar installed capacity keeps learned suggestion separate and round-trips
   assert.match(body, /data-property="installedKWp" value="" placeholder="~14\.03"/);
 });
 
+test("Space Heater exposes the existing ratedPowerW Installation property", () => {
+  const panel = new Panel();
+  panel._context = { translations: { installation: "Installation", rated_power: "Rated power" }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  const empty = panel._propertiesForm({}, "spaceHeater");
+  assert.match(empty, /Installation/);
+  assert.match(empty, /<div class="fields three"><label>Rated power/);
+  assert.match(empty, /Rated power/);
+  assert.match(empty, /data-property="ratedPowerW" value=""/);
+  assert.match(empty, />W<\/span>/);
+
+  const configured = panel._propertiesForm({ ratedPowerW: 2400 }, "spaceHeater");
+  assert.match(configured, /data-property="ratedPowerW" value="2400"/);
+  assert.doesNotMatch(configured, /installedKWp|capacityKwh/);
+});
+
+test("Space Heater ratedPowerW uses the existing Device Save property path", async () => {
+  const panel = new Panel();
+  panel._context = { translations: { installation: "Installation", rated_power: "Rated power" }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._view = { name: "edit" };
+  panel._detail = { id: "space-heater-device", type: "spaceHeater", type_name: "Space heater", label: "Space heater", properties: { ratedPowerW: 1800 }, concepts: [], mappings: {}, suggestions: {} };
+  const cancel = {};
+  const save = {};
+  let body;
+  let saved;
+  const input = { dataset: { property: "ratedPowerW" }, value: "2400", type: "number" };
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [input] : [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+  panel._call = async (_type, payload) => {
+    saved = payload;
+    return { properties: { ratedPowerW: 2400 } };
+  };
+
+  panel._renderEdit();
+  assert.match(body, /data-property="ratedPowerW" value="1800"/);
+  await save.onclick();
+  assert.equal(saved.device_id, "space-heater-device");
+  assert.deepEqual(saved.properties, { ratedPowerW: 2400 });
+});
+
 test("successful Battery property Save discards the stale draft before reopening", async () => {
   const panel = new Panel();
   panel._context = { translations: {}, entities: [] };

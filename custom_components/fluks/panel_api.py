@@ -512,6 +512,8 @@ def _editable_property_keys(device_type: str) -> set[str]:
     keys = {"displayName", "vendor", "model"}
     if device_type == "solar":
         keys.update({"installedKWp", "azimuthDegrees", "tiltDegrees"})
+    elif device_type == "spaceHeater":
+        keys.add("ratedPowerW")
     elif device_type == "battery":
         keys.update({"capacityKwh", "battery.socMinimum", "battery.socMaximum"})
     return keys
