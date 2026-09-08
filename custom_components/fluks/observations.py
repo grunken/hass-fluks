@@ -7,6 +7,7 @@ import math
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -14,6 +15,7 @@ from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.const import UnitOfTemperature
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .api import FluksApiClient
@@ -112,6 +114,8 @@ class RealtimeObservationPublisher:
             atomic_writes=True,
         )
         self._lifetime: dict[str, dict[str, str | None]] = {}
+        self._derived: dict[str, dict[str, str | None]] = {}
+        self._derived_needs_rebaseline: set[str] = set()
         self._loaded = False
         self._unsubscribe: Callable[[], None] | None = None
         self._refresh_lock = asyncio.Lock()
@@ -122,6 +126,7 @@ class RealtimeObservationPublisher:
         if self._loaded:
             return
         stored = await self._store.async_load()
+        stored = stored if isinstance(stored, dict) else {}
         streams = stored.get("streams", {}) if isinstance(stored, dict) else {}
         if isinstance(streams, dict):
             self._lifetime = {
@@ -132,7 +137,23 @@ class RealtimeObservationPublisher:
                 and isinstance(value.get("last"), str)
                 and isinstance(value.get("source"), str)
             }
+        derived = stored.get("derived", {})
+        if isinstance(derived, dict):
+            self._derived = {
+                str(key): dict(value)
+                for key, value in derived.items()
+                if isinstance(value, dict)
+                and isinstance(value.get("lifetime"), str)
+                and isinstance(value.get("source"), str)
+            }
+            self._derived_needs_rebaseline = set(self._derived)
         self._loaded = True
+
+    def _store_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"streams": self._lifetime}
+        if self._derived:
+            payload["derived"] = self._derived
+        return payload
 
     @staticmethod
     def _stream_key(device_id: str, concept: str) -> str:
@@ -155,7 +176,29 @@ class RealtimeObservationPublisher:
         return number
 
     @staticmethod
+    def _rated_power(properties: Any) -> Decimal | None:
+        if not isinstance(properties, dict) or properties.get("ratedPowerW") is None:
+            return None
+        try:
+            value = Decimal(str(properties["ratedPowerW"]))
+        except (InvalidOperation, ValueError):
+            return None
+        return value if value.is_finite() and value >= 0 else None
+
+    @staticmethod
+    def _operating_state(state: State, attribute: str | None) -> str | None:
+        try:
+            value = _source_value(state, attribute)
+        except ValueError:
+            return None
+        if not isinstance(value, str):
+            return None
+        value = value.strip().lower()
+        return value if value in {"heating", "idle"} else None
+
+    @staticmethod
     def _json_decimal(value: Decimal) -> int | float:
+        value = Decimal(str(value))
         return int(value) if value == value.to_integral_value() else float(value)
 
     def _mapped_value(
@@ -208,6 +251,11 @@ class RealtimeObservationPublisher:
                 if isinstance(device.get("id"), str)
                 and isinstance(device.get("deviceId"), str)
             }
+            devices_by_id = {
+                str(device["id"]): device
+                for device in devices
+                if isinstance(device.get("id"), str)
+            }
             temperature_units = {
                 str(concept["concept"]): str(concept["unit"])
                 for device_type in catalog
@@ -222,6 +270,8 @@ class RealtimeObservationPublisher:
                 str,
                 list[tuple[str, str, bool, str | None, str | None]],
             ] = defaultdict(list)
+            configured: dict[str, set[str]] = defaultdict(set)
+            state_sources: dict[str, tuple[str, str | None]] = {}
             baselines: list[tuple[str, str, str, str | None]] = []
             for mapping in mappings:
                 configuration = mapping.get("configuration")
@@ -239,6 +289,10 @@ class RealtimeObservationPublisher:
                 if attribute is not None and not isinstance(attribute, str):
                     continue
                 concept = mapping["concept"]
+                internal_id = str(mapping["deviceId"])
+                configured[internal_id].add(concept)
+                if concept == "spaceHeater.state":
+                    state_sources[internal_id] = (entity_id, attribute)
                 cumulative = (
                     (configuration.get("source") or {}).get("kind") == "cumulative"
                 )
@@ -255,15 +309,33 @@ class RealtimeObservationPublisher:
                 source = self._source_id(entity_id, attribute)
                 if cumulative and (stream is None or stream.get("source") != source):
                     baselines.append((entity_id, external_id, concept, attribute))
+            derived_by_entity: dict[
+                str,
+                list[tuple[str, bool, bool, Decimal, str | None]],
+            ] = defaultdict(list)
+            for internal_id, source in state_sources.items():
+                device = devices_by_id.get(internal_id)
+                if not device or device.get("type") != "spaceHeater":
+                    continue
+                external_id = external_ids.get(internal_id)
+                rated_power = self._rated_power(device.get("properties"))
+                if external_id is None or rated_power is None:
+                    continue
+                need_power = "spaceHeater.power" not in configured[internal_id]
+                need_energy = "spaceHeater.energy" not in configured[internal_id]
+                if need_power or need_energy:
+                    derived_by_entity[source[0]].append(
+                        (external_id, need_power, need_energy, rated_power, source[1])
+                    )
             unsubscribe = self._unsubscribe
             self._unsubscribe = None
             if unsubscribe is not None:
                 unsubscribe()
-            if by_entity:
+            if by_entity or derived_by_entity:
                 @callback
                 def _state_changed(event: Event) -> None:
                     self._hass.async_create_task(
-                        self._async_state_changed(event, by_entity),
+                        self._async_state_changed(event, by_entity, derived_by_entity),
                         "fluks observation",
                     )
 
@@ -277,6 +349,18 @@ class RealtimeObservationPublisher:
                     await self._async_publish_cumulative(
                         state, device_id, concept, attribute
                     )
+            for entity_id, targets in derived_by_entity.items():
+                if (state := self._hass.states.get(entity_id)) is None:
+                    continue
+                for device_id, power, energy, rated, attribute in targets:
+                    await self._async_publish_derived(
+                        state,
+                        device_id,
+                        power,
+                        energy,
+                        rated,
+                        attribute,
+                    )
 
     async def _async_state_changed(
         self,
@@ -285,6 +369,7 @@ class RealtimeObservationPublisher:
             str,
             list[tuple[str, str, bool, str | None, str | None]],
         ],
+        derived: dict[str, list[tuple[str, bool, bool, Decimal, str | None]]],
     ) -> None:
         state: State | None = event.data.get("new_state")
         if self._stopped or state is None:
@@ -308,6 +393,79 @@ class RealtimeObservationPublisher:
             except (TypeError, ValueError):
                 continue
             await self._send({"deviceId": device_id, concept: value})
+        for device_id, power, energy, rated, attribute in derived.get(
+            state.entity_id, []
+        ):
+            await self._async_publish_derived(
+                state, device_id, power, energy, rated, attribute, event.time_fired
+            )
+
+    async def _async_publish_derived(
+        self,
+        state: State,
+        device_id: str,
+        publish_power: bool,
+        publish_energy: bool,
+        rated_power: Decimal,
+        attribute: str | None,
+        observed_at: datetime | None = None,
+    ) -> None:
+        operating_state = self._operating_state(state, attribute)
+        now = observed_at or dt_util.utcnow()
+        key = self._stream_key(device_id, "spaceHeater.energy")
+        async with self._state_lock:
+            stream = self._derived.get(key)
+            lifetime = Decimal("0")
+            previous_state: str | None = None
+            previous_at: datetime | None = None
+            previous_power = rated_power
+            source = self._source_id(state.entity_id, attribute)
+            rebaseline = key in self._derived_needs_rebaseline
+            if stream is not None and stream.get("source") == source:
+                try:
+                    lifetime = Decimal(stream["lifetime"])
+                    if not rebaseline:
+                        previous_power = Decimal(
+                            stream.get("power") or str(rated_power)
+                        )
+                        previous_state = stream.get("state")
+                        previous_at = (
+                            datetime.fromisoformat(stream["at"])
+                            if stream.get("at")
+                            else None
+                        )
+                except (KeyError, InvalidOperation, TypeError, ValueError):
+                    lifetime = Decimal("0")
+                    previous_state = None
+                    previous_at = None
+            self._derived_needs_rebaseline.discard(key)
+            if (
+                previous_state == "heating"
+                and operating_state is not None
+                and previous_at is not None
+            ):
+                elapsed = Decimal(str((now - previous_at).total_seconds()))
+                if elapsed > 0:
+                    lifetime += previous_power * elapsed / Decimal("3600000")
+            self._derived[key] = {
+                "lifetime": str(lifetime),
+                "source": source,
+                "state": operating_state,
+                "at": now.isoformat(),
+                "power": str(rated_power),
+            }
+            await self._store.async_save(self._store_payload())
+        if operating_state is None:
+            return
+        payload: dict[str, Any] = {"deviceId": device_id}
+        if publish_power:
+            payload["spaceHeater.power"] = self._json_decimal(
+                rated_power if operating_state == "heating" else Decimal("0")
+            )
+        if publish_energy:
+            payload["spaceHeater.energy"] = self._json_decimal(lifetime)
+        if len(payload) > 1:
+            await self._send(payload)
 
     async def _async_publish_cumulative(
         self,
@@ -354,7 +512,7 @@ class RealtimeObservationPublisher:
                     "last": str(raw),
                     "last_reset": marker,
                 }
-                await self._store.async_save({"streams": self._lifetime})
+                await self._store.async_save(self._store_payload())
         await self._send(
             {"deviceId": device_id, concept: self._json_decimal(lifetime)}
         )

@@ -720,6 +720,32 @@ test("successful Battery property Save discards the stale draft before reopening
   assert.doesNotMatch(body, /data-property="capacityKwh" value="16\.058507"/);
 });
 
+test("Space Heater rated power is required only without real Power or Energy mappings", async () => {
+  const run = async (concept, ratedPower) => {
+    const panel = new Panel();
+    panel._context = { translations: { edit_mappings: "Edit mappings", device_information: "Device information", installation: "Installation", rated_power: "Rated power", rated_power_required: "Required to calculate Power and Energy when no real measurements are mapped.", name: "Name", vendor: "Vendor", model: "Model", save_mapping: "Save mapping", cancel: "Cancel" }, entities: [] };
+    panel._hass = { states: {}, language: "en", localize: () => undefined };
+    panel._view = { name: "edit" };
+    const concepts = concept ? [{ concept, label: concept, datatype: "number", unit: "W", cadence: "realtime" }] : [];
+    panel._detail = { id: "space-heater-device", type: "spaceHeater", label: "Space heater", properties: ratedPower === undefined ? {} : { ratedPowerW: ratedPower }, concepts, mappings: concept ? { [concept]: { configuration: { entityId: "sensor.real" } } } : {}, suggestions: {} };
+    const cancel = {}; const save = {}; let calls = 0; let body;
+    panel._frame = (_title, html) => { body = html; };
+    panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+    panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [{ dataset: { property: "ratedPowerW" }, value: ratedPower === undefined ? "" : String(ratedPower), type: "number" }] : [];
+    panel._call = async () => { calls += 1; return { properties: {} }; };
+    panel._renderEdit();
+    await save.onclick();
+    return { calls, body };
+  };
+
+  const missing = await run(undefined, undefined);
+  assert.equal(missing.calls, 0);
+  assert.match(missing.body, /rated_power_required|Required to calculate Power and Energy/);
+  assert.equal((await run("spaceHeater.power", undefined)).calls, 1);
+  assert.equal((await run("spaceHeater.energy", undefined)).calls, 1);
+  assert.equal((await run(undefined, 2000)).calls, 1);
+});
+
 test("Input Mapping conversions follow the unsaved Entity draft immediately", () => {
   const panel = new Panel();
   panel._context = { translations: {}, entities: [] };

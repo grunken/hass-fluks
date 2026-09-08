@@ -180,6 +180,7 @@
     "energy": "Energy",
     "installation": "Installation",
     "rated_power": "Rated power",
+    "rated_power_required": "Required to calculate Power and Energy when no real measurements are mapped.",
     "device_information": "Device information",
     "site_information": "Site information",
     "name": "Name",

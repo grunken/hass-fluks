@@ -1,7 +1,10 @@
 """Tests for realtime canonical Fact publishing."""
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from custom_components.fluks.observations import RealtimeObservationPublisher
 
@@ -21,6 +24,34 @@ def publisher(hass, api, send, store=None, entry_id="entry"):
     result = RealtimeObservationPublisher(hass, api, "site", entry_id, send)
     result._store = store or MemoryStore()
     return result
+
+
+def state_event(state, when):
+    return SimpleNamespace(data={"new_state": state}, time_fired=when)
+
+
+def space_heater_state_mapping(*, power=False, energy=False):
+    mappings = [{
+        "direction": "input",
+        "deviceId": "heater-internal",
+        "concept": "spaceHeater.state",
+        "configuration": {"entityId": "sensor.heater_state"},
+    }]
+    if power:
+        mappings.append({
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "spaceHeater.power",
+            "configuration": {"entityId": "sensor.real_power"},
+        })
+    if energy:
+        mappings.append({
+            "direction": "input",
+            "deviceId": "heater-internal",
+            "concept": "spaceHeater.energy",
+            "configuration": {"entityId": "sensor.real_energy"},
+        })
+    return mappings
 
 
 async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates(hass):
@@ -365,3 +396,182 @@ async def test_cumulative_streams_are_independent_and_unclassified_drop_is_froze
     }
     assert store.data["streams"]["device-one|site.importEnergy"]["lifetime"] == "10"
     send.assert_awaited_with({"deviceId": "device-one", "site.importEnergy": 10})
+
+
+async def test_space_heater_fallback_power_and_energy_use_elapsed_heating_time(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [{
+        "id": "heater-internal",
+        "deviceId": "heater-external",
+        "type": "spaceHeater",
+        "properties": {"ratedPowerW": 2000},
+    }]
+    api.list_mappings.return_value = space_heater_state_mapping()
+    hass.states.async_set("sensor.heater_state", "idle")
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with patch("custom_components.fluks.observations.dt_util.utcnow", return_value=start):
+        await observations.async_refresh()
+
+    heating = hass.states.get("sensor.heater_state").__class__(
+        "sensor.heater_state", "heating", {}
+    )
+    await observations._async_state_changed(
+        state_event(heating, start + timedelta(minutes=10)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 2000, None)]},
+    )
+    await observations._async_state_changed(
+        state_event(heating, start + timedelta(hours=2, minutes=40)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 2000, None)]},
+    )
+    idle = hass.states.get("sensor.heater_state").__class__(
+        "sensor.heater_state", "idle", {}
+    )
+    await observations._async_state_changed(
+        state_event(idle, start + timedelta(hours=3)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 2000, None)]},
+    )
+
+    derived = [
+        call.args[0]
+        for call in send.await_args_list
+        if "spaceHeater.power" in call.args[0]
+    ]
+    assert derived == [
+        {"deviceId": "heater-external", "spaceHeater.power": 0, "spaceHeater.energy": 0},
+        {"deviceId": "heater-external", "spaceHeater.power": 2000, "spaceHeater.energy": 0},
+        {"deviceId": "heater-external", "spaceHeater.power": 2000, "spaceHeater.energy": 5},
+        {"deviceId": "heater-external", "spaceHeater.power": 0, "spaceHeater.energy": 5.666666666666667},
+    ]
+
+
+async def test_space_heater_fallback_energy_persists_across_reload(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [{
+        "id": "heater-internal", "deviceId": "heater-external", "type": "spaceHeater",
+        "properties": {"ratedPowerW": 1000},
+    }]
+    api.list_mappings.return_value = space_heater_state_mapping()
+    hass.states.async_set("sensor.heater_state", "heating")
+    store = MemoryStore()
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    first_send = AsyncMock(return_value=True)
+    first = publisher(hass, api, first_send, store)
+    with patch("custom_components.fluks.observations.dt_util.utcnow", return_value=start):
+        await first.async_refresh()
+    state = hass.states.get("sensor.heater_state")
+    await first._async_state_changed(
+        state_event(state, start + timedelta(hours=1)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 1000, None)]},
+    )
+    await first.async_stop()
+
+    second_send = AsyncMock(return_value=True)
+    second = publisher(hass, api, second_send, store)
+    with patch(
+        "custom_components.fluks.observations.dt_util.utcnow",
+        return_value=start + timedelta(hours=3),
+    ):
+        await second.async_refresh()
+    assert second_send.await_args_list[-1].args[0] == {
+        "deviceId": "heater-external", "spaceHeater.power": 1000,
+        "spaceHeater.energy": 1,
+    }
+    await second._async_state_changed(
+        state_event(state, start + timedelta(hours=4)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 1000, None)]},
+    )
+    assert second_send.await_args_list[-1].args[0]["spaceHeater.energy"] == 2
+
+
+async def test_space_heater_fallback_restart_gap_to_idle_does_not_add_energy(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [{
+        "id": "heater-internal", "deviceId": "heater-external", "type": "spaceHeater",
+        "properties": {"ratedPowerW": 1000},
+    }]
+    api.list_mappings.return_value = space_heater_state_mapping()
+    hass.states.async_set("sensor.heater_state", "heating")
+    store = MemoryStore()
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    first = publisher(hass, api, AsyncMock(return_value=True), store)
+    with patch("custom_components.fluks.observations.dt_util.utcnow", return_value=start):
+        await first.async_refresh()
+    state = hass.states.get("sensor.heater_state")
+    await first._async_state_changed(
+        state_event(state, start + timedelta(hours=1)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 1000, None)]},
+    )
+    await first.async_stop()
+    hass.states.async_set("sensor.heater_state", "idle")
+
+    send = AsyncMock(return_value=True)
+    second = publisher(hass, api, send, store)
+    with patch(
+        "custom_components.fluks.observations.dt_util.utcnow",
+        return_value=start + timedelta(hours=8),
+    ):
+        await second.async_refresh()
+    assert send.await_args_list[-1].args[0] == {
+        "deviceId": "heater-external", "spaceHeater.power": 0,
+        "spaceHeater.energy": 1,
+    }
+
+
+async def test_real_space_heater_mappings_override_fallback_values(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [{
+        "id": "heater-internal", "deviceId": "heater-external", "type": "spaceHeater",
+        "properties": {"ratedPowerW": 2000},
+    }]
+    api.list_mappings.return_value = space_heater_state_mapping(power=True, energy=True)
+    hass.states.async_set("sensor.heater_state", "idle")
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+    state = hass.states.get("sensor.heater_state").__class__(
+        "sensor.heater_state", "heating", {}
+    )
+    await observations._async_state_changed(
+        state_event(state, datetime.now(timezone.utc)),
+        {"sensor.heater_state": []},
+        {},
+    )
+    assert not any("spaceHeater.power" in call.args[0] for call in send.await_args_list)
+    await observations._async_state_changed(
+        state_event(
+            hass.states.get("sensor.heater_state").__class__(
+                "sensor.real_power", "321", {}
+            ),
+            datetime.now(timezone.utc),
+        ),
+        {
+            "sensor.real_power": [("heater-external", "spaceHeater.power", False, None, None)],
+        },
+        {},
+    )
+    assert send.await_args_list[-1].args[0] == {
+        "deviceId": "heater-external", "spaceHeater.power": 321
+    }
+    await observations._async_state_changed(
+        state_event(
+            hass.states.get("sensor.heater_state").__class__(
+                "sensor.real_energy", "12.5", {}
+            ),
+            datetime.now(timezone.utc),
+        ),
+        {
+            "sensor.real_energy": [("heater-external", "spaceHeater.energy", False, None, None)],
+        },
+        {},
+    )
+    assert send.await_args_list[-1].args[0] == {
+        "deviceId": "heater-external", "spaceHeater.energy": 12.5
+    }
