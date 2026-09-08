@@ -88,19 +88,37 @@ test("editor exposes every documented requested-value transform as structured UI
   const editor = new Editor();
   editor.valueType = { datatype: "number", unit: "W" };
   const html = editor._transformEditor("value", []);
-  for (const transform of ["powerToCurrent", "nearest", "valueMap", "invert", "scale", "offset"]) {
+  for (const transform of ["powerToCurrent", "difference", "round", "clamp", "nearest", "valueMap", "invert", "scale", "offset"]) {
     assert.match(html, new RegExp(`value="${transform}"`));
   }
   assert.doesNotMatch(html, /textarea|JSON|YAML/);
 });
 
+test("reference transform exposes entity state and attribute selection", () => {
+  const editor = new Editor();
+  editor.valueType = { datatype: "number", unit: "°C" };
+  editor.referenceEntities = [{ entity_id: "climate.buffer", name: "Buffer", attributes: ["temperature", "current_temperature"] }];
+  editor._transformEditing = { field: "temperature", index: 0 };
+  const html = editor._transformEditor("temperature", [{ type: "difference", reference: { entityId: "climate.buffer", attribute: "current_temperature" } }]);
+  assert.match(html, /reference entity/);
+  assert.match(html, /climate\.buffer/);
+  assert.match(html, /reference value/);
+  assert.match(html, /current_temperature/);
+  assert.match(html, /entity state/);
+});
+
 test("transform availability follows canonical datatype, unit, and ordered pipeline", () => {
   const power = new Editor(); power.valueType = { datatype: "number", unit: "W" };
-  assert.deepEqual(power._availableTransforms([]), ["powerToCurrent", "invert", "scale", "offset", "nearest", "valueMap"]);
+  assert.deepEqual(power._availableTransforms([]), ["powerToCurrent", "difference", "round", "clamp", "invert", "scale", "offset", "nearest", "valueMap"]);
   const converted = [{ type: "powerToCurrent", phases: 3, voltage: 230 }];
   assert.deepEqual(power._pipeline(converted), { valid: true, datatype: "number", unit: "A" });
   assert.ok(!power._availableTransforms(converted).includes("powerToCurrent"));
   assert.ok(power._availableTransforms(converted).includes("nearest"));
+  assert.deepEqual(power._pipeline([
+    { type: "difference", reference: { entityId: "climate.buffer" } },
+    { type: "round", decimals: 0 },
+    { type: "clamp", min: -5, max: 5 },
+  ]), { valid: true, datatype: "number", unit: "W" });
 
   for (const concept of ["heatPump.temperature", "heatPump.tankTemperature", "waterHeater.temperature"]) {
     const temperature = new Editor(); temperature.controlName = concept; temperature.valueType = { datatype: "number", unit: "°C" };

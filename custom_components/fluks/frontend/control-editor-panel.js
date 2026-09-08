@@ -211,6 +211,14 @@ class FluksControlEditorPanel extends HTMLElement {
       ...Object.keys(this._hass.states).filter((entityId) => !registryIds.has(entityId)).map((entityId) => this._entityRecord(entityId)),
     ].filter(Boolean);
   }
+  _referenceEntities() {
+    if (!this._context?.entities) return [];
+    return this._allEntities().map((item) => ({
+      entity_id: item.id,
+      name: item.name,
+      attributes: Object.keys(this._hass?.states?.[item.id]?.attributes ?? {}).sort(),
+    }));
+  }
   _temperatureUnit(state, attribute) {
     const units = new Set(["°C", "°F", "K"]);
     for (const key of [`${attribute}_unit`, "temperature_unit", "unit_of_measurement"]) {
@@ -561,7 +569,8 @@ class FluksControlEditorPanel extends HTMLElement {
       "save_action", "choose_entity", "clear_selection", "entity", "value_source", "yes", "no",
       "control_value", "fixed_value", "fixed", "choose_entity_error", "fixed_value_error", "cancel",
       "choose_action_error", "required_field_error", "value_adjustments", "transform_order_help", "no_transforms",
-      "adjustment_type", "power_to_current", "nearest", "value_map", "invert", "scale", "offset",
+      "adjustment_type", "power_to_current", "difference", "round", "clamp", "nearest", "value_map", "invert", "scale", "offset",
+      "reference_entity", "reference_value", "decimals", "minimum", "maximum",
       "phases", "voltage", "allowed_values", "input_type", "output_type", "from_values", "to_values",
       "number_type", "text_type", "boolean_type", "null_type", "factor", "amount",
       "add_adjustment", "save_adjustment", "invalid_adjustment",
@@ -575,6 +584,7 @@ class FluksControlEditorPanel extends HTMLElement {
       "behavior_discharge", "behavior_discharge_choice", "behavior_discharge_description",
     ].map((key) => [key, this._t(key)]));
     editor.capabilities = this._controlCapabilities ?? [];
+    editor.referenceEntities = this._referenceEntities();
     editor.valueType = { datatype: control.datatype, unit: control.unit ?? null };
     editor.allowedModes = control.mappingModes ?? [];
     const persisted = (this._detail.output_mappings[control.concept] ?? []).map((mapping) => ({ mode: mapping.mode ?? null, actions: mapping.configuration?.actions ?? [] }));

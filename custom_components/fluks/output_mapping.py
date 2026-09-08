@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 import re
+from collections.abc import Callable
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 SERVICE_PATTERN = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
@@ -16,7 +18,12 @@ class OutputMappingValidationError(ValueError):
     """The output Mapping configuration is not structurally valid."""
 
 
-def apply_output_transforms(value: Any, transforms: list[dict[str, Any]]) -> Any:
+def apply_output_transforms(
+    value: Any,
+    transforms: list[dict[str, Any]],
+    *,
+    reference_resolver: Callable[[dict[str, Any]], Any] | None = None,
+) -> Any:
     """Apply a validated requested-value transform sequence in order."""
     current = value
     for transform in transforms:
@@ -27,6 +34,23 @@ def apply_output_transforms(value: Any, transforms: list[dict[str, Any]]) -> Any
             current *= transform["factor"]
         elif transform_type == "offset":
             current += transform["amount"]
+        elif transform_type == "difference":
+            if reference_resolver is None:
+                raise OutputMappingValidationError(
+                    "difference requires a Home Assistant reference"
+                )
+            reference = reference_resolver(transform["reference"])
+            if not _is_number(reference):
+                raise OutputMappingValidationError(
+                    "difference reference is not numeric"
+                )
+            current -= reference
+        elif transform_type == "round":
+            quantum = Decimal(1).scaleb(-transform["decimals"])
+            rounded = Decimal(str(current)).quantize(quantum, rounding=ROUND_HALF_UP)
+            current = int(rounded) if rounded == rounded.to_integral_value() else float(rounded)
+        elif transform_type == "clamp":
+            current = min(max(current, transform["min"]), transform["max"])
         elif transform_type == "powerToCurrent":
             current /= transform["phases"] * transform["voltage"]
         elif transform_type == "nearest":
@@ -71,6 +95,42 @@ def _validate_transform(transform: Any) -> dict[str, Any]:
         allowed_keys = {"type", "amount"}
         if not _is_number(transform.get("amount")):
             raise OutputMappingValidationError("offset requires a numeric amount")
+    elif transform_type == "difference":
+        allowed_keys = {"type", "reference"}
+        reference = transform.get("reference")
+        if (
+            not isinstance(reference, dict)
+            or set(reference) - {"entityId", "attribute"}
+            or not isinstance(reference.get("entityId"), str)
+            or not ENTITY_PATTERN.fullmatch(reference["entityId"])
+            or (
+                "attribute" in reference
+                and (
+                    not isinstance(reference["attribute"], str)
+                    or not reference["attribute"]
+                )
+            )
+        ):
+            raise OutputMappingValidationError(
+                "difference requires a Home Assistant entity reference"
+            )
+    elif transform_type == "round":
+        allowed_keys = {"type", "decimals"}
+        decimals = transform.get("decimals")
+        if not isinstance(decimals, int) or isinstance(decimals, bool) or not 0 <= decimals <= 12:
+            raise OutputMappingValidationError(
+                "round requires a non-negative decimal count"
+            )
+    elif transform_type == "clamp":
+        allowed_keys = {"type", "min", "max"}
+        if (
+            not _is_number(transform.get("min"))
+            or not _is_number(transform.get("max"))
+            or transform["min"] > transform["max"]
+        ):
+            raise OutputMappingValidationError(
+                "clamp requires an ordered numeric range"
+            )
     elif transform_type == "powerToCurrent":
         allowed_keys = {"type", "phases", "voltage"}
         phases = transform.get("phases")

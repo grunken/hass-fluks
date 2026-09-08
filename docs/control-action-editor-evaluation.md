@@ -74,7 +74,8 @@ importing the private automation editor.
 
 Bindings are typed objects. There is no `$controlValue`, YAML, template, or
 arbitrary expression. Requested values may contain ordered, constrained
-transforms (`invert`, `scale`, `offset`, `powerToCurrent`, `nearest`, and typed
+transforms (`invert`, `scale`, `offset`, `difference` from a live Home Assistant
+state/attribute, `round`, `clamp`, `powerToCurrent`, `nearest`, and typed
 `valueMap`) without introducing an expression language.
 
 ## Canonical gap

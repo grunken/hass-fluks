@@ -142,6 +142,18 @@ class RuntimeOutputExecutor:
             value = state.state
         return self._numeric(value)
 
+    def _output_reference(self, reference: dict[str, Any]) -> int | float | None:
+        """Read a numeric state or attribute used by an output transform."""
+        state = self._hass.states.get(reference["entityId"])
+        if state is None:
+            return None
+        value = (
+            state.attributes.get(reference["attribute"])
+            if "attribute" in reference
+            else state.state
+        )
+        return self._numeric(value)
+
     @staticmethod
     def _temperature_key(device: dict[str, Any], concept: str) -> str:
         return f"{device['deviceId']}|{concept}"
@@ -254,7 +266,11 @@ class RuntimeOutputExecutor:
                 await self._async_save_temperature_ownership()
                 return
             if self._same_numeric(current, ownership["applied"]):
-                await self._async_execute(configuration, ownership["previous"])
+                await self._async_execute(
+                    configuration,
+                    ownership["previous"],
+                    apply_transforms=False,
+                )
             self._temperature_ownership.pop(ownership_key, None)
             await self._async_save_temperature_ownership()
             return
@@ -293,7 +309,11 @@ class RuntimeOutputExecutor:
         )
 
     async def _async_execute(
-        self, configuration: dict[str, Any], requested_value: Any
+        self,
+        configuration: dict[str, Any],
+        requested_value: Any,
+        *,
+        apply_transforms: bool = True,
     ) -> None:
         """Execute service calls sequentially so configured order is preserved."""
         for action in configuration["actions"]:
@@ -301,9 +321,13 @@ class RuntimeOutputExecutor:
             for field, source in action.get("data", {}).items():
                 if source["kind"] == "literal":
                     data[field] = source["value"]
+                elif not apply_transforms:
+                    data[field] = requested_value
                 else:
                     data[field] = apply_output_transforms(
-                        requested_value, source.get("transforms", [])
+                        requested_value,
+                        source.get("transforms", []),
+                        reference_resolver=self._output_reference,
                     )
             domain, service = action["service"].split(".", 1)
             await self._hass.services.async_call(

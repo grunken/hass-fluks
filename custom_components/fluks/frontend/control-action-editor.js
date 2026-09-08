@@ -11,9 +11,10 @@ export class FluksControlActionEditor extends HTMLElement {
     this._baseline = []; this._working = []; this.capabilities = [];
     this._behaviorMode = false; this._baselineBehaviors = []; this._workingBehaviors = [];
     this.allowedModes = []; this._activeMode = null; this._addingBehavior = false;
+    this.referenceEntities = [];
     this.valueType = { datatype: "number", unit: null };
     this.controlName = "Control"; this.strings = {}; this._editing = null;
-    this._dialogDraft = null; this._transformEditing = null;
+    this._dialogDraft = null; this._transformEditing = null; this._transformTypeDraft = null;
   }
   set actions(value) { this._baseline = clone(value ?? []); this._working = clone(value ?? []); this.render(); }
   get actions() { return clone(this._working); }
@@ -87,9 +88,10 @@ export class FluksControlActionEditor extends HTMLElement {
   _pipeline(transforms, count = transforms.length) {
     let datatype = this.valueType?.datatype; let unit = this.valueType?.unit ?? null;
     for (let index = 0; index < count; index += 1) {
-      const transform = transforms[index]; const numeric = ["invert", "scale", "offset", "nearest"];
+      const transform = transforms[index]; const numeric = ["difference", "round", "clamp", "invert", "scale", "offset", "nearest"];
       if (![...numeric, "powerToCurrent", "valueMap"].includes(transform.type)) return { valid: false, index, transform, datatype, unit };
       if (numeric.includes(transform.type) && datatype !== "number") return { valid: false, index, transform, datatype, unit };
+      if (transform.type === "difference" && (!transform.reference?.entityId || typeof transform.reference.entityId !== "string")) return { valid: false, index, transform, datatype, unit };
       if (transform.type === "powerToCurrent") {
         if (datatype !== "number" || unit !== "W") return { valid: false, index, transform, datatype, unit };
         unit = "A";
@@ -104,7 +106,7 @@ export class FluksControlActionEditor extends HTMLElement {
   _availableTransforms(transforms, editingIndex = null) {
     const state = this._pipeline(transforms, editingIndex ?? transforms.length); if (!state.valid) return [];
     const available = ["number", "string", "boolean"].includes(state.datatype) ? ["valueMap"] : [];
-    if (state.datatype === "number") available.unshift("invert", "scale", "offset", "nearest");
+    if (state.datatype === "number") available.unshift("difference", "round", "clamp", "invert", "scale", "offset", "nearest");
     if (state.datatype === "number" && state.unit === "W") available.unshift("powerToCurrent");
     return available;
   }
@@ -113,19 +115,27 @@ export class FluksControlActionEditor extends HTMLElement {
     for (const action of actions) for (const binding of Object.values(action.data ?? {})) if (binding?.kind === "requestedValue") { const result = this._pipeline(binding.transforms ?? []); if (!result.valid) return this._pipelineMessage(result); }
     return "";
   }
-  _transformSummary(transform) { if (transform.type === "powerToCurrent") return `${this._t("power_to_current")} · ${transform.phases} × ${transform.voltage} V`; if (transform.type === "nearest") return `${this._t("nearest")} · ${transform.values.join(", ")}`; if (transform.type === "valueMap") return `${this._t("value_map")} · ${transform.values.length}`; if (transform.type === "scale") return `${this._t("scale")} · × ${transform.factor}`; if (transform.type === "offset") return `${this._t("offset")} · ${transform.amount}`; return this._t("invert"); }
+  _transformSummary(transform) { if (transform.type === "powerToCurrent") return `${this._t("power_to_current")} · ${transform.phases} × ${transform.voltage} V`; if (transform.type === "difference") return `${this._t("difference")} · ${transform.reference?.entityId ?? ""}`; if (transform.type === "round") return `${this._t("round")} · ${transform.decimals}`; if (transform.type === "clamp") return `${this._t("clamp")} · ${transform.min}…${transform.max}`; if (transform.type === "nearest") return `${this._t("nearest")} · ${transform.values.join(", ")}`; if (transform.type === "valueMap") return `${this._t("value_map")} · ${transform.values.length}`; if (transform.type === "scale") return `${this._t("scale")} · × ${transform.factor}`; if (transform.type === "offset") return `${this._t("offset")} · ${transform.amount}`; return this._t("invert"); }
   _transformEditor(fieldId, transforms) {
     const editIndex = this._transformEditing?.field === fieldId ? this._transformEditing.index : null;
     const editing = editIndex === null ? null : transforms[editIndex];
     const available = this._availableTransforms(transforms, editIndex);
-    const selected = editing?.type ?? available[0];
+    const selected = this._transformTypeDraft?.field === fieldId ? this._transformTypeDraft.type : editing?.type ?? available[0];
     const firstMap = editing?.values?.[0]; const fromType = firstMap === undefined ? "number" : typeof firstMap.from; const toType = firstMap?.to === null ? "null" : firstMap === undefined ? "number" : typeof firstMap.to;
-    const labels = { powerToCurrent: "power_to_current", nearest: "nearest", valueMap: "value_map", invert: "invert", scale: "scale", offset: "offset" };
+    const labels = { powerToCurrent: "power_to_current", difference: "difference", round: "round", clamp: "clamp", nearest: "nearest", valueMap: "value_map", invert: "invert", scale: "scale", offset: "offset" };
     const options = [...new Set([...(selected ? [selected] : []), ...available])].map((type) => `<option value="${type}" ${selected === type ? "selected" : ""}>${esc(this._t(labels[type]))}</option>`).join("");
     const typeOptions = (selectedType, prefix) => ["number", "string", "boolean", ...(prefix === "to" ? ["null"] : [])].map((type) => `<option value="${type}" ${selectedType === type ? "selected" : ""}>${esc(this._t(`${type === "string" ? "text" : type}_type`))}</option>`).join("");
     const rows = transforms.map((transform, index) => `<li><span class="order">${index + 1}</span><span class="transform-copy">${esc(this._transformSummary(transform))}</span><span class="row-actions"><button type="button" data-transform-command="up" data-field-id="${esc(fieldId)}" data-index="${index}" ${index === 0 ? "disabled" : ""}>↑</button><button type="button" data-transform-command="down" data-field-id="${esc(fieldId)}" data-index="${index}" ${index === transforms.length - 1 ? "disabled" : ""}>↓</button><button type="button" data-transform-command="edit" data-field-id="${esc(fieldId)}" data-index="${index}">${esc(this._t("edit"))}</button><button type="button" class="danger" data-transform-command="remove" data-field-id="${esc(fieldId)}" data-index="${index}">${esc(this._t("remove"))}</button></span></li>`).join("");
     const pipeline = this._pipeline(transforms); const pipelineError = pipeline.valid ? "" : this._pipelineMessage(pipeline);
-    return `<section class="transforms"><h4>${esc(this._t("value_adjustments"))}</h4><p class="help">${esc(this._t("transform_order_help"))}</p>${rows ? `<ol>${rows}</ol>` : `<p>${esc(this._t("no_transforms"))}</p>`}${pipelineError ? `<p class="error" role="alert">${esc(pipelineError)}</p>` : ""}${available.length || editing ? `<label>${esc(this._t("adjustment_type"))}<select data-transform-type="${esc(fieldId)}">${options}</select></label><div class="transform-parameters"><select data-transform-from-type>${typeOptions(fromType, "from")}</select><input data-transform-input="first" value="${esc(editing?.phases ?? editing?.factor ?? editing?.amount ?? editing?.values?.map((v) => v.from ?? v).join(", ") ?? "")}" placeholder="${esc(this._t("from_values"))}"><select data-transform-to-type>${typeOptions(toType, "to")}</select><input data-transform-input="second" value="${esc(editing?.voltage ?? editing?.values?.map((v) => v.to).join(", ") ?? "")}" placeholder="${esc(this._t("to_values"))}"></div><button type="button" data-transform-command="commit" data-field-id="${esc(fieldId)}">${esc(this._t(editing ? "save_adjustment" : "add_adjustment"))}</button>` : ""}</section>`;
+    const references = [...this.referenceEntities];
+    if (editing?.reference?.entityId && !references.some((item) => item.entity_id === editing.reference.entityId)) references.push({ entity_id: editing.reference.entityId, name: editing.reference.entityId, attributes: [] });
+    const selectedReferenceId = editing?.reference?.entityId ?? references[0]?.entity_id ?? "";
+    const referenceEntity = references.find((item) => item.entity_id === selectedReferenceId);
+    const referenceAttributes = referenceEntity?.attributes ?? [];
+    const referenceFields = selected === "difference"
+      ? `<label>${esc(this._t("reference_entity"))}<select data-transform-reference-entity>${references.map((item) => `<option value="${esc(item.entity_id)}" ${item.entity_id === selectedReferenceId ? "selected" : ""}>${esc(item.name)} · ${esc(item.entity_id)}</option>`).join("")}</select></label><label>${esc(this._t("reference_value"))}<select data-transform-reference-attribute><option value="" ${!editing?.reference?.attribute ? "selected" : ""}>${esc(this._t("entity_state"))}</option>${referenceAttributes.map((attribute) => `<option value="${esc(attribute)}" ${attribute === editing?.reference?.attribute ? "selected" : ""}>${esc(attribute)}</option>`).join("")}</select></label>`
+      : `<div class="transform-parameters"><select data-transform-from-type>${typeOptions(fromType, "from")}</select><input data-transform-input="first" value="${esc(editing?.decimals ?? editing?.min ?? editing?.phases ?? editing?.factor ?? editing?.amount ?? editing?.values?.map((v) => v.from ?? v).join(", ") ?? "")}" placeholder="${esc(this._t(selected === "round" ? "decimals" : selected === "clamp" ? "minimum" : "from_values"))}"><select data-transform-to-type>${typeOptions(toType, "to")}</select><input data-transform-input="second" value="${esc(editing?.max ?? editing?.voltage ?? editing?.values?.map((v) => v.to).join(", ") ?? "")}" placeholder="${esc(this._t(selected === "clamp" ? "maximum" : "to_values"))}"></div>`;
+    return `<section class="transforms"><h4>${esc(this._t("value_adjustments"))}</h4><p class="help">${esc(this._t("transform_order_help"))}</p>${rows ? `<ol>${rows}</ol>` : `<p>${esc(this._t("no_transforms"))}</p>`}${pipelineError ? `<p class="error" role="alert">${esc(pipelineError)}</p>` : ""}${available.length || editing ? `<label>${esc(this._t("adjustment_type"))}<select data-transform-type="${esc(fieldId)}">${options}</select></label>${referenceFields}<button type="button" data-transform-command="commit" data-field-id="${esc(fieldId)}">${esc(this._t(editing ? "save_adjustment" : "add_adjustment"))}</button>` : ""}</section>`;
   }
   _wire() {
     this.shadowRoot.querySelectorAll("button[data-command]").forEach((button) => button.onclick = () => this._command(button.dataset.command, Number(button.dataset.index), button.dataset.mode));
@@ -135,25 +145,84 @@ export class FluksControlActionEditor extends HTMLElement {
     const clearEntity = this.shadowRoot.querySelector("[data-clear-entity]"); if (clearEntity) clearEntity.onclick = () => { this._dialogDraft = { type: "serviceCall", service: "", target: { entityId: "" }, data: {} }; this._refreshDialog(); };
     [["#action-search", "action"], ["#entity-search", "entity"]].forEach(([selector, kind]) => { const input = this.shadowRoot.querySelector(selector); if (input) input.oninput = () => this._filterChoices(kind, input.value); });
     this.shadowRoot.querySelectorAll("[data-source]").forEach((node) => node.onchange = () => { this._captureFields(); const id = node.dataset.source; if (node.value === "omit") delete this._dialogDraft.data[id]; else this._dialogDraft.data[id] = { kind: node.value }; this._refreshDialog(); });
+    this.shadowRoot.querySelectorAll("[data-transform-type]").forEach((node) => node.onchange = () => { this._transformTypeDraft = { field: node.dataset.transformType, type: node.value }; this._refreshDialog(); });
+    this.shadowRoot.querySelectorAll("[data-transform-reference-entity]").forEach((node) => node.onchange = () => {
+      const entity = this.referenceEntities.find((item) => item.entity_id === node.value);
+      const attributes = entity?.attributes ?? [];
+      const select = node.closest(".transforms")?.querySelector("[data-transform-reference-attribute]");
+      if (select) select.innerHTML = `<option value="">${esc(this._t("entity_state"))}</option>${attributes.map((attribute) => `<option value="${esc(attribute)}">${esc(attribute)}</option>`).join("")}`;
+    });
     this.shadowRoot.querySelectorAll("[data-transform-command]").forEach((node) => node.onclick = () => this._transformCommand(node));
   }
   _refreshDialog() { this.render(); this.shadowRoot.querySelector("#action-dialog").showModal(); }
   _filterChoices(kind, query) { const normalized = searchText(query); this.shadowRoot.querySelectorAll(`[data-choices="${kind}"] .choice`).forEach((node) => { node.hidden = normalized !== "" && !searchText(node.textContent).includes(normalized); }); }
   _captureFields() { if (!this._dialogDraft) return; this.shadowRoot.querySelectorAll("[data-literal]").forEach((node) => { const field = this._selectedFields().find((item) => item.id === node.dataset.literal); if (!field) return; let value = node.value; if (field.selector.type === "number") value = Number(value); else if (field.selector.type === "boolean") value = value === "true"; else if (field.selector.type === "select" && value) value = JSON.parse(value); this._dialogDraft.data[field.id] = { kind: "literal", value }; }); }
   _selectedFields() { return this._entity(this._cap(this._dialogDraft?.service), this._dialogDraft?.target?.entityId)?.fields ?? []; }
-  _transformCommand(node) { this._captureFields(); const field = node.dataset.fieldId; const transforms = this._dialogDraft.data[field].transforms ?? []; const index = Number(node.dataset.index); const command = node.dataset.transformCommand; if (command === "remove") transforms.splice(index, 1); if (["up", "down"].includes(command)) { const target = command === "up" ? index - 1 : index + 1; const [item] = transforms.splice(index, 1); transforms.splice(target, 0, item); } if (command === "edit") this._transformEditing = { field, index }; if (command === "commit") { try { const transform = this._readTransform(field); if (this._transformEditing?.field === field) transforms[this._transformEditing.index] = transform; else transforms.push(transform); this._transformEditing = null; } catch (_) { this.shadowRoot.querySelector("#action-error").textContent = this._t("invalid_adjustment"); return; } } this._dialogDraft.data[field].transforms = transforms; this._refreshDialog(); }
-  _readTransform(field) { const root = this.shadowRoot.querySelector(`[data-field="${CSS.escape(field)}"]`); const type = root.querySelector("[data-transform-type]").value; const inputs = root.querySelectorAll("[data-transform-input]"); const first = inputs[0]?.value.trim() ?? ""; const second = inputs[1]?.value.trim() ?? ""; const parse = (raw, datatype) => raw.split(",").map((value) => value.trim()).filter(Boolean).map((value) => datatype === "number" ? Number(value) : datatype === "boolean" ? value.toLowerCase() === "true" : datatype === "null" ? null : value); if (type === "powerToCurrent") { const phases = Number(first); const voltage = Number(second); if (!Number.isInteger(phases) || phases < 1 || !Number.isFinite(voltage) || voltage <= 0) throw new Error(); return { type, phases, voltage }; } if (type === "nearest") { const values = parse(first, "number"); if (!values.length || values.some((v) => !Number.isFinite(v))) throw new Error(); return { type, values }; } if (type === "valueMap") { const fromType = root.querySelector("[data-transform-from-type]").value; const toType = root.querySelector("[data-transform-to-type]").value; const from = parse(first, fromType); const to = toType === "null" ? from.map(() => null) : parse(second, toType); if (!from.length || from.length !== to.length || (fromType === "boolean" && first.split(",").some((v) => !["true", "false"].includes(v.trim().toLowerCase())))) throw new Error(); return { type, values: from.map((value, i) => ({ from: value, to: to[i] })) }; } if (type === "scale") { const factor = Number(first); if (!Number.isFinite(factor)) throw new Error(); return { type, factor }; } if (type === "offset") { const amount = Number(first); if (!Number.isFinite(amount)) throw new Error(); return { type, amount }; } return { type: "invert" }; }
+  _transformCommand(node) { this._captureFields(); const field = node.dataset.fieldId; const transforms = this._dialogDraft.data[field].transforms ?? []; const index = Number(node.dataset.index); const command = node.dataset.transformCommand; if (command === "remove") transforms.splice(index, 1); if (["up", "down"].includes(command)) { const target = command === "up" ? index - 1 : index + 1; const [item] = transforms.splice(index, 1); transforms.splice(target, 0, item); } if (command === "edit") this._transformEditing = { field, index }; if (command === "commit") { try { const transform = this._readTransform(field); if (this._transformEditing?.field === field) transforms[this._transformEditing.index] = transform; else transforms.push(transform); this._transformEditing = null; this._transformTypeDraft = null; } catch (_) { this.shadowRoot.querySelector("#action-error").textContent = this._t("invalid_adjustment"); return; } } this._dialogDraft.data[field].transforms = transforms; this._refreshDialog(); }
+  _readTransform(field) {
+    const root = this.shadowRoot.querySelector(`[data-field="${CSS.escape(field)}"]`);
+    const type = root.querySelector("[data-transform-type]").value;
+    const inputs = root.querySelectorAll("[data-transform-input]");
+    const first = inputs[0]?.value.trim() ?? "";
+    const second = inputs[1]?.value.trim() ?? "";
+    const parse = (raw, datatype) => raw.split(",").map((value) => value.trim()).filter(Boolean).map((value) => datatype === "number" ? Number(value) : datatype === "boolean" ? value.toLowerCase() === "true" : datatype === "null" ? null : value);
+    if (type === "difference") {
+      const entityId = root.querySelector("[data-transform-reference-entity]")?.value;
+      const attribute = root.querySelector("[data-transform-reference-attribute]")?.value;
+      if (!entityId) throw new Error();
+      return { type, reference: attribute ? { entityId, attribute } : { entityId } };
+    }
+    if (type === "round") {
+      const decimals = Number(first);
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 12) throw new Error();
+      return { type, decimals };
+    }
+    if (type === "clamp") {
+      const minimum = Number(first); const maximum = Number(second);
+      if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum > maximum) throw new Error();
+      return { type, min: minimum, max: maximum };
+    }
+    if (type === "powerToCurrent") {
+      const phases = Number(first); const voltage = Number(second);
+      if (!Number.isInteger(phases) || phases < 1 || !Number.isFinite(voltage) || voltage <= 0) throw new Error();
+      return { type, phases, voltage };
+    }
+    if (type === "nearest") {
+      const values = parse(first, "number");
+      if (!values.length || values.some((value) => !Number.isFinite(value))) throw new Error();
+      return { type, values };
+    }
+    if (type === "valueMap") {
+      const fromType = root.querySelector("[data-transform-from-type]").value;
+      const toType = root.querySelector("[data-transform-to-type]").value;
+      const from = parse(first, fromType);
+      const to = toType === "null" ? from.map(() => null) : parse(second, toType);
+      if (!from.length || from.length !== to.length || (fromType === "boolean" && first.split(",").some((value) => !["true", "false"].includes(value.trim().toLowerCase())))) throw new Error();
+      return { type, values: from.map((value, index) => ({ from: value, to: to[index] })) };
+    }
+    if (type === "scale") {
+      const factor = Number(first);
+      if (!Number.isFinite(factor)) throw new Error();
+      return { type, factor };
+    }
+    if (type === "offset") {
+      const amount = Number(first);
+      if (!Number.isFinite(amount)) throw new Error();
+      return { type, amount };
+    }
+    return { type: "invert" };
+  }
   _command(command, index, modeKey) {
     const mode = this._behaviorMode ? (modeKey || null) : null;
     const actions = this._behaviorMode ? this._actionsFor(mode) : this._working;
     if (["up", "down"].includes(command)) { const target = command === "up" ? index - 1 : index + 1; const [action] = actions.splice(index, 1); actions.splice(target, 0, action); this.render(); return; }
     if (command === "remove") { actions.splice(index, 1); this.render(); return; }
-    if (["add", "edit"].includes(command)) { this._activeMode = mode; this._editing = command === "edit" ? index : null; this._dialogDraft = clone(this._editing === null ? { type: "serviceCall", service: "", target: { entityId: "" }, data: {} } : actions[this._editing]); this.render(); this.shadowRoot.querySelector("#action-dialog").showModal(); return; }
+    if (["add", "edit"].includes(command)) { this._activeMode = mode; this._editing = command === "edit" ? index : null; this._transformEditing = null; this._transformTypeDraft = null; this._dialogDraft = clone(this._editing === null ? { type: "serviceCall", service: "", target: { entityId: "" }, data: {} } : actions[this._editing]); this.render(); this.shadowRoot.querySelector("#action-dialog").showModal(); return; }
     if (command === "add-behavior") { this._addingBehavior = true; this.render(); this.shadowRoot.querySelector("#behavior-dialog").showModal(); return; }
     if (command === "cancel-behavior") { this._addingBehavior = false; this.render(); return; }
     if (command === "select-behavior") { if (mode) this._workingBehaviors.push({ mode, actions: [] }); this._addingBehavior = false; this.render(); return; }
     if (command === "remove-behavior") { this._workingBehaviors = this._workingBehaviors.filter((item) => item.mode !== mode); this.render(); return; }
-    if (command === "close-dialog") { this._dialogDraft = null; this.shadowRoot.querySelector("#action-dialog").close(); return; }
+    if (command === "close-dialog") { this._dialogDraft = null; this._transformEditing = null; this._transformTypeDraft = null; this.shadowRoot.querySelector("#action-dialog").close(); return; }
     if (command === "commit-action") return this._commitAction();
     if (command === "cancel") { if (this._behaviorMode) this._workingBehaviors = clone(this._baselineBehaviors); else this._working = clone(this._baseline); this._saveError = ""; this.render(); this.dispatchEvent(new CustomEvent("control-cancelled")); return; }
     if (command === "save") { this._saveError = this._configurationPipelineError(); if (this._saveError) { this.render(); return; } const detail = this._behaviorMode ? { behaviors: this._workingBehaviors.filter((item) => item.actions.length).map((item) => ({ mode: item.mode, configuration: { version: 1, actions: clone(item.actions) } })) } : { configuration: this._working.length ? { version: 1, actions: clone(this._working) } : null }; this.dispatchEvent(new CustomEvent("control-saved", { detail })); }

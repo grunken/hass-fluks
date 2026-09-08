@@ -73,6 +73,21 @@ test("production panel passes discovered actions and compatible entities to actu
   assert.doesNotMatch(rendered, /selectOption|setNumber|water heater temperature/i);
 });
 
+test("production Controls path passes global reference entities and attributes", () => {
+  const panel = new Panel();
+  panel._context = {
+    translations: {},
+    entities: [{ entity_id: "climate.buffer", name: "Buffer" }],
+  };
+  panel._hass = { localize: () => undefined, states: { "climate.buffer": { attributes: { temperature: 35.2, current_temperature: 34.8 } } } };
+  panel._view = { name: "control", deviceId: "device-1", concept: "heatPump.temperature" };
+  panel._detail = { id: "device-1", type_name: "Heat pump", controls: [{ concept: "heatPump.temperature", label: "Temperature", datatype: "number", unit: "°C" }], output_mappings: {} };
+  let editor;
+  panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
+  panel._renderControl();
+  assert.deepEqual(editor.referenceEntities, [{ entity_id: "climate.buffer", name: "Buffer", attributes: ["current_temperature", "temperature"] }]);
+});
+
 test("production control path groups backend mode mappings into behavior sections", () => {
   const panel = new Panel(); panel._context = { translations: {} };
   panel._view = { name: "control", deviceId: "device-1", concept: "battery.power" };

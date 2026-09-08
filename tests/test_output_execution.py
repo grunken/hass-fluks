@@ -171,6 +171,71 @@ async def test_temperature_target_persists_previous_and_actual_applied_value(has
     }}}
 
 
+async def test_temperature_release_restores_native_previous_without_reapplying_transforms(hass):
+    store = MemoryStore()
+    mapping = temperature_mapping()
+    mapping["configuration"]["actions"][0]["data"]["temperature"]["transforms"] = [
+        {"type": "difference", "reference": {"entityId": "climate.reference", "attribute": "temperature"}},
+        {"type": "round", "decimals": 0},
+        {"type": "clamp", "min": -5, "max": 5},
+    ]
+    api = temperature_api(mapping)
+    calls = []
+
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": call.data["temperature"]})
+
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 0})
+    hass.states.async_set("climate.reference", "heat", {"temperature": 35.2})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        temperature_decision(value="38.2"),
+    ]})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        temperature_decision(value=None, mode="release"),
+    ]})
+
+    assert calls == [3, 0]
+    assert store.data == {"controls": {}}
+
+
+async def test_missing_output_reference_does_not_execute_action(hass):
+    mapping = temperature_mapping()
+    mapping["configuration"]["actions"][0]["data"]["temperature"]["transforms"] = [
+        {"type": "difference", "reference": {"entityId": "climate.missing"}},
+    ]
+    api = temperature_api(mapping)
+    calls = []
+    hass.services.async_register("climate", "set_temperature", lambda call: calls.append(call))
+    hass.states.async_set("climate.zone", "heat", {"temperature": 21})
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({
+        "type": "decision.snapshot", "decisions": [temperature_decision()],
+    })
+    assert calls == []
+
+
+async def test_output_reference_reads_entity_state(hass):
+    mapping = temperature_mapping()
+    mapping["configuration"]["actions"][0]["data"]["temperature"]["transforms"] = [
+        {"type": "difference", "reference": {"entityId": "sensor.reference"}},
+    ]
+    api = temperature_api(mapping)
+    calls = []
+    async def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": call.data["temperature"]})
+    hass.services.async_register("climate", "set_temperature", apply)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 0})
+    hass.states.async_set("sensor.reference", "35.2", {})
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({
+        "type": "decision.snapshot", "decisions": [temperature_decision(value="38.2")],
+    })
+    assert calls == [3.0]
+
+
 async def test_temperature_release_restores_matching_applied_value_and_clears_state(hass):
     store = MemoryStore()
     api = temperature_api(temperature_mapping())

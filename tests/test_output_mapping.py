@@ -17,6 +17,31 @@ def test_requested_value_transforms_execute_in_persisted_order():
     ]) == "ten"
 
 
+def test_reference_round_and_clamp_transforms_are_generic_and_ordered():
+    transforms = [
+        {"type": "difference", "reference": {"entityId": "climate.buffer", "attribute": "temperature"}},
+        {"type": "round", "decimals": 0},
+        {"type": "clamp", "min": -5, "max": 5},
+    ]
+    assert apply_output_transforms(
+        38.2,
+        transforms,
+        reference_resolver=lambda reference: 35.2,
+    ) == 3
+    assert validate_output_configuration({
+        "version": 1,
+        "actions": [action({"kind": "requestedValue", "transforms": transforms})],
+    })["actions"][0]["data"]["value"]["transforms"] == transforms
+
+
+def test_missing_reference_fails_safely():
+    with pytest.raises(OutputMappingValidationError):
+        apply_output_transforms(
+            38.2,
+            [{"type": "difference", "reference": {"entityId": "climate.buffer"}}],
+        )
+
+
 def action(binding, *, service="number.set_value", parameter="value"):
     return {
         "type": "serviceCall",
@@ -102,6 +127,9 @@ def test_transform_configuration_does_not_change_the_canonical_control_value():
             "values": [{"from": 1, "to": "on"}, {"from": 2, "to": False}],
         },
         {"type": "unknown"},
+        {"type": "round", "decimals": -1},
+        {"type": "clamp", "min": 2, "max": 1},
+        {"type": "difference", "reference": {"entityId": "not-an-entity"}},
     ],
 )
 def test_invalid_transform_parameters_are_rejected(transform):
