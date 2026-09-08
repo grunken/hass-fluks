@@ -145,7 +145,7 @@
     "concept_electricVehicle.dischargeEnergy": "Afladet energi",
     "concept_heatPump.power": "Effekt",
     "concept_heatPump.state": "Driftstilstand",
-    "concept_heatPump.bufferTemperature": "Buffertemperatur",
+    "concept_heatPump.temperature": "Temperatur",
     "concept_heatPump.tankTemperature": "Beholdertemperatur",
     "concept_heatPump.energy": "Energi",
     "concept_heatPump.bufferEnergy": "Bufferenergi",

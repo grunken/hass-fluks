@@ -145,7 +145,7 @@
     "concept_electricVehicle.dischargeEnergy": "Discharged energy",
     "concept_heatPump.power": "Power",
     "concept_heatPump.state": "Operating state",
-    "concept_heatPump.bufferTemperature": "Buffer temperature",
+    "concept_heatPump.temperature": "Temperature",
     "concept_heatPump.tankTemperature": "Tank temperature",
     "concept_heatPump.energy": "Energy",
     "concept_heatPump.bufferEnergy": "Buffer energy",

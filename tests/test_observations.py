@@ -136,7 +136,7 @@ async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
         {
             "direction": "input",
             "deviceId": "heater-internal",
-            "concept": "heatPump.bufferTemperature",
+            "concept": "heatPump.temperature",
             "configuration": {
                 "entityId": "climate.buffer",
                 "attribute": "current_temperature",
@@ -148,7 +148,7 @@ async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
         "type": "heatPump",
         "concepts": [
             {
-                "concept": "heatPump.bufferTemperature",
+                "concept": "heatPump.temperature",
                 "datatype": "number",
                 "unit": "°C",
             }
@@ -167,7 +167,7 @@ async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
 
     assert [call.args[0] for call in send.await_args_list] == [
         {"deviceId": "heater-external", "heatPump.state": "heat"},
-        {"deviceId": "heater-external", "heatPump.bufferTemperature": "56 °C"},
+        {"deviceId": "heater-external", "heatPump.temperature": "56 °C"},
     ]
 
 
@@ -181,7 +181,7 @@ async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
         {
             "direction": "input",
             "deviceId": "heater-internal",
-            "concept": "heatPump.bufferTemperature",
+            "concept": "heatPump.temperature",
             "configuration": {
                 "entityId": "climate.buffer",
                 "attribute": "current_temperature",
@@ -215,7 +215,7 @@ async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
     api.get_device_type_catalog.return_value = [{
         "type": "heatPump",
         "concepts": [
-            {"concept": "heatPump.bufferTemperature", "datatype": "number", "unit": "°C"},
+            {"concept": "heatPump.temperature", "datatype": "number", "unit": "°C"},
             {"concept": "heatPump.tankTemperature", "datatype": "number", "unit": "°C"},
             {"concept": "heatPump.power", "datatype": "number", "unit": "W"},
         ],
@@ -242,7 +242,7 @@ async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
     await hass.async_block_till_done()
 
     assert [call.args[0] for call in send.await_args_list] == [
-        {"deviceId": "heater-external", "heatPump.bufferTemperature": "20 °C"},
+        {"deviceId": "heater-external", "heatPump.temperature": "20 °C"},
         {"deviceId": "heater-external", "spaceHeater.temperature": 68},
         {"deviceId": "heater-external", "heatPump.tankTemperature": 68},
         {"deviceId": "heater-external", "heatPump.power": 68},
@@ -256,19 +256,19 @@ async def test_non_numeric_temperature_attribute_keeps_text_without_unit(hass):
     api.list_mappings.return_value = [{
         "direction": "input",
         "deviceId": "heater",
-        "concept": "heatPump.bufferTemperature",
+        "concept": "heatPump.temperature",
         "configuration": {"entityId": "climate.buffer", "attribute": "hvac_action"},
     }]
     api.get_device_type_catalog.return_value = [{
         "type": "heatPump",
-        "concepts": [{"concept": "heatPump.bufferTemperature", "datatype": "number", "unit": "°C"}],
+        "concepts": [{"concept": "heatPump.temperature", "datatype": "number", "unit": "°C"}],
     }]
     send = AsyncMock(return_value=True)
     observations = publisher(hass, api, send)
     await observations.async_refresh()
     hass.states.async_set("climate.buffer", "heat", {"hvac_action": "heating"})
     await hass.async_block_till_done()
-    send.assert_awaited_once_with({"deviceId": "heater", "heatPump.bufferTemperature": "heating"})
+    send.assert_awaited_once_with({"deviceId": "heater", "heatPump.temperature": "heating"})
 
 
 async def test_cumulative_energy_starts_at_source_and_survives_resets(hass):

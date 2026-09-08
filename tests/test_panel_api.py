@@ -22,7 +22,7 @@ from custom_components.fluks.panel_api import (
     COMMAND_DEVICE_SAVE,
     COMMAND_SITE_DELETE,
     _has_local_context,
-    _migrate_water_heater_temperature_mappings,
+    _migrate_legacy_mappings,
     _mappable_concepts,
     async_register_panel_commands,
     websocket_context,
@@ -809,8 +809,9 @@ async def test_legacy_water_heater_temperature_mapping_is_migrated():
     api.delete_mapping = AsyncMock()
     api.list_mappings = AsyncMock(return_value=[replacement])
 
-    result = await _migrate_water_heater_temperature_mappings(
-        api, "site-a", "device-a", "integration-a", [legacy]
+    result = await _migrate_legacy_mappings(
+        api, "site-a", "device-a", "integration-a", [legacy],
+        "waterHeater.targetTemperature", "waterHeater.temperature",
     )
 
     api.create_mapping.assert_awaited_once_with("site-a", {

@@ -396,13 +396,13 @@ test("heat pump mapping UI renders only finalized catalog concepts", () => {
       { concept: "heatPump.energy", label: "Energy", cadence: "interval" },
       { concept: "heatPump.bufferEnergy", label: "Buffer energy", cadence: "interval" },
       { concept: "heatPump.tankEnergy", label: "Tank energy", cadence: "interval" },
-      { concept: "heatPump.bufferTemperature", label: "Buffer temperature", cadence: "realtime" },
+      { concept: "heatPump.temperature", label: "Temperature", cadence: "realtime" },
       { concept: "heatPump.tankTemperature", label: "Tank temperature", cadence: "realtime" },
       { concept: "heatPump.state", label: "Operating state", cadence: "realtime" },
     ],
     controls: [
       { concept: "heatPump.power", label: "Power" },
-      { concept: "heatPump.bufferTemperature", label: "Buffer temperature" },
+      { concept: "heatPump.temperature", label: "Temperature" },
       { concept: "heatPump.tankTemperature", label: "Tank temperature" },
     ],
   };
@@ -412,7 +412,7 @@ test("heat pump mapping UI renders only finalized catalog concepts", () => {
   const mappings = panel._mappingFields(panel._detail);
   panel._renderControls();
   const controls = rendered;
-  for (const label of ["Power", "Buffer temperature", "Tank temperature"]) {
+  for (const label of ["Power", "Temperature", "Tank temperature"]) {
     assert.match(mappings, new RegExp(label));
     assert.match(controls, new RegExp(label));
   }
@@ -428,7 +428,7 @@ test("heat pump mapping UI renders only finalized catalog concepts", () => {
       "heatPump.energy",
       "heatPump.bufferEnergy",
       "heatPump.tankEnergy",
-      "heatPump.bufferTemperature",
+      "heatPump.temperature",
       "heatPump.tankTemperature",
       "heatPump.state",
     ]),
@@ -792,11 +792,11 @@ test("production Input Mapping picker offers entity state and attributes directl
     config: { unit_system: { temperature: "°C" } }, language: "en", localize: () => undefined,
   };
   panel._inputDraft = {
-    "heatPump.bufferTemperature": { version: 1, entityId: "climate.buffer" },
+    "heatPump.temperature": { version: 1, entityId: "climate.buffer" },
   };
   panel._renderInputDraft = () => {};
   const detail = {
-    concepts: [{ concept: "heatPump.bufferTemperature", label: "Buffer temperature", cadence: "realtime" }],
+    concepts: [{ concept: "heatPump.temperature", label: "Temperature", cadence: "realtime" }],
     mappings: {}, suggestions: {},
   };
 
@@ -808,8 +808,8 @@ test("production Input Mapping picker offers entity state and attributes directl
     { attribute: "target_temp_low", trailing: "47 °C" },
     { attribute: "ambient", trailing: "51 °C" },
   ]);
-  assert.match(panel._pickerValue("entity", "climate.buffer", "heatPump.bufferTemperature", "hvac_action"), /heating/);
-  assert.doesNotMatch(panel._pickerValue("entity", "climate.buffer", "heatPump.bufferTemperature", "hvac_action"), /heating °C/);
+  assert.match(panel._pickerValue("entity", "climate.buffer", "heatPump.temperature", "hvac_action"), /heating/);
+  assert.doesNotMatch(panel._pickerValue("entity", "climate.buffer", "heatPump.temperature", "hvac_action"), /heating °C/);
   const nonTemperatureSources = panel._entitySources({ id: "climate.buffer", name: "Buffer", secondary: "climate.buffer" });
   assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "fan_mode"));
   assert.ok(nonTemperatureSources.some(({ attribute }) => attribute === "friendly_name"));
@@ -830,16 +830,16 @@ test("production Input Mapping picker offers entity state and attributes directl
     { id: "sensor.cycle_count" },
   ]) assert.deepEqual(panel._entitySources({ name: item.id, secondary: item.id, ...item }, true), []);
 
-  panel._selectInputEntity("heatPump.bufferTemperature", "climate.buffer", "current_temperature");
-  assert.equal(panel._inputDraft["heatPump.bufferTemperature"].attribute, "current_temperature");
-  assert.equal(panel._collectForm(true).mappings["heatPump.bufferTemperature"].attribute, "current_temperature");
+  panel._selectInputEntity("heatPump.temperature", "climate.buffer", "current_temperature");
+  assert.equal(panel._inputDraft["heatPump.temperature"].attribute, "current_temperature");
+  assert.equal(panel._collectForm(true).mappings["heatPump.temperature"].attribute, "current_temperature");
   const rendered = panel._mappingFields(detail, true);
   assert.match(rendered, /current_temperature · climate\.buffer/);
   assert.match(rendered, /data-picker-attribute="current_temperature"/);
 
-  panel._selectInputEntity("heatPump.bufferTemperature", "climate.buffer");
-  assert.equal(Object.hasOwn(panel._inputDraft["heatPump.bufferTemperature"], "attribute"), false);
-  assert.deepEqual(panel._collectForm(true).mappings["heatPump.bufferTemperature"], {
+  panel._selectInputEntity("heatPump.temperature", "climate.buffer");
+  assert.equal(Object.hasOwn(panel._inputDraft["heatPump.temperature"], "attribute"), false);
+  assert.deepEqual(panel._collectForm(true).mappings["heatPump.temperature"], {
     version: 1, entityId: "climate.buffer",
   });
 });

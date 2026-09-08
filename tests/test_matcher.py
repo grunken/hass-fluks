@@ -107,7 +107,7 @@ async def test_input_configuration_preserves_optional_attribute(hass):
         {"temperature": 50, "current_temperature": 56},
     )
     concept = {
-        "concept": "heatPump.bufferTemperature",
+            "concept": "heatPump.temperature",
         "datatype": "number",
         "unit": "°C",
         "cadence": "realtime",

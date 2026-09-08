@@ -125,14 +125,15 @@ def test_panel_device_and_concept_presentation_is_translated():
     assert "concept_waterHeater.targetTemperature" not in danish
     assert english["concept_spaceHeater.targetTemperature"] == "Target temperature"
     assert danish["concept_spaceHeater.targetTemperature"] == "Ønsket temperatur"
-    assert english["concept_heatPump.bufferTemperature"] == "Buffer temperature"
+    assert english["concept_heatPump.temperature"] == "Temperature"
+    assert danish["concept_heatPump.temperature"] == "Temperatur"
     assert danish["concept_heatPump.tankTemperature"] == "Beholdertemperatur"
     expected_heat_pump_concepts = {
         "power",
         "energy",
         "bufferEnergy",
         "tankEnergy",
-        "bufferTemperature",
+        "temperature",
         "tankTemperature",
         "state",
     }

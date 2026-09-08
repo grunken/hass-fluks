@@ -148,6 +148,54 @@ async def test_water_heater_temperature_decision_uses_renamed_canonical_field(ha
     assert calls == [{"temperature": 55, "entity_id": "water_heater.tank"}]
 
 
+async def test_heat_pump_temperature_and_tank_temperature_decisions_remain_distinct(hass):
+    calls = []
+
+    async def record(call):
+        calls.append((call.service, call.data))
+
+    hass.services.async_register("number", "set_value", record)
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[
+        {"id": "heat-internal", "deviceId": "heat-external", "type": "heatPump"},
+    ])
+    def mapping(concept, entity):
+        field = concept.rsplit(".", 1)[1]
+        return {
+            "deviceId": "heat-internal", "concept": concept,
+            "direction": "output", "mode": "target",
+            "configuration": {"version": 1, "actions": [{
+                "type": "serviceCall", "service": "number.set_value",
+                "target": {"entityId": entity},
+                "data": {field: {"kind": "requestedValue"}},
+            }]},
+        }
+    api.list_mappings = AsyncMock(return_value=[
+        mapping("heatPump.temperature", "number.flow_target"),
+        mapping("heatPump.tankTemperature", "number.tank_target"),
+    ])
+    api.get_device_type_catalog = AsyncMock(return_value=[{
+        "type": "heatPump",
+        "concepts": [
+            {"concept": "heatPump.temperature", "datatype": "number", "usages": ["fact", "control"]},
+            {"concept": "heatPump.tankTemperature", "datatype": "number", "usages": ["fact", "control"]},
+        ],
+    }])
+
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "heat-external", "deviceType": "heatPump",
+            "temperature": "40", "tankTemperature": "55", "mode": "target",
+        }],
+    })
+
+    assert calls == [
+        ("set_value", {"temperature": 40, "entity_id": "number.flow_target"}),
+        ("set_value", {"tankTemperature": 55, "entity_id": "number.tank_target"}),
+    ]
+
+
 def _ownership_api():
     def action(entity_id):
         return {"version": 1, "actions": [{
