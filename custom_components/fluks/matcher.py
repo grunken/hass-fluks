@@ -1,7 +1,9 @@
-"""Deterministic Home Assistant entity suggestions for canonical concepts."""
+"""Deterministic Home Assistant fact matching for canonical concepts."""
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -9,163 +11,1059 @@ from typing import Any
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
 
-SUGGESTION_THRESHOLD = 90
+_LOGGER = logging.getLogger(__name__)
+
+AUTO_SCORE_THRESHOLD = 14
+SUGGESTION_SCORE_THRESHOLD = 8
+AUTO_MARGIN = 4
+AUTO_MIN_EVIDENCE_FAMILIES = 3
+
+INVALID_STATES = {"", "unknown", "unavailable", "none", "null"}
+SCALAR_TYPES = (str, int, float, bool)
+IRRELEVANT_STATE_DOMAINS = {
+    "automation",
+    "button",
+    "camera",
+    "event",
+    "image",
+    "scene",
+    "script",
+    "update",
+}
+ATTRIBUTE_METADATA = {
+    "attribution",
+    "device_class",
+    "entity_picture",
+    "friendly_name",
+    "icon",
+    "last_reset",
+    "state_class",
+    "supported_features",
+    "temperature_unit",
+    "unit_of_measurement",
+    "min",
+    "max",
+    "step",
+    "options",
+    "min_temp",
+    "max_temp",
+    "target_temp_step",
+}
+
+_LINEAR_UNITS: dict[str, tuple[str, float, str]] = {
+    "mW": ("power", 0.001, "mW"),
+    "W": ("power", 1, "W"),
+    "kW": ("power", 1_000, "kW"),
+    "MW": ("power", 1_000_000, "MW"),
+    "mWh": ("energy", 0.001, "mWh"),
+    "Wh": ("energy", 1, "Wh"),
+    "kWh": ("energy", 1_000, "kWh"),
+    "MWh": ("energy", 1_000_000, "MWh"),
+    "GWh": ("energy", 1_000_000_000, "GWh"),
+    "J": ("energy", 1 / 3_600, "J"),
+    "kJ": ("energy", 1_000 / 3_600, "kJ"),
+    "MJ": ("energy", 1_000_000 / 3_600, "MJ"),
+    "GJ": ("energy", 1_000_000_000 / 3_600, "GJ"),
+    "%": ("percentage", 1, "%"),
+    "m": ("distance", 1, "m"),
+    "km": ("distance", 1_000, "km"),
+    "mi": ("distance", 1_609.344, "mi"),
+}
+_TEMPERATURE_UNITS = {
+    "°c": "°C",
+    "c": "°C",
+    "℃": "°C",
+    "°f": "°F",
+    "f": "°F",
+    "℉": "°F",
+    "k": "K",
+}
+_KNOWN_DEVICE_CLASSES = {"battery", "distance", "energy", "power", "temperature"}
+_TOKEN_ALIASES = {
+    "temps": "temperature",
+    "temp": "temperature",
+    "watt": "power",
+    "watts": "power",
+    "status": "state",
+    "running": "state",
+    "enabled": "state",
+    "plugged": "connected",
+    "range": "distance",
+}
+_TYPE_ALIASES = {
+    "temperature": {"temperature"},
+    "power": {"power"},
+    "energy": {"energy", "total"},
+    "state": {"state", "heating", "operating", "operation"},
+    "soc": {"soc", "charge", "level", "percentage"},
+    "connected": {"connected", "connection"},
+    "distance": {"distance"},
+}
+_ROLE_TOKENS = {
+    "water": {"water", "tank", "dhw", "domestic", "cylinder", "boiler"},
+    "buffer": {"buffer", "accumulator"},
+    "flow": {"flow", "supply", "forward", "outlet", "leaving"},
+    "return": {"return", "inlet", "entering"},
+    "outdoor": {"outdoor", "outside", "external", "ambient", "weather"},
+    "room": {"room", "indoor", "inside"},
+    "target": {"target", "setpoint", "desired", "requested"},
+    "charge": {"charge", "charged", "charging"},
+    "discharge": {"discharge", "discharged", "discharging"},
+    "import": {"import", "imported", "consumed", "consumption"},
+    "export": {"export", "exported", "delivered", "delivery"},
+}
+_CONTRADICTORY_ROLES = {
+    "water": {"buffer", "flow", "return", "outdoor", "room", "target"},
+    "buffer": {"water", "flow", "return", "outdoor", "room", "target"},
+    "flow": {"water", "buffer", "return", "outdoor", "room", "target"},
+    "return": {"water", "buffer", "flow", "outdoor", "room", "target"},
+    "outdoor": {"water", "buffer", "flow", "return", "room", "target"},
+    "room": {"water", "buffer", "flow", "return", "outdoor", "target"},
+    "target": {"water", "buffer", "flow", "return", "outdoor", "room"},
+    "charge": {"discharge", "export"},
+    "discharge": {"charge", "import"},
+    "import": {"export", "discharge"},
+    "export": {"import", "charge"},
+}
 
 
 @dataclass(frozen=True)
 class EntityCandidate:
-    """The Home Assistant metadata used for deterministic matching."""
+    """One scalar Home Assistant entity-state or entity-attribute source."""
 
     entity_id: str
+    attribute: str | None
     device_id: str | None
-    name: str
-    state: str | None
+    config_entry_ids: frozenset[str]
+    domain: str
+    friendly_name: str
+    original_name: str
+    value: Any
     unit: str | None
     device_class: str | None
     state_class: str | None
 
+    @property
+    def source_key(self) -> str:
+        return (
+            self.entity_id
+            if self.attribute is None
+            else f"{self.entity_id}#{self.attribute}"
+        )
+
+    @property
+    def source(self) -> dict[str, str]:
+        result = {"entityId": self.entity_id}
+        if self.attribute is not None:
+            result["attribute"] = self.attribute
+        return result
+
+
+@dataclass(frozen=True)
+class ScoredCandidate:
+    """A compatible candidate plus the evidence that produced its score."""
+
+    candidate: EntityCandidate
+    configuration: dict[str, Any]
+    score: int
+    evidence: tuple[dict[str, Any], ...]
+    unit_complete: bool
+
+    @property
+    def positive_families(self) -> set[str]:
+        return {
+            str(item["family"]) for item in self.evidence if int(item["weight"]) > 0
+        }
+
+
+def _tokens(value: str) -> tuple[str, ...]:
+    expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", value).lower()
+    for compound, replacement in {
+        "hotwater": "hot water",
+        "watertemperature": "water temperature",
+        "tanktemperature": "tank temperature",
+        "buffertemperature": "buffer temperature",
+        "outdoortemperature": "outdoor temperature",
+        "flowtemperature": "flow temperature",
+        "returntemperature": "return temperature",
+        "roomtemperature": "room temperature",
+    }.items():
+        expanded = expanded.replace(compound, replacement)
+    return tuple(
+        _TOKEN_ALIASES.get(token, token) for token in re.findall(r"[a-z0-9]+", expanded)
+    )
+
 
 def _words(value: str) -> set[str]:
-    """Split identifiers and names into comparable lowercase words."""
-    expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", value)
-    return set(re.findall(r"[a-z0-9]+", expanded.lower()))
+    return set(_tokens(value))
 
 
-def _numeric(value: str | None) -> bool:
-    if value is None:
+def _levenshtein_similarity(left: str, right: str) -> float:
+    """Return deterministic normalized edit similarity in the range 0..1."""
+    if left == right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    previous = list(range(len(right) + 1))
+    for left_index, left_character in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_character in enumerate(right, start=1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (left_character != right_character),
+                )
+            )
+        previous = current
+    return 1 - previous[-1] / max(len(left), len(right))
+
+
+def _numeric(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
         return False
     try:
-        float(value)
+        return math.isfinite(float(value))
     except (TypeError, ValueError):
         return False
-    return True
+
+
+def _transient(value: Any) -> bool:
+    return value is None or (
+        isinstance(value, str) and value.strip().lower() in INVALID_STATES
+    )
+
+
+def _normalized_unit(unit: str | None) -> tuple[str, str, float] | None:
+    if not isinstance(unit, str) or not unit.strip():
+        return None
+    normalized = unit.replace(" ", "")
+    temperature = _TEMPERATURE_UNITS.get(normalized.lower())
+    if temperature is not None:
+        return "temperature", temperature, 1
+    definition = _LINEAR_UNITS.get(normalized)
+    if definition is None:
+        return "other", normalized, 1
+    family, factor, spelling = definition
+    return family, spelling, factor
 
 
 def _unit_family(unit: str | None) -> str | None:
-    if unit is None:
-        return None
-    normalized = unit.replace(" ", "").lower()
-    if normalized in {"w", "kw", "mw"}:
-        return "power"
-    if normalized in {"wh", "kwh", "mwh"}:
-        return "energy"
-    if normalized in {"%"}:
-        return "percentage"
-    if normalized in {"°c", "c", "°f", "f"}:
-        return "temperature"
-    if normalized in {"m", "km", "mi"}:
-        return "distance"
-    return normalized
+    definition = _normalized_unit(unit)
+    return definition[0] if definition is not None else None
 
 
-def score_candidate(
-    concept: dict[str, Any], candidate: EntityCandidate, selected_device_id: str
-) -> int:
-    """Score one candidate using backend metadata and HA metadata."""
-    score = 60 if candidate.device_id == selected_device_id else 0
-    datatype = concept.get("datatype")
-    state = candidate.state
-    if datatype == "number":
-        score += 20 if _numeric(state) else -60
-    elif datatype == "boolean":
-        score += 20 if state in {"on", "off", "true", "false"} else -20
-    elif datatype == "string" and state is not None:
-        score += 10
+def _clean_number(value: float) -> int | float:
+    return int(value) if float(value).is_integer() else value
 
-    expected_unit = _unit_family(concept.get("unit"))
-    actual_unit = _unit_family(candidate.unit)
-    if expected_unit and actual_unit:
-        score += 25 if expected_unit == actual_unit else -35
 
-    suffix = str(concept.get("concept", "")).split(".")[-1]
-    semantic_words = _words(suffix)
-    name_words = _words(f"{candidate.entity_id} {candidate.name}")
-    score += 12 * len(semantic_words & name_words)
+def _apply_numeric_transforms(value: float, transforms: list[dict[str, Any]]) -> float:
+    """Apply the generated numeric unit transforms for compatibility checks."""
+    result = value
+    for transform in transforms:
+        if transform["type"] == "scale":
+            result *= float(transform["factor"])
+        elif transform["type"] == "offset":
+            result += float(transform["amount"])
+    return result
 
-    aliases = {
-        "soc": {"soc", "charge", "level", "percentage", "battery"},
-        "power": {"power", "watt"},
-        "energy": {"energy", "total"},
-        "chargeEnergy": {"charge", "charged", "energy", "total"},
-        "dischargeEnergy": {"discharge", "discharged", "energy", "total"},
-        "targetTemperature": {"target", "setpoint", "temperature"},
-        "waterTargetTemperature": {"water", "target", "setpoint", "temperature"},
-        "temperature": {"temperature", "temp"},
-        "connected": {"connected", "plugged"},
-        "state": {"state", "status", "running"},
+
+def _temperature_conversion(source: str, target: str) -> list[dict[str, Any]]:
+    if source == target:
+        return []
+    conversions: dict[tuple[str, str], list[dict[str, Any]]] = {
+        ("°F", "°C"): [
+            {"type": "offset", "amount": -32},
+            {"type": "scale", "factor": 5 / 9},
+        ],
+        ("°C", "°F"): [
+            {"type": "scale", "factor": 9 / 5},
+            {"type": "offset", "amount": 32},
+        ],
+        ("K", "°C"): [{"type": "offset", "amount": -273.15}],
+        ("°C", "K"): [{"type": "offset", "amount": 273.15}],
+        ("°F", "K"): [
+            {"type": "offset", "amount": -32},
+            {"type": "scale", "factor": 5 / 9},
+            {"type": "offset", "amount": 273.15},
+        ],
+        ("K", "°F"): [
+            {"type": "offset", "amount": -273.15},
+            {"type": "scale", "factor": 9 / 5},
+            {"type": "offset", "amount": 32},
+        ],
     }
-    score += 5 * len(aliases.get(suffix, set()) & name_words)
+    return [dict(item) for item in conversions[(source, target)]]
 
-    device_class = (candidate.device_class or "").lower()
+
+def unit_conversion(
+    source_unit: str | None, target_unit: str | None
+) -> tuple[str, list[dict[str, Any]]]:
+    """Classify and build one deterministic source-to-canonical conversion."""
+    if target_unit is None:
+        return "exact", []
+    source = _normalized_unit(source_unit)
+    target = _normalized_unit(target_unit)
+    if source is None:
+        return "unknown", []
+    if target is None or source[0] != target[0]:
+        return "incompatible", []
+    if source[0] == "other":
+        return ("exact", []) if source[1] == target[1] else ("incompatible", [])
+    if source[1] == target[1]:
+        return "exact", []
+    if source[0] == "temperature":
+        return "convertible", _temperature_conversion(source[1], target[1])
+    factor = source[2] / target[2]
+    return "convertible", [{"type": "scale", "factor": _clean_number(factor)}]
+
+
+def _entry_config_ids(entry: Any) -> frozenset[str]:
+    values: set[str] = set()
+    value = getattr(entry, "config_entry_id", None)
+    if isinstance(value, str):
+        values.add(value)
+    multiple = getattr(entry, "config_entry_ids", None)
+    if isinstance(multiple, (set, frozenset, list, tuple)):
+        values.update(item for item in multiple if isinstance(item, str))
+    return frozenset(values)
+
+
+def _attribute_unit(hass: HomeAssistant, state: State, attribute: str) -> str | None:
+    attributes = state.attributes
+    explicit = attributes.get(f"{attribute}_unit")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit
+    words = _words(attribute)
+    if not ({"temperature", "temp"} & words or attribute == "ambient"):
+        return None
+    declared = attributes.get("temperature_unit")
+    if isinstance(declared, str) and declared.strip():
+        return declared
+    domain = state.entity_id.split(".", 1)[0]
+    if domain in {"climate", "water_heater"}:
+        return str(hass.config.units.temperature_unit)
+    return None
+
+
+def collect_candidates(
+    hass: HomeAssistant, selected_device_id: str
+) -> list[EntityCandidate]:
+    """Collect scalar sources owned by the explicitly selected HA Device."""
+    registry = er.async_get(hass)
+    candidates: list[EntityCandidate] = []
+    for entry in registry.entities.values():
+        if entry.disabled or entry.device_id != selected_device_id:
+            continue
+        state: State | None = hass.states.get(entry.entity_id)
+        attributes = state.attributes if state is not None else {}
+        friendly_name = str(
+            attributes.get("friendly_name") or entry.name or entry.entity_id
+        )
+        original_name = str(entry.original_name or entry.name or entry.entity_id)
+        common = {
+            "entity_id": entry.entity_id,
+            "device_id": entry.device_id,
+            "config_entry_ids": _entry_config_ids(entry),
+            "domain": entry.entity_id.split(".", 1)[0],
+            "friendly_name": friendly_name,
+            "original_name": original_name,
+        }
+        candidates.append(
+            EntityCandidate(
+                **common,
+                attribute=None,
+                value=state.state if state is not None else None,
+                unit=attributes.get("unit_of_measurement"),
+                device_class=attributes.get("device_class")
+                or entry.original_device_class,
+                state_class=attributes.get("state_class"),
+            )
+        )
+        if state is None:
+            continue
+        for attribute, value in attributes.items():
+            if (
+                attribute in ATTRIBUTE_METADATA
+                or attribute.endswith("_unit")
+                or not isinstance(value, SCALAR_TYPES)
+            ):
+                continue
+            candidates.append(
+                EntityCandidate(
+                    **common,
+                    attribute=str(attribute),
+                    value=value,
+                    unit=_attribute_unit(hass, state, str(attribute)),
+                    device_class=None,
+                    state_class=None,
+                )
+            )
+    return candidates
+
+
+def _evidence(family: str, code: str, weight: int, **details: Any) -> dict[str, Any]:
+    item: dict[str, Any] = {"family": family, "code": code, "weight": weight}
+    if details:
+        item["details"] = details
+    return item
+
+
+def _datatype_evidence(
+    concept: dict[str, Any], candidate: EntityCandidate
+) -> dict[str, Any] | None:
+    datatype = concept.get("datatype")
+    value = candidate.value
+    if datatype == "number":
+        if _numeric(value):
+            return _evidence("datatype", "numeric_value", 4)
+        if _transient(value) and (
+            candidate.unit is not None
+            or candidate.device_class in _KNOWN_DEVICE_CLASSES
+            or candidate.state_class is not None
+            or candidate.domain in {"number", "input_number"}
+        ):
+            return _evidence("datatype", "numeric_metadata", 2)
+        return None
+    if datatype == "boolean":
+        if isinstance(value, bool) or value in {"on", "off", "true", "false"}:
+            return _evidence("datatype", "boolean_value", 4)
+        if _transient(value) and candidate.domain in {
+            "binary_sensor",
+            "input_boolean",
+            "switch",
+        }:
+            return _evidence("datatype", "boolean_domain", 2)
+        return None
+    if datatype == "string":
+        if isinstance(value, str) and not _transient(value):
+            return _evidence("datatype", "string_value", 4)
+        if _transient(value) and candidate.domain in {"input_text", "select", "text"}:
+            return _evidence("datatype", "string_domain", 2)
+    return None
+
+
+def _semantic_assessment(
+    concept: dict[str, Any], candidate: EntityCandidate
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Compare measurement roles separately from generic measurement types."""
+    suffix = str(concept.get("concept", "")).split(".")[-1]
+    target_tokens = set(_tokens(suffix))
+    sources = {
+        "entity_id": _words(candidate.entity_id),
+        "friendly_name": _words(candidate.friendly_name),
+        "original_name": _words(candidate.original_name),
+    }
+    source_texts = {
+        "entity_id": candidate.entity_id.split(".", 1)[-1],
+        "friendly_name": candidate.friendly_name,
+        "original_name": candidate.original_name,
+    }
+    if candidate.attribute is not None:
+        sources["attribute"] = _words(candidate.attribute)
+        source_texts["attribute"] = candidate.attribute
+    combined = set().union(*sources.values())
+
+    target_types = {
+        kind
+        for kind, aliases in _TYPE_ALIASES.items()
+        if kind in target_tokens or target_tokens & aliases
+    }
+    type_matches = sorted(
+        kind for kind in target_types if combined & _TYPE_ALIASES[kind]
+    )
+    target_roles = {
+        role for role, tokens in _ROLE_TOKENS.items() if target_tokens & tokens
+    }
+    candidate_roles = {
+        role for role, tokens in _ROLE_TOKENS.items() if combined & tokens
+    }
+    contradictory = (
+        set().union(*(_CONTRADICTORY_ROLES[role] for role in target_roles))
+        if target_roles
+        else set()
+    ) - target_roles
+    contradictions = sorted(candidate_roles & contradictory)
+    if contradictions:
+        return (
+            _evidence(
+                "semantics",
+                "semantic_role_contradiction",
+                -4,
+                target_roles=sorted(target_roles),
+                candidate_roles=sorted(candidate_roles),
+                contradictions=contradictions,
+            ),
+            "semantic_role_contradiction",
+        )
+
+    matched_roles = sorted(target_roles & candidate_roles)
+    role_similarity = 0.0
+    if target_roles and not matched_roles:
+        candidate_role_tokens = combined - set().union(*_TYPE_ALIASES.values())
+        role_similarity = max(
+            (
+                _levenshtein_similarity(role, token)
+                for role in target_roles
+                for token in candidate_role_tokens
+            ),
+            default=0.0,
+        )
+        if role_similarity < 0.82:
+            return (
+                _evidence(
+                    "semantics",
+                    "semantic_role_missing",
+                    -4,
+                    target_roles=sorted(target_roles),
+                    candidate_roles=sorted(candidate_roles),
+                    role_similarity=round(role_similarity, 3),
+                ),
+                "semantic_role_missing",
+            )
+
+    target_text = "".join(_tokens(suffix))
+    text_similarity = max(
+        (
+            _levenshtein_similarity(
+                target_text,
+                "".join(_tokens(source_text)),
+            )
+            for source_text in source_texts.values()
+        ),
+        default=0.0,
+    )
+    if matched_roles or role_similarity >= 0.82:
+        weight = 4
+        code = "semantic_role"
+    elif type_matches:
+        weight = 4 if not target_roles or text_similarity >= 0.82 else 2
+        code = "normalized_text" if weight == 4 else "measurement_type"
+    elif text_similarity >= 0.82:
+        weight = 2
+        code = "normalized_text"
+    else:
+        return None, None
+    matching_tokens = set(type_matches)
+    matching_tokens.update(
+        token
+        for role in matched_roles
+        for token in _ROLE_TOKENS[role]
+        if token in combined
+    )
+    return (
+        _evidence(
+            "semantics",
+            code,
+            weight,
+            target_roles=sorted(target_roles),
+            candidate_roles=sorted(candidate_roles),
+            matched_roles=matched_roles,
+            type_matches=type_matches,
+            text_similarity=round(text_similarity, 3),
+            role_similarity=round(role_similarity, 3),
+            sources=sorted(
+                name for name, words in sources.items() if words & matching_tokens
+            ),
+        ),
+        None,
+    )
+
+
+def _configuration_for_candidate(
+    concept: dict[str, Any], candidate: EntityCandidate
+) -> tuple[dict[str, Any], bool] | None:
+    status, conversion = unit_conversion(candidate.unit, concept.get("unit"))
+    if status == "incompatible":
+        return None
+    configuration: dict[str, Any] = {"version": 1, **candidate.source}
+    if candidate.unit is not None and concept.get("unit") is not None:
+        configuration["unit"] = candidate.unit
+    transforms = list(conversion)
+    if concept.get("datatype") == "boolean" and (
+        candidate.value in {"on", "off", "true", "false"}
+        or candidate.domain in {"binary_sensor", "input_boolean", "switch"}
+    ):
+        values = (
+            {"true": True, "false": False}
+            if candidate.value in {"true", "false"}
+            and candidate.domain not in {"binary_sensor", "input_boolean", "switch"}
+            else {"on": True, "off": False}
+        )
+        transforms.append({"type": "valueMap", "values": values})
+    if transforms:
+        configuration["transforms"] = transforms
+    if concept.get("cadence") == "interval":
+        configuration["source"] = {
+            "kind": (
+                "cumulative"
+                if candidate.state_class in {"total", "total_increasing"}
+                else "delta"
+            )
+        }
+    return configuration, status != "unknown"
+
+
+def _evaluate_candidate(
+    concept: dict[str, Any],
+    candidate: EntityCandidate,
+    selected_device_id: str,
+) -> tuple[ScoredCandidate | None, str | None, tuple[dict[str, Any], ...]]:
+    if candidate.device_id != selected_device_id:
+        return None, "outside_selected_device", ()
+    if candidate.domain in IRRELEVANT_STATE_DOMAINS:
+        return None, "irrelevant_domain", ()
+    datatype = _datatype_evidence(concept, candidate)
+    if datatype is None:
+        return None, "incompatible_datatype", ()
+    evidence: list[dict[str, Any]] = [datatype]
+    configured = _configuration_for_candidate(concept, candidate)
+    if configured is None:
+        return None, "incompatible_unit", tuple(evidence)
+    configuration, unit_complete = configured
+
+    if candidate.attribute is None:
+        if concept.get("datatype") == "boolean" and candidate.domain in {
+            "binary_sensor",
+            "input_boolean",
+            "switch",
+        }:
+            evidence.append(_evidence("source_type", "native_boolean_entity", 2))
+        elif concept.get("datatype") == "string" and candidate.domain in {
+            "input_text",
+            "select",
+            "text",
+        }:
+            evidence.append(_evidence("source_type", "native_string_entity", 2))
+
+    evidence.append(_evidence("relationship", "selected_device", 4))
+
+    expected_unit = concept.get("unit")
+    unit_status, conversion = unit_conversion(candidate.unit, expected_unit)
+    if expected_unit is not None:
+        if unit_status == "exact":
+            evidence.append(
+                _evidence(
+                    "unit",
+                    "exact_unit",
+                    4,
+                    source=candidate.unit,
+                    canonical=expected_unit,
+                )
+            )
+        elif unit_status == "convertible":
+            evidence.append(
+                _evidence(
+                    "unit",
+                    "deterministic_conversion",
+                    4,
+                    source=candidate.unit,
+                    canonical=expected_unit,
+                    transforms=conversion,
+                )
+            )
+        else:
+            evidence.append(_evidence("unit", "missing_unit", 0))
+
     expected_class = {
         "power": "power",
         "energy": "energy",
         "percentage": "battery",
         "temperature": "temperature",
         "distance": "distance",
-    }.get(expected_unit)
-    if expected_class and device_class:
-        score += 15 if device_class == expected_class else -10
-
-    if expected_unit == "energy" and candidate.state_class in {
+    }.get(_unit_family(expected_unit))
+    if concept.get("cadence") == "realtime" and candidate.state_class in {
         "total",
         "total_increasing",
     }:
-        score += 10
-    return score
+        return None, "incompatible_state_class", tuple(evidence)
+    actual_class = (candidate.device_class or "").lower()
+    if expected_class and actual_class:
+        if actual_class in _KNOWN_DEVICE_CLASSES and actual_class != expected_class:
+            return None, "incompatible_device_class", tuple(evidence)
+        if actual_class == expected_class:
+            evidence.append(_evidence("device_class", "exact_device_class", 4))
+
+    if (
+        candidate.state_class in {"total", "total_increasing"}
+        and concept.get("cadence") == "interval"
+    ):
+        evidence.append(_evidence("state_class", "cumulative_energy", 2))
+    elif (
+        candidate.state_class == "measurement" and concept.get("cadence") == "realtime"
+    ):
+        evidence.append(_evidence("state_class", "realtime_measurement", 2))
+
+    if concept.get("datatype") == "number" and _numeric(candidate.value):
+        number = _apply_numeric_transforms(float(candidate.value), conversion)
+        minimum = concept.get("min")
+        maximum = concept.get("max")
+        if isinstance(minimum, (int, float)) and number < minimum:
+            return None, "below_canonical_minimum", tuple(evidence)
+        if isinstance(maximum, (int, float)) and number > maximum:
+            return None, "above_canonical_maximum", tuple(evidence)
+        if isinstance(minimum, (int, float)) or isinstance(maximum, (int, float)):
+            evidence.append(_evidence("canonical_range", "value_in_range", 2))
+
+    semantic, semantic_rejection = _semantic_assessment(concept, candidate)
+    if semantic is not None:
+        evidence.append(semantic)
+    if semantic_rejection is not None:
+        return None, semantic_rejection, tuple(evidence)
+    if _transient(candidate.value):
+        evidence.append(_evidence("availability", "transient_unavailable", 0))
+    if concept.get("signConvention"):
+        evidence.append(_evidence("orientation", "not_evaluated", 0))
+
+    return (
+        ScoredCandidate(
+            candidate=candidate,
+            configuration=configuration,
+            score=sum(int(item["weight"]) for item in evidence),
+            evidence=tuple(evidence),
+            unit_complete=unit_complete,
+        ),
+        None,
+        tuple(evidence),
+    )
 
 
-def collect_candidates(hass: HomeAssistant) -> list[EntityCandidate]:
-    """Collect registry and current-state metadata without exposing it remotely."""
-    registry = er.async_get(hass)
-    candidates: list[EntityCandidate] = []
-    for entry in registry.entities.values():
-        if entry.disabled:
-            continue
-        state: State | None = hass.states.get(entry.entity_id)
-        attributes = state.attributes if state is not None else {}
-        candidates.append(
-            EntityCandidate(
-                entity_id=entry.entity_id,
-                device_id=entry.device_id,
-                name=str(
-                    attributes.get("friendly_name")
-                    or entry.name
-                    or entry.original_name
-                    or entry.entity_id
-                ),
-                state=state.state if state is not None else None,
-                unit=attributes.get("unit_of_measurement"),
-                device_class=(
-                    attributes.get("device_class") or entry.original_device_class
-                ),
-                state_class=attributes.get("state_class"),
+def score_candidate(
+    concept: dict[str, Any], candidate: EntityCandidate, selected_device_id: str
+) -> int | None:
+    """Return the evidence score, or None when a hard gate rejects the source."""
+    result, _, _ = _evaluate_candidate(concept, candidate, selected_device_id)
+    return result.score if result is not None else None
+
+
+def candidate_diagnostic(
+    concept: dict[str, Any], candidate: EntityCandidate, selected_device_id: str
+) -> dict[str, Any]:
+    """Return structured onboarding diagnostics for one candidate assessment."""
+    result, rejection, evidence = _evaluate_candidate(
+        concept, candidate, selected_device_id
+    )
+    return {
+        "source": candidate.source,
+        "source_type": "attribute" if candidate.attribute is not None else "state",
+        "owning_device": candidate.device_id,
+        "accepted": result is not None,
+        "rejection_reason": rejection,
+        "evidence": [dict(item) for item in (result.evidence if result else evidence)],
+        "score": result.score if result else None,
+    }
+
+
+def _maximum_assignment(
+    concepts: list[str],
+    ranked: dict[str, list[ScoredCandidate]],
+    banned: tuple[str, str] | None = None,
+) -> tuple[dict[str, ScoredCandidate], int]:
+    """Find the deterministic maximum-score one-source-per-concept assignment."""
+    sources = sorted(
+        {
+            item.candidate.source_key
+            for concept in concepts
+            for item in ranked[concept]
+            if item.score > 0 and (concept, item.candidate.source_key) != banned
+        }
+    )
+    if not concepts:
+        return {}, 0
+    columns = sources + [f"\0unmatched:{index}" for index in range(len(concepts))]
+    by_concept = {
+        concept: {item.candidate.source_key: item for item in ranked[concept]}
+        for concept in concepts
+    }
+    forbidden = -1_000_000
+    weights = [
+        [
+            (
+                by_concept[concept][source].score
+                if source in by_concept[concept]
+                and by_concept[concept][source].score > 0
+                and (concept, source) != banned
+                else 0 if source.startswith("\0unmatched:") else forbidden
             )
-        )
-    return candidates
+            for source in columns
+        ]
+        for concept in concepts
+    ]
+
+    row_count, column_count = len(concepts), len(columns)
+    u = [0] * (row_count + 1)
+    v = [0] * (column_count + 1)
+    p = [0] * (column_count + 1)
+    way = [0] * (column_count + 1)
+    for row in range(1, row_count + 1):
+        p[0] = row
+        column0 = 0
+        minimum = [math.inf] * (column_count + 1)
+        used = [False] * (column_count + 1)
+        while True:
+            used[column0] = True
+            row0 = p[column0]
+            delta = math.inf
+            column1 = 0
+            for column in range(1, column_count + 1):
+                if used[column]:
+                    continue
+                current = -weights[row0 - 1][column - 1] - u[row0] - v[column]
+                if current < minimum[column]:
+                    minimum[column] = current
+                    way[column] = column0
+                if minimum[column] < delta:
+                    delta = minimum[column]
+                    column1 = column
+            for column in range(column_count + 1):
+                if used[column]:
+                    u[p[column]] += delta
+                    v[column] -= delta
+                else:
+                    minimum[column] -= delta
+            column0 = column1
+            if p[column0] == 0:
+                break
+        while True:
+            column1 = way[column0]
+            p[column0] = p[column1]
+            column0 = column1
+            if column0 == 0:
+                break
+
+    assignment: dict[str, ScoredCandidate] = {}
+    total = 0
+    for column in range(1, column_count + 1):
+        if not p[column]:
+            continue
+        concept = concepts[p[column] - 1]
+        candidate = by_concept[concept].get(columns[column - 1])
+        if candidate is not None and candidate.score > 0:
+            assignment[concept] = candidate
+            total += candidate.score
+    return assignment, total
 
 
-def suggest_entities(
+def _candidate_payload(candidate: ScoredCandidate) -> dict[str, Any]:
+    return {
+        "source": candidate.candidate.source,
+        "configuration": candidate.configuration,
+        "score": candidate.score,
+        "evidence": [dict(item) for item in candidate.evidence],
+    }
+
+
+def _configured_source_key(configuration: dict[str, Any]) -> str | None:
+    entity_id = configuration.get("entityId")
+    if not isinstance(entity_id, str) or not entity_id:
+        return None
+    attribute = configuration.get("attribute")
+    return entity_id if not isinstance(attribute, str) else f"{entity_id}#{attribute}"
+
+
+def match_entities(
     hass: HomeAssistant,
     concepts: list[dict[str, Any]],
     selected_device_id: str,
-) -> dict[str, str]:
-    """Suggest only high-confidence entity matches for fact concepts."""
-    candidates = collect_candidates(hass)
-    suggestions: dict[str, str] = {}
-    for concept in concepts:
-        if "fact" not in concept.get("usages", []):
-            continue
-        ranked = sorted(
-            (
-                (score_candidate(concept, candidate, selected_device_id), candidate)
-                for candidate in candidates
-            ),
-            key=lambda item: (-item[0], item[1].entity_id),
+    existing_configurations: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return one coherent evidence-bearing proposal for every fact concept."""
+    candidates = collect_candidates(hass, selected_device_id)
+    definitions = {
+        str(concept["concept"]): concept
+        for concept in concepts
+        if "fact" in concept.get("usages", [])
+    }
+    reserved_sources = {
+        source
+        for configuration in (existing_configurations or {}).values()
+        if (source := _configured_source_key(configuration)) is not None
+    }
+    concept_names = list(definitions)
+    ranked: dict[str, list[ScoredCandidate]] = {}
+    for name, concept in definitions.items():
+        values: list[ScoredCandidate] = []
+        diagnostics: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if candidate.source_key in reserved_sources:
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    diagnostics.append(
+                        {
+                            "source": candidate.source,
+                            "source_type": (
+                                "attribute"
+                                if candidate.attribute is not None
+                                else "state"
+                            ),
+                            "owning_device": candidate.device_id,
+                            "accepted": False,
+                            "rejection_reason": "reserved_by_existing_mapping",
+                            "evidence": [],
+                            "score": None,
+                        }
+                    )
+                continue
+            result, rejection, rejection_evidence = _evaluate_candidate(
+                concept, candidate, selected_device_id
+            )
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                diagnostics.append(
+                    {
+                        "source": candidate.source,
+                        "source_type": (
+                            "attribute" if candidate.attribute is not None else "state"
+                        ),
+                        "owning_device": candidate.device_id,
+                        "accepted": result is not None,
+                        "rejection_reason": rejection,
+                        "evidence": (
+                            [dict(item) for item in result.evidence]
+                            if result
+                            else [dict(item) for item in rejection_evidence]
+                        ),
+                        "score": result.score if result else None,
+                    }
+                )
+            if result is not None:
+                values.append(result)
+        if diagnostics:
+            _LOGGER.debug(
+                "fluks matcher candidates for %s on HA Device %s: %s",
+                name,
+                selected_device_id,
+                diagnostics,
+            )
+        ranked[name] = sorted(
+            values, key=lambda item: (-item.score, item.candidate.source_key)
         )
-        if ranked and ranked[0][0] >= SUGGESTION_THRESHOLD:
-            suggestions[str(concept["concept"])] = ranked[0][1].entity_id
-    return suggestions
+
+    assignment, total = _maximum_assignment(concept_names, ranked)
+    proposals: dict[str, dict[str, Any]] = {}
+    for name in concept_names:
+        selected = assignment.get(name)
+        if selected is None:
+            proposals[name] = {
+                "concept": name,
+                "source": None,
+                "configuration": None,
+                "score": 0,
+                "evidence": [],
+                "runner_up_gap": None,
+                "classification": "unsupported" if not ranked[name] else "unresolved",
+                "alternatives": [_candidate_payload(item) for item in ranked[name][:3]],
+            }
+            _LOGGER.debug(
+                "fluks matcher proposal for %s on HA Device %s: classification=%s",
+                name,
+                selected_device_id,
+                proposals[name]["classification"],
+            )
+            continue
+        _, alternative_total = _maximum_assignment(
+            concept_names, ranked, banned=(name, selected.candidate.source_key)
+        )
+        margin = total - alternative_total
+        relationship = any(
+            item["family"] == "relationship" and item["code"] == "selected_device"
+            for item in selected.evidence
+        )
+        orientation_complete = not definitions[name].get("signConvention")
+        if (
+            selected.score >= AUTO_SCORE_THRESHOLD
+            and len(selected.positive_families) >= AUTO_MIN_EVIDENCE_FAMILIES
+            and margin >= AUTO_MARGIN
+            and selected.unit_complete
+            and relationship
+            and orientation_complete
+        ):
+            classification = "auto"
+        elif selected.score >= SUGGESTION_SCORE_THRESHOLD and margin >= AUTO_MARGIN:
+            classification = "suggest"
+        else:
+            classification = "unresolved"
+        alternatives = [
+            item
+            for item in ranked[name]
+            if item.candidate.source_key != selected.candidate.source_key
+        ]
+        proposals[name] = {
+            "concept": name,
+            **_candidate_payload(selected),
+            "runner_up_gap": margin,
+            "classification": classification,
+            "alternatives": [_candidate_payload(item) for item in alternatives[:3]],
+        }
+        _LOGGER.debug(
+            "fluks matcher proposal for %s on HA Device %s: source=%s score=%s "
+            "runner_up_gap=%s classification=%s evidence=%s",
+            name,
+            selected_device_id,
+            selected.candidate.source,
+            selected.score,
+            margin,
+            classification,
+            selected.evidence,
+        )
+    return proposals
+
+
+def _normalize_transforms(submitted: Any) -> list[dict[str, Any]] | None:
+    if submitted is None:
+        return None
+    if not isinstance(submitted, list) or not 1 <= len(submitted) <= 16:
+        raise ValueError("Invalid input transforms")
+    normalized: list[dict[str, Any]] = []
+    for transform in submitted:
+        if not isinstance(transform, dict):
+            raise ValueError("Invalid input transform")  # noqa: TRY004
+        kind = transform.get("type")
+        if kind == "invert" and set(transform) == {"type"}:
+            normalized.append({"type": "invert"})
+        elif kind in {"scale", "offset"}:
+            parameter = "factor" if kind == "scale" else "amount"
+            value = transform.get(parameter)
+            if (
+                set(transform) != {"type", parameter}
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                raise ValueError("Invalid numeric input transform")
+            normalized.append({"type": kind, parameter: value})
+        elif kind == "valueMap":
+            values = transform.get("values")
+            if (
+                set(transform) != {"type", "values"}
+                or not isinstance(values, dict)
+                or not values
+            ):
+                raise ValueError("Invalid input value map")
+            normalized.append({"type": "valueMap", "values": dict(values)})
+        else:
+            raise ValueError("Unsupported input transform")
+    return normalized
+
+
+def _source_details(
+    hass: HomeAssistant, entity_id: str, attribute: str | None
+) -> tuple[Any, str | None, str | None, str]:
+    state = hass.states.get(entity_id)
+    domain = entity_id.split(".", 1)[0]
+    if state is None:
+        return None, None, None, domain
+    if attribute is None:
+        return (
+            state.state,
+            state.attributes.get("unit_of_measurement"),
+            state.attributes.get("state_class"),
+            domain,
+        )
+    return (
+        state.attributes.get(attribute),
+        _attribute_unit(hass, state, attribute),
+        None,
+        domain,
+    )
 
 
 def input_configuration(
@@ -174,28 +1072,47 @@ def input_configuration(
     entity_id: str,
     transforms: list[dict[str, Any]] | None = None,
     attribute: str | None = None,
+    *,
+    preserve_legacy_unit_behavior: bool = False,
+    declared_source_unit: str | None = None,
 ) -> dict[str, Any]:
-    """Build exactly the documented Home Assistant input configuration."""
+    """Build a complete documented Home Assistant input configuration."""
+    value, source_unit, state_class, domain = _source_details(
+        hass, entity_id, attribute
+    )
+    source_unit = source_unit or declared_source_unit
     configuration: dict[str, Any] = {"version": 1, "entityId": entity_id}
     if attribute is not None:
         configuration["attribute"] = attribute
-    state = hass.states.get(entity_id)
-    source_value = (
-        state.attributes.get(attribute)
-        if state is not None and attribute is not None
-        else state.state if state is not None else None
-    )
-    if concept.get("datatype") == "boolean" and (
-        isinstance(source_value, str) and source_value in {"on", "off"}
-        or entity_id.split(".", 1)[0] in {"binary_sensor", "switch", "input_boolean"}
+
+    normalized = list(transforms or [])
+    if not preserve_legacy_unit_behavior and concept.get("unit") is not None:
+        status, generated = unit_conversion(source_unit, concept.get("unit"))
+        if status == "incompatible":
+            raise ValueError("Incompatible input unit")
+        if source_unit is not None:
+            configuration["unit"] = source_unit
+        if generated and normalized[: len(generated)] != generated:
+            normalized = generated + normalized
+
+    if (
+        concept.get("datatype") == "boolean"
+        and not normalized
+        and (
+            value in {"on", "off", "true", "false"}
+            or domain in {"binary_sensor", "input_boolean", "switch"}
+        )
     ):
-        configuration["transforms"] = [
-            {"type": "valueMap", "values": {"on": True, "off": False}}
-        ]
-    if transforms is not None:
-        configuration["transforms"] = transforms
+        values = (
+            {"true": True, "false": False}
+            if value in {"true", "false"}
+            and domain not in {"binary_sensor", "input_boolean", "switch"}
+            else {"on": True, "off": False}
+        )
+        normalized = [{"type": "valueMap", "values": values}]
+    if normalized:
+        configuration["transforms"] = normalized
     if concept.get("cadence") == "interval":
-        state_class = state.attributes.get("state_class") if state else None
         configuration["source"] = {
             "kind": (
                 "cumulative"
@@ -207,11 +1124,24 @@ def input_configuration(
 
 
 def normalize_input_configuration(
-    hass: HomeAssistant, concept: dict[str, Any], submitted: Any
+    hass: HomeAssistant,
+    concept: dict[str, Any],
+    submitted: Any,
+    *,
+    preserve_legacy_unit_behavior: bool = False,
 ) -> dict[str, Any]:
     """Validate editable input configuration without changing its v1 contract."""
     if not isinstance(submitted, dict) or submitted.get("version", 1) != 1:
         raise ValueError("Invalid input Mapping")
+    if set(submitted) - {
+        "version",
+        "entityId",
+        "attribute",
+        "unit",
+        "transforms",
+        "source",
+    }:
+        raise ValueError("Unexpected input Mapping field")
     entity_id = submitted.get("entityId")
     if not isinstance(entity_id, str) or "." not in entity_id:
         raise ValueError("Invalid input entity")
@@ -220,29 +1150,26 @@ def normalize_input_configuration(
         not isinstance(attribute, str) or not attribute.strip()
     ):
         raise ValueError("Invalid input attribute")
-    transforms = submitted.get("transforms")
-    if transforms is not None:
-        if not isinstance(transforms, list) or not 1 <= len(transforms) <= 16:
-            raise ValueError("Invalid input transforms")
-        normalized: list[dict[str, Any]] = []
-        for transform in transforms:
-            if not isinstance(transform, dict):
-                raise ValueError("Invalid input transform")
-            kind = transform.get("type")
-            if kind == "invert" and set(transform) == {"type"}:
-                normalized.append({"type": "invert"})
-            elif kind in {"scale", "offset"}:
-                parameter = "factor" if kind == "scale" else "amount"
-                value = transform.get(parameter)
-                if set(transform) != {"type", parameter} or isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise ValueError("Invalid numeric input transform")
-                normalized.append({"type": kind, parameter: value})
-            elif kind == "valueMap":
-                values = transform.get("values")
-                if set(transform) != {"type", "values"} or not isinstance(values, dict) or not values:
-                    raise ValueError("Invalid input value map")
-                normalized.append({"type": "valueMap", "values": dict(values)})
-            else:
-                raise ValueError("Unsupported input transform")
-        transforms = normalized
-    return input_configuration(hass, concept, entity_id, transforms, attribute)
+    declared_unit = submitted.get("unit")
+    if declared_unit is not None and (
+        not isinstance(declared_unit, str) or not declared_unit.strip()
+    ):
+        raise ValueError("Invalid input unit")
+    transforms = _normalize_transforms(submitted.get("transforms"))
+    configuration = input_configuration(
+        hass,
+        concept,
+        entity_id,
+        transforms,
+        attribute,
+        preserve_legacy_unit_behavior=preserve_legacy_unit_behavior,
+        declared_source_unit=declared_unit,
+    )
+    actual_unit = _source_details(hass, entity_id, attribute)[1]
+    if (
+        declared_unit is not None
+        and actual_unit is not None
+        and _normalized_unit(declared_unit) != _normalized_unit(actual_unit)
+    ):
+        raise ValueError("Input unit no longer matches Home Assistant")
+    return configuration

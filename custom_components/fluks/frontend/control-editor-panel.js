@@ -20,6 +20,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._pendingControl = undefined;
     this._spaceHeaterValidationError = false;
     this._clearedInputConcepts = new Set();
+    this._proposalDraftConcepts = new Set();
     this._popstate = () => {
       this._view = history.state?.fluksView ?? { name: "home" };
       this._detail = this._draft = undefined;
@@ -40,6 +41,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._pendingControl = undefined;
       this._spaceHeaterValidationError = false;
       this._clearedInputConcepts.clear();
+      this._proposalDraftConcepts.clear();
       this._view = { name: "home" };
     }
     if (this.isConnected) this._loadContext();
@@ -300,10 +302,22 @@ class FluksControlEditorPanel extends HTMLElement {
         : detail.mappings[concept.concept]?.configuration ?? {};
       const selected = editableConversions
         ? configuration?.entityId ?? ""
-        : detail.mappings[concept.concept]?.configuration?.entityId || detail.suggestions[concept.concept] || "";
-      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept, configuration.attribute)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${editableConversions && selected ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
+        : detail.mappings[concept.concept]?.configuration?.entityId || "";
+      const proposal = detail.proposals?.[concept.concept];
+      const proposed = editableConversions && !selected && proposal?.configuration
+        && ["suggest", "unresolved"].includes(proposal.classification)
+        ? this._proposalChoice(concept.concept, proposal)
+        : "";
+      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept, configuration.attribute)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${proposed}${editableConversions && selected ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
     }
     return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
+  }
+  _proposalChoice(concept, proposal) {
+    const source = proposal.source ?? {};
+    const entity = this._entityRecord(source.entityId);
+    if (!entity) return "";
+    const detail = [source.attribute || this._t("entity_state"), source.entityId].filter(Boolean).join(" · ");
+    return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(entity.name)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
   }
   _editableDeviceProperties(properties, deviceType) {
     const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : [])];
@@ -361,9 +375,31 @@ class FluksControlEditorPanel extends HTMLElement {
         this._wirePickers();
       }, button.dataset.pickerAttribute, button.dataset.pickerKey);
     });
+    this.shadowRoot.querySelectorAll("[data-use-proposal]").forEach((button) => {
+      button.onclick = () => {
+        const concept = button.dataset.useProposal;
+        const proposal = (this._detail?.proposals ?? this._draft?.proposals)?.[concept];
+        if (!proposal?.configuration || !this._inputDraft?.[concept]) return;
+        this._captureInputProperties();
+        this._inputDraft[concept] = clone(proposal.configuration);
+        this._proposalDraftConcepts.add(concept);
+        this._clearedInputConcepts.delete(concept);
+        this._renderInputDraft();
+      };
+    });
   }
   _selectInputEntity(concept, entityId, attribute = "") {
     this._captureInputProperties();
+    const current = this._inputDraft[concept];
+    if (this._proposalDraftConcepts.has(concept)
+      && (current.entityId !== entityId || (current.attribute ?? "") !== attribute)) {
+      this._inputDraft[concept] = { version: 1, entityId };
+      if (attribute) this._inputDraft[concept].attribute = attribute;
+      this._proposalDraftConcepts.delete(concept);
+      if (entityId) this._clearedInputConcepts.delete(concept); else this._clearedInputConcepts.add(concept);
+      this._renderInputDraft();
+      return;
+    }
     this._inputDraft[concept].entityId = entityId;
     if (attribute) this._inputDraft[concept].attribute = attribute;
     else delete this._inputDraft[concept].attribute;
@@ -375,6 +411,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._inputDraftDevice = undefined;
     this._editProperties = undefined;
     this._clearedInputConcepts.clear();
+    this._proposalDraftConcepts.clear();
     this._spaceHeaterValidationError = false;
     history.back();
   }
@@ -457,9 +494,14 @@ class FluksControlEditorPanel extends HTMLElement {
       this._inputDraftDevice = this._detail.id;
       this._spaceHeaterValidationError = false;
       this._clearedInputConcepts.clear();
+      this._proposalDraftConcepts.clear();
       this._inputDraft = Object.fromEntries(this._detail.concepts.map((concept) => {
         const existing = this._detail.mappings[concept.concept]?.configuration;
-        return [concept.concept, clone(existing ?? { version: 1, entityId: this._detail.suggestions[concept.concept] || "" })];
+        const proposal = this._detail.proposals?.[concept.concept];
+        if (!existing && proposal?.classification === "auto" && proposal.configuration) {
+          this._proposalDraftConcepts.add(concept.concept);
+        }
+        return [concept.concept, clone(existing ?? (proposal?.classification === "auto" ? proposal.configuration : null) ?? { version: 1, entityId: "" })];
       }));
       this._editProperties = clone(this._editableDeviceProperties(this._detail.properties, this._detail.type));
     }
@@ -484,6 +526,7 @@ class FluksControlEditorPanel extends HTMLElement {
         this._inputDraftDevice = undefined;
         this._editProperties = undefined;
         this._clearedInputConcepts.clear();
+        this._proposalDraftConcepts.clear();
         this._spaceHeaterValidationError = false;
         history.back();
       }
@@ -500,7 +543,7 @@ class FluksControlEditorPanel extends HTMLElement {
         <label>${esc(this._t("home_assistant_device"))}${this._pickerValue("device", this._view.haDeviceId || "", "ha_device_id")}</label></section>`;
     }
     if (type && this._draft && this._view.haDeviceId) {
-      const detail = { concepts: this._draft.concepts, mappings: {}, suggestions: this._draft.suggestions };
+      const detail = { concepts: this._draft.concepts, mappings: {}, proposals: this._draft.proposals };
       const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(type.type, this._inputDraft, this._draft.properties);
       body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError)}`;
     }
@@ -513,6 +556,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._inputDraft = undefined;
       this._inputDraftDevice = undefined;
       this._clearedInputConcepts.clear();
+      this._proposalDraftConcepts.clear();
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
       this._renderAdd();
     });
@@ -543,10 +587,16 @@ class FluksControlEditorPanel extends HTMLElement {
       this._spaceHeaterValidationError = false;
       this._inputDraftDevice = `add:${this._view.deviceType}:${haDeviceId}`;
       this._clearedInputConcepts.clear();
-      this._inputDraft = Object.fromEntries(draft.concepts.map((concept) => [concept.concept, {
-        version: 1,
-        entityId: draft.suggestions[concept.concept] || "",
-      }]));
+      this._proposalDraftConcepts.clear();
+      this._inputDraft = Object.fromEntries(draft.concepts.map((concept) => {
+        const proposal = draft.proposals?.[concept.concept];
+        if (proposal?.classification === "auto" && proposal.configuration) {
+          this._proposalDraftConcepts.add(concept.concept);
+        }
+        return [concept.concept, clone(proposal?.classification === "auto" && proposal.configuration
+          ? proposal.configuration
+          : { version: 1, entityId: "" })];
+      }));
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
       this._renderAdd();
     } catch (_) { this._renderAdd(); }
@@ -646,7 +696,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
     .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
     label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input,select{box-sizing:border-box;width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}.property-input{position:relative;display:block;min-width:0}.property-input input{min-width:0;padding-right:54px}.property-input>span{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--secondary-text-color);font-weight:500;pointer-events:none}.physical-property small{font-weight:400}.validation-error{color:var(--error-color);font-weight:500}
-    .mapping-field{min-width:0}.input-conversions{display:grid;gap:10px;margin-top:10px}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}.input-conversions li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.input-conversions .order{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--primary-color);color:#fff;font-weight:700}.conversion-copy{display:grid;min-width:0}.conversion-copy strong,.conversion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.input-conversions .row-actions{display:flex;gap:4px;flex-wrap:wrap}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.add-conversion{justify-self:start}.conversion-editor{padding:8px 18px 18px}.conversion-editor [hidden]{display:none}
+    .mapping-field{min-width:0}.matcher-proposal{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 12px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.matcher-proposal span{display:grid;min-width:0}.matcher-proposal small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color)}.input-conversions{display:grid;gap:10px;margin-top:10px}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}.input-conversions li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.input-conversions .order{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--primary-color);color:#fff;font-weight:700}.conversion-copy{display:grid;min-width:0}.conversion-copy strong,.conversion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.input-conversions .row-actions{display:flex;gap:4px;flex-wrap:wrap}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.add-conversion{justify-self:start}.conversion-editor{padding:8px 18px 18px}.conversion-editor [hidden]{display:none}
     .picker-value{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;padding:10px 12px;background:var(--secondary-background-color);overflow:hidden}.source-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;color:var(--primary-color)}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}
     dialog{width:min(620px,calc(100vw - 32px));max-height:min(720px,calc(100vh - 32px));padding:0;border:1px solid var(--divider-color);border-radius:14px;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 14px 45px rgba(0,0,0,.38)}dialog::backdrop{background:rgba(0,0,0,.58)}.dialog-heading{display:flex;justify-content:space-between;align-items:center;padding:18px 18px 8px}.dialog-heading h2{margin:0}.search{padding:8px 16px;margin:0}.picker-results{max-height:min(530px,65vh);overflow:auto;border-top:1px solid var(--divider-color)}.picker-row{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;background:transparent;padding:8px 15px;overflow:hidden}.picker-row.selected{outline:2px solid var(--primary-color);outline-offset:-2px}.picker-row .trailing{flex:0 1 150px;min-width:0;max-width:28%;margin-left:auto;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}.empty-results{padding:22px}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}

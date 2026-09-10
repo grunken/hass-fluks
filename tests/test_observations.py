@@ -2,9 +2,8 @@
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from custom_components.fluks.observations import RealtimeObservationPublisher
 
@@ -247,6 +246,49 @@ async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
         {"deviceId": "heater-external", "heatPump.tankTemperature": 68},
         {"deviceId": "heater-external", "heatPump.power": 68},
     ]
+
+
+async def test_declared_temperature_mapping_defers_its_transform_to_backend_once(hass):
+    """New explicit-unit mappings publish raw source values for Mapping transforms."""
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "heater-internal", "deviceId": "heater-external"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "heater-internal",
+        "concept": "heatPump.temperature",
+        "configuration": {
+            "version": 1,
+            "entityId": "climate.buffer",
+            "attribute": "current_temperature",
+            "unit": "°F",
+            "transforms": [
+                {"type": "offset", "amount": -32},
+                {"type": "scale", "factor": 5 / 9},
+            ],
+        },
+    }]
+    api.get_device_type_catalog.return_value = [{
+        "type": "heatPump",
+        "concepts": [
+            {"concept": "heatPump.temperature", "datatype": "number", "unit": "°C"}
+        ],
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "climate.buffer",
+        "heat",
+        {"current_temperature": 68, "current_temperature_unit": "°F"},
+    )
+    await hass.async_block_till_done()
+
+    send.assert_awaited_once_with(
+        {"deviceId": "heater-external", "heatPump.temperature": 68}
+    )
 
 
 async def test_non_numeric_temperature_attribute_keeps_text_without_unit(hass):
@@ -553,7 +595,7 @@ async def test_real_space_heater_mappings_override_fallback_values(hass):
             datetime.now(timezone.utc),
         ),
         {
-            "sensor.real_power": [("heater-external", "spaceHeater.power", False, None, None)],
+                "sensor.real_power": [("heater-external", "spaceHeater.power", False, None, None, False)],
         },
         {},
     )
@@ -568,7 +610,7 @@ async def test_real_space_heater_mappings_override_fallback_values(hass):
             datetime.now(timezone.utc),
         ),
         {
-            "sensor.real_energy": [("heater-external", "spaceHeater.energy", False, None, None)],
+            "sensor.real_energy": [("heater-external", "spaceHeater.energy", False, None, None, False)],
         },
         {},
     )

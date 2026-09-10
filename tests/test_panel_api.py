@@ -11,31 +11,33 @@ from custom_components.fluks.const import (
     CONF_INTEGRATION_KEY,
     DOMAIN,
 )
+from custom_components.fluks.device import stable_device_id
 from custom_components.fluks.panel_api import (
+    COMMAND_ADD_REVIEW,
     COMMAND_ADD_SAVE,
-    COMMANDS,
     COMMAND_CONTEXT,
-    COMMAND_CONTROL_SAVE,
     COMMAND_CONTROL_CAPABILITIES,
-    COMMAND_DEVICE_DETAIL,
+    COMMAND_CONTROL_SAVE,
     COMMAND_DEVICE_DELETE,
+    COMMAND_DEVICE_DETAIL,
     COMMAND_DEVICE_SAVE,
     COMMAND_SITE_DELETE,
+    COMMANDS,
+    _editable_property_keys,
     _has_local_context,
-    _migrate_legacy_mappings,
     _mappable_concepts,
+    _migrate_legacy_mappings,
     async_register_panel_commands,
-    websocket_context,
-    websocket_control_save,
-    websocket_control_capabilities,
+    websocket_add_review,
     websocket_add_save,
-    websocket_device_detail,
+    websocket_context,
+    websocket_control_capabilities,
+    websocket_control_save,
     websocket_device_delete,
+    websocket_device_detail,
     websocket_device_save,
     websocket_site_delete,
-    _editable_property_keys,
 )
-from custom_components.fluks.device import stable_device_id
 
 KEY = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
 
@@ -68,6 +70,25 @@ def connection():
     result = MagicMock()
     result.user.is_admin = True
     return result
+
+
+def input_proposal(concept, entity_id, *, classification="auto", configuration=None):
+    """Build the rich matcher contract used by review responses."""
+    configured = configuration or {"version": 1, "entityId": entity_id}
+    return {
+        "concept": concept,
+        "source": {"entityId": entity_id},
+        "configuration": configured,
+        "score": 20,
+        "evidence": [
+            {"family": "relationship", "code": "selected_device", "weight": 4},
+            {"family": "unit", "code": "exact_unit", "weight": 4},
+            {"family": "semantics", "code": "name_role", "weight": 4},
+        ],
+        "runner_up_gap": 8,
+        "classification": classification,
+        "alternatives": [],
+    }
 
 
 def test_registers_only_finite_product_commands(hass):
@@ -350,6 +371,7 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
     payload = api.create_mapping.await_args.args[1]
     assert payload["concept"] == "battery.soc"
     assert payload["configuration"]["entityId"] == "sensor.new_soc"
+    assert payload["configuration"]["unit"] == "%"
     assert payload["configuration"]["transforms"] == [
         {"type": "invert"},
         {"type": "scale", "factor": 0.5},
@@ -360,6 +382,73 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
         "type": "battery",
     }
     conn.send_result.assert_called_once_with(6, {"device_id": "device-new"})
+
+
+async def test_add_review_proposal_persists_unchanged_through_add_save(hass):
+    """The rich review configuration is the configuration persisted by Add Save."""
+    entry = make_entry(hass)
+    hass.states.async_set(
+        "sensor.new_battery_power",
+        "1.25",
+        {"unit_of_measurement": "kW", "device_class": "power"},
+    )
+    api = MagicMock(spec=FluksApiClient)
+    api.list_devices = AsyncMock(return_value=[])
+    api.create_device = AsyncMock(return_value={"id": "device-new", "type": "battery"})
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock(return_value={"id": "mapping-new"})
+    concept = {
+        "concept": "battery.power", "datatype": "number", "unit": "W",
+        "cadence": "realtime", "usages": ["fact"], "source": "mapping",
+    }
+    catalog = {"battery": {"type": "battery", "concepts": [concept]}}
+    configuration = {
+        "version": 1,
+        "entityId": "sensor.new_battery_power",
+        "unit": "kW",
+        "transforms": [{"type": "scale", "factor": 1000}],
+    }
+    proposal = input_proposal(
+        "battery.power", "sensor.new_battery_power", configuration=configuration
+    )
+    registry_device = MagicMock(
+        name_by_user="Battery", name="Battery", manufacturer="Example", model="One"
+    )
+    registry = MagicMock()
+    registry.async_get.return_value = registry_device
+    review_connection = connection()
+    save_connection = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={})),
+        patch("custom_components.fluks.panel_api.dr.async_get", return_value=registry),
+        patch(
+            "custom_components.fluks.panel_api.match_entities",
+            return_value={"battery.power": proposal},
+        ),
+    ):
+        websocket_add_review(hass, review_connection, {
+            "id": 61, "type": COMMAND_ADD_REVIEW, "entry_id": entry.entry_id,
+            "device_type": "battery", "ha_device_id": "ha-new",
+        })
+        await hass.async_block_till_done()
+        review = review_connection.send_result.call_args.args[1]
+
+        websocket_add_save(hass, save_connection, {
+            "id": 62, "type": COMMAND_ADD_SAVE, "entry_id": entry.entry_id,
+            "device_type": "battery", "ha_device_id": "ha-new",
+            "mappings": {
+                "battery.power": review["proposals"]["battery.power"]["configuration"]
+            },
+            "properties": {},
+        })
+        await hass.async_block_till_done()
+
+    assert review["proposals"] == {"battery.power": proposal}
+    assert api.create_mapping.await_args.args[1]["configuration"] == configuration
+    save_connection.send_result.assert_called_once_with(62, {"device_id": "device-new"})
 
 
 async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(hass):
@@ -604,12 +693,16 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
             ],
         }
     }
+    power_proposal = input_proposal("battery.power", "sensor.suggested_power")
     conn = connection()
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
         patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
         patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={"device_type_battery": "Battery"})),
-        patch("custom_components.fluks.panel_api.suggest_entities", return_value={"battery.power": "sensor.suggested_power"}) as matcher,
+        patch(
+            "custom_components.fluks.panel_api.match_entities",
+            return_value={"battery.power": power_proposal},
+        ) as matcher,
     ):
         websocket_device_detail(
             hass,
@@ -620,7 +713,7 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
 
     result = conn.send_result.call_args.args[1]
     assert result["mappings"]["battery.soc"]["configuration"]["entityId"] == "sensor.existing_soc"
-    assert result["suggestions"] == {"battery.power": "sensor.suggested_power"}
+    assert result["proposals"] == {"battery.power": power_proposal}
     assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.power"]
 
 
@@ -652,13 +745,14 @@ async def test_explicitly_cleared_suggestion_stays_unmapped(hass):
         }
     }
     refresh = AsyncMock()
-    matcher = MagicMock(return_value={"battery.soc": "sensor.suggested_soc"})
+    soc_proposal = input_proposal("battery.soc", "sensor.suggested_soc")
+    matcher = MagicMock(return_value={"battery.soc": soc_proposal})
 
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
         patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
         patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={"device_type_battery": "Battery"})),
-        patch("custom_components.fluks.panel_api.suggest_entities", matcher),
+        patch("custom_components.fluks.panel_api.match_entities", matcher),
         patch("custom_components.fluks.panel_api.async_refresh_observations", refresh),
     ):
         websocket_device_save(
@@ -709,7 +803,7 @@ async def test_explicitly_cleared_suggestion_stays_unmapped(hass):
     api.update_mapping.assert_not_awaited()
     result = detail_connection.send_result.call_args.args[1]
     assert result["mappings"] == {}
-    assert result["suggestions"] == {"battery.soc": "sensor.suggested_soc"}
+    assert result["proposals"] == {"battery.soc": soc_proposal}
     assert [item["concept"] for item in matcher.call_args.args[1]] == ["battery.soc"]
     assert entry.options[CONF_DEVICE_CONTEXTS]["device-a"][
         CONF_CLEARED_MAPPING_CONCEPTS
@@ -880,7 +974,7 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
     assert [item["concept"] for item in result["controls"]] == ["site.power"]
     assert result["mappings"]["site.power"]["configuration"]["entityId"] == "sensor.grid_power"
     assert result["output_mappings"]["site.power"][0]["id"] == "power-out"
-    assert result["suggestions"] == {}
+    assert result["proposals"] == {}
     api.get_device.assert_awaited_once_with("site-a", "site-device")
     api.list_mappings.assert_awaited_once_with("site-a", device_id="site-device")
 

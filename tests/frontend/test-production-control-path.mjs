@@ -173,6 +173,7 @@ test("production Add Device edits and persists suggested Input Mapping conversio
       energy: "Energy", conversions: "Conversions", no_transforms: "No conversions", add_conversion: "Add conversion",
       save_device: "Save device", cancel: "Cancel", optional: "Optional", up: "Up", down: "Down", edit: "Edit", remove: "Remove",
       invert: "Invert sign", scale: "Scale", offset: "Offset", device_information: "Device information", name: "Name", vendor: "Vendor", model: "Model",
+      suggested_match: "Suggested match", possible_match: "Possible match", use_suggestion: "Use",
     },
     device_types: [{ type: "battery", name: "Battery" }],
     ha_devices: [{ id: "ha-battery", name: "GoodWe battery", manufacturer: "GoodWe", model: "GW10K" }],
@@ -181,7 +182,16 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   panel._view = { name: "add", deviceType: "battery" };
   const review = {
     concepts: [{ concept: "battery.power", label: "Power", cadence: "realtime" }],
-    suggestions: { "battery.power": "sensor.battery_power" },
+    proposals: { "battery.power": {
+      concept: "battery.power",
+      source: { entityId: "sensor.battery_power" },
+      configuration: { version: 1, entityId: "sensor.battery_power", unit: "W" },
+      score: 20,
+      evidence: [{ family: "unit", code: "exact_unit", weight: 4 }],
+      runner_up_gap: 8,
+      classification: "auto",
+      alternatives: [],
+    } },
     properties: { displayName: "GoodWe battery", vendor: "GoodWe", model: "GW10K" },
   };
   const calls = [];
@@ -205,23 +215,19 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   panel._renderAdd();
   assert.match(rendered, /sensor\.battery_power/);
   assert.match(rendered, /Add conversion/);
-  assert.deepEqual(panel._inputDraft["battery.power"], { version: 1, entityId: "sensor.battery_power" });
+  assert.deepEqual(panel._inputDraft["battery.power"], { version: 1, entityId: "sensor.battery_power", unit: "W" });
 
   assert.equal(panel._commitInputConversion("battery.power", undefined, "invert", ""), true);
   assert.equal(panel._commitInputConversion("battery.power", undefined, "scale", "0.5"), true);
   panel._renderAdd();
   assert.ok(rendered.indexOf("Invert sign") < rendered.indexOf("Scale"));
 
-  panel._selectInputEntity("battery.power", "");
-  assert.doesNotMatch(rendered, /Add conversion/);
-  assert.equal(panel._collectForm(true).mappings["battery.power"].entityId, "");
-  panel._selectInputEntity("battery.power", "sensor.battery_power");
-  assert.match(rendered, /Add conversion/);
   await save.onclick();
   const persisted = calls.find((call) => call.type === "fluks/config/add_save").data.mappings["battery.power"];
   assert.deepEqual(persisted, {
     version: 1,
     entityId: "sensor.battery_power",
+    unit: "W",
     transforms: [{ type: "invert" }, { type: "scale", factor: 0.5 }],
   });
 
@@ -230,7 +236,7 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   reopened._view = { name: "edit", deviceId: "device-created" };
   reopened._detail = {
     id: "device-created", type: "battery", type_name: "Battery", label: "Battery · GoodWe battery",
-    concepts: review.concepts, suggestions: {}, properties: review.properties,
+    concepts: review.concepts, proposals: {}, properties: review.properties,
     mappings: { "battery.power": { configuration: persisted } },
   };
   reopened._frame = (_title, body) => { rendered = body; };
@@ -240,6 +246,62 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   assert.deepEqual(reopened._inputDraft["battery.power"], persisted);
   assert.match(rendered, /Invert sign/);
   assert.match(rendered, /Scale/);
+});
+
+test("suggested and ambiguous proposals require acceptance and remain fully overridable", () => {
+  for (const classification of ["suggest", "unresolved"]) {
+    const panel = new Panel();
+    panel._context = {
+      translations: {
+        measurements: "Measurements", suggested_match: "Suggested match",
+        possible_match: "Possible match", use_suggestion: "Use", entity_state: "State",
+      },
+      entities: [{ entity_id: "sensor.battery_power", name: "Battery power", device_id: "ha-battery" }],
+    };
+    panel._hass = {
+      states: { "sensor.battery_power": { state: "1.2", attributes: { unit_of_measurement: "kW" } } },
+      language: "en", localize: () => undefined,
+    };
+    panel._detail = {
+      id: `device-${classification}`, type: "battery", type_name: "Battery", label: "Battery", properties: {},
+      concepts: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
+      mappings: {},
+      proposals: { "battery.power": {
+        concept: "battery.power",
+        source: { entityId: "sensor.battery_power" },
+        configuration: {
+          version: 1, entityId: "sensor.battery_power", unit: "kW",
+          transforms: [{ type: "scale", factor: 1000 }],
+        },
+        score: 16, evidence: [], runner_up_gap: classification === "suggest" ? 5 : 0,
+        classification, alternatives: [],
+      } },
+    };
+    let body; const use = {}; const cancel = {}; const save = {};
+    panel._frame = (_title, html) => { body = html; };
+    panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+    panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-use-proposal]" ? [use] : [];
+
+    panel._renderEdit();
+    assert.equal(panel._inputDraft["battery.power"].entityId, "");
+    assert.match(body, classification === "suggest" ? /Suggested match/ : /Possible match/);
+    use.dataset = { useProposal: "battery.power" };
+    // Rewire after the minimal DOM stub gains the button's dataset.
+    panel._wirePickers();
+    use.onclick();
+    assert.deepEqual(panel._inputDraft["battery.power"], {
+      version: 1, entityId: "sensor.battery_power", unit: "kW",
+      transforms: [{ type: "scale", factor: 1000 }],
+    });
+
+    panel._selectInputEntity("battery.power", "sensor.manual_power");
+    assert.deepEqual(panel._inputDraft["battery.power"], {
+      version: 1, entityId: "sensor.manual_power",
+    });
+    assert.deepEqual(panel._collectForm(true).mappings["battery.power"], {
+      version: 1, entityId: "sensor.manual_power",
+    });
+  }
 });
 
 test("production action dialog selects a global Entity before compatible Action", () => {
@@ -357,7 +419,7 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
   }, entities: [] };
   panel._hass = { states: {}, language: "en", localize: () => undefined };
   panel._detail = {
-    id: "site-device", type: "site", type_name: "Site", name: "Home", label: "Home", properties: {}, suggestions: {},
+    id: "site-device", type: "site", type_name: "Site", name: "Home", label: "Home", properties: {}, proposals: {},
     concepts: [
       { concept: "site.power", label: "Power", cadence: "realtime" },
       { concept: "site.energy", label: "Energy", cadence: "interval" },
@@ -405,7 +467,7 @@ test("heat pump mapping UI renders only finalized catalog concepts", () => {
   panel._context = { translations: { measurements: "Measurements", energy: "Energy", configured: "Configured", not_configured: "Not configured" }, entities: [] };
   panel._hass = { states: {}, language: "en", localize: () => undefined };
   panel._detail = {
-    id: "heat-pump", type: "heatPump", type_name: "Heat pump", properties: {}, suggestions: {}, mappings: {}, output_mappings: {},
+    id: "heat-pump", type: "heatPump", type_name: "Heat pump", properties: {}, proposals: {}, mappings: {}, output_mappings: {},
     concepts: [
       { concept: "heatPump.power", label: "Power", cadence: "realtime" },
       { concept: "heatPump.energy", label: "Energy", cadence: "interval" },
@@ -473,7 +535,7 @@ test("production Edit mappings path saves and restores ordered input conversions
   const detail = {
     id: "site-device", type: "site", type_name: "Site", label: "Site · Home", properties: {},
     concepts: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
-    mappings: { "site.power": { configuration: { version: 1, entityId: "sensor.grid_power" } } }, suggestions: {},
+    mappings: { "site.power": { configuration: { version: 1, entityId: "sensor.grid_power" } } }, proposals: {},
   };
   const panel = new Panel(); panel._context = { translations: {}, entities: [] }; panel._detail = detail;
   panel._hass = { states: { "sensor.grid_power": { state: "4919", attributes: { friendly_name: "Grid power", unit_of_measurement: "W" } } }, language: "en", localize: () => undefined };
@@ -536,7 +598,7 @@ test("Battery physical fields keep learned knowledge separate from editable valu
       "battery.capacityKwhEstimated": 15.8,
       "battery.socMinimumObserved": 15,
       "battery.socMaximumObserved": 97,
-    }, concepts: [], mappings: {}, suggestions: {}, controls: [], output_mappings: {},
+    }, concepts: [], mappings: {}, proposals: {}, controls: [], output_mappings: {},
   };
   let body;
   panel._frame = (_title, html) => { body = html; };
@@ -596,7 +658,7 @@ test("Solar installed capacity keeps learned suggestion separate and round-trips
   panel._view = { name: "edit" };
   panel._detail = {
     id: "solar-device", type: "solar", type_name: "Solar", label: "Solar · Test",
-    properties: learned, concepts: [], mappings: {}, suggestions: {},
+    properties: learned, concepts: [], mappings: {}, proposals: {},
   };
   const cancel = {}; const save = {}; let body; let saved;
   const installedInput = { dataset: { property: "installedKWp" }, value: "", type: "number" };
@@ -667,7 +729,7 @@ test("Space Heater ratedPowerW uses the existing Device Save property path", asy
   panel._context = { translations: { installation: "Installation", rated_power: "Rated power" }, entities: [] };
   panel._hass = { states: {}, language: "en", localize: () => undefined };
   panel._view = { name: "edit" };
-  panel._detail = { id: "space-heater-device", type: "spaceHeater", type_name: "Space heater", label: "Space heater", properties: { ratedPowerW: 1800 }, concepts: [], mappings: {}, suggestions: {} };
+  panel._detail = { id: "space-heater-device", type: "spaceHeater", type_name: "Space heater", label: "Space heater", properties: { ratedPowerW: 1800 }, concepts: [], mappings: {}, proposals: {} };
   const cancel = {};
   const save = {};
   let body;
@@ -696,7 +758,7 @@ test("successful Battery property Save discards the stale draft before reopening
   panel._detail = {
     id: "battery-device", type: "battery", type_name: "Battery", label: "Battery · Test",
     properties: { capacityKwh: 16.058507, "battery.capacityKwhEstimated": 14.038032 },
-    concepts: [], mappings: {}, suggestions: {},
+    concepts: [], mappings: {}, proposals: {},
   };
   const cancel = {}; const save = {}; let body; let saved;
   const propertyInputs = [
@@ -742,7 +804,7 @@ test("Space Heater rated power is required only without real Power or Energy map
     panel._hass = { states: {}, language: "en", localize: () => undefined };
     panel._view = { name: "edit" };
     const concepts = concept ? [{ concept, label: concept, datatype: "number", unit: "W", cadence: "realtime" }] : [];
-    panel._detail = { id: "space-heater-device", type: "spaceHeater", label: "Space heater", properties: ratedPower === undefined ? {} : { ratedPowerW: ratedPower }, concepts, mappings: concept ? { [concept]: { configuration: { entityId: "sensor.real" } } } : {}, suggestions: {} };
+    panel._detail = { id: "space-heater-device", type: "spaceHeater", label: "Space heater", properties: ratedPower === undefined ? {} : { ratedPowerW: ratedPower }, concepts, mappings: concept ? { [concept]: { configuration: { entityId: "sensor.real" } } } : {}, proposals: {} };
     const cancel = {}; const save = {}; let calls = 0; let body;
     panel._frame = (_title, html) => { body = html; };
     panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
@@ -768,7 +830,7 @@ test("Input Mapping conversions follow the unsaved Entity draft immediately", ()
   panel._detail = {
     id: "device", type: "battery", type_name: "Battery", label: "Battery · Test", properties: {},
     concepts: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
-    mappings: {}, suggestions: {},
+    mappings: {}, proposals: {},
   };
   let body;
   panel._frame = (_title, html) => { body = html; };
@@ -812,7 +874,7 @@ test("production Input Mapping picker offers entity state and attributes directl
   panel._renderInputDraft = () => {};
   const detail = {
     concepts: [{ concept: "heatPump.temperature", label: "Temperature", cadence: "realtime" }],
-    mappings: {}, suggestions: {},
+    mappings: {}, proposals: {},
   };
 
   const sources = panel._entitySources({ id: "climate.buffer", name: "Buffer", secondary: "climate.buffer" }, true);
@@ -867,7 +929,7 @@ test("clearing a persisted Input Mapping remains cleared until Save or Cancel", 
   panel._detail = {
     id: "device", type: "battery", type_name: "Battery", label: "Battery · Test", properties: {},
     concepts: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", cadence: "realtime" }],
-    mappings: { "battery.power": { configuration: persisted } }, suggestions: {},
+    mappings: { "battery.power": { configuration: persisted } }, proposals: {},
   };
   let body; let saved; let backCount = 0;
   const originalBack = history.back; history.back = () => { backCount += 1; };

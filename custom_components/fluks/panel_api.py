@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -49,9 +48,9 @@ from .device import (
     device_type_name,
     stable_device_id,
 )
-from .matcher import normalize_input_configuration, suggest_entities
-from .output_mapping import OutputMappingValidationError, validate_output_configuration
+from .matcher import match_entities, normalize_input_configuration
 from .observations import async_refresh_observations
+from .output_mapping import OutputMappingValidationError, validate_output_configuration
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
 COMMAND_DEVICE_DETAIL = f"{DOMAIN}/config/device"
@@ -187,7 +186,7 @@ def _ha_context(entry: ConfigEntry, internal_id: str) -> str | None:
 
 
 def _cleared_mapping_concepts(entry: ConfigEntry, internal_id: str) -> set[str]:
-    """Return matcher suggestions the user explicitly cleared."""
+    """Return matcher proposals the user explicitly cleared."""
     contexts = entry.options.get(CONF_DEVICE_CONTEXTS, {})
     context = contexts.get(internal_id, {}) if isinstance(contexts, dict) else {}
     values = context.get(CONF_CLEARED_MAPPING_CONCEPTS, [])
@@ -451,7 +450,19 @@ async def websocket_device_detail(hass, connection, msg):
             for item in concepts
             if item["concept"] not in existing and item["concept"] not in cleared
         ]
-        suggestions = suggest_entities(hass, missing, ha_device_id) if ha_device_id else {}
+        proposals = (
+            match_entities(
+                hass,
+                missing,
+                ha_device_id,
+                {
+                    name: dict(mapping.get("configuration") or {})
+                    for name, mapping in existing.items()
+                },
+            )
+            if ha_device_id
+            else {}
+        )
         translations = await _panel_translations(hass)
         connection.send_result(
             msg["id"],
@@ -484,7 +495,7 @@ async def websocket_device_detail(hass, connection, msg):
                     name: [_safe_mapping(mapping) for mapping in mappings]
                     for name, mappings in output_mappings.items()
                 },
-                "suggestions": suggestions,
+                "proposals": proposals,
             },
         )
     except (PanelCommandError, FluksApiError) as err:
@@ -502,7 +513,7 @@ async def websocket_device_detail(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_add_review(hass, connection, msg):
-    """Validate uniqueness and return deterministic Python matcher suggestions."""
+    """Validate uniqueness and return deterministic fact-mapping proposals."""
     entry = None
     try:
         entry = _entry(hass, msg["entry_id"])
@@ -520,7 +531,7 @@ async def websocket_add_review(hass, connection, msg):
             msg["id"],
             {
                 "concepts": _present_concepts(concepts, await _panel_translations(hass)),
-                "suggestions": suggest_entities(hass, concepts, msg["ha_device_id"]),
+                "proposals": match_entities(hass, concepts, msg["ha_device_id"]),
                 "properties": {
                     "displayName": registry_device.name_by_user or registry_device.name,
                     "vendor": registry_device.manufacturer,
@@ -546,17 +557,31 @@ def _validate_selected(
 
 
 def _validate_input_mappings(
-    hass: HomeAssistant, concepts: list[dict[str, Any]], submitted: dict[str, Any]
+    hass: HomeAssistant,
+    concepts: list[dict[str, Any]],
+    submitted: dict[str, Any],
+    existing: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     allowed = {str(item["concept"]): item for item in concepts}
     if not isinstance(submitted, dict) or any(key not in allowed for key in submitted):
         raise PanelCommandError("invalid_mapping")
     try:
-        return {
-            str(key): normalize_input_configuration(hass, allowed[str(key)], value)
-            for key, value in submitted.items()
-            if isinstance(value, dict) and value.get("entityId")
-        }
+        normalized = {}
+        for key, value in submitted.items():
+            if not isinstance(value, dict) or not value.get("entityId"):
+                continue
+            current = (existing or {}).get(str(key))
+            normalized[str(key)] = normalize_input_configuration(
+                hass,
+                allowed[str(key)],
+                value,
+                preserve_legacy_unit_behavior=(
+                    current is not None
+                    and "unit" not in current
+                    and value == current
+                ),
+            )
+        return normalized
     except ValueError as err:
         raise PanelCommandError("invalid_mapping") from err
 
@@ -746,7 +771,16 @@ async def websocket_device_save(hass, connection, msg):
         if device_type not in catalog:
             raise PanelCommandError("not_found")
         concepts = _mappable_concepts(catalog[device_type])
-        selected = _validate_input_mappings(hass, concepts, msg["mappings"])
+        mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
+        current_inputs = {
+            str(item["concept"]): dict(item.get("configuration") or {})
+            for item in mappings
+            if item.get("direction") == "input"
+            and isinstance(item.get("concept"), str)
+        }
+        selected = _validate_input_mappings(
+            hass, concepts, msg["mappings"], current_inputs
+        )
         original_properties = dict(device.get("properties") or {})
         submitted = {
             key: value
@@ -766,7 +800,6 @@ async def websocket_device_save(hass, connection, msg):
             updated_device = await api.update_device_properties(
                 site_id, msg["device_id"], changed
             )
-        mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
         if device_type == "waterHeater":
             mappings = await _migrate_legacy_mappings(
                 api,

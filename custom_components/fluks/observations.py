@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import logging
+import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.const import UnitOfTemperature
+from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -206,9 +206,14 @@ class RealtimeObservationPublisher:
         state: State,
         attribute: str | None,
         canonical_temperature_unit: str | None,
+        mapping_declares_unit: bool,
     ) -> Any:
         value = _source_value(state, attribute)
-        if attribute is None or canonical_temperature_unit is None:
+        if (
+            attribute is None
+            or canonical_temperature_unit is None
+            or mapping_declares_unit
+        ):
             return value
         source_unit = _attribute_temperature_unit(self._hass, state, attribute)
         try:
@@ -268,7 +273,7 @@ class RealtimeObservationPublisher:
             }
             by_entity: dict[
                 str,
-                list[tuple[str, str, bool, str | None, str | None]],
+                list[tuple[str, str, bool, str | None, str | None, bool]],
             ] = defaultdict(list)
             configured: dict[str, set[str]] = defaultdict(set)
             state_sources: dict[str, tuple[str, str | None]] = {}
@@ -303,6 +308,7 @@ class RealtimeObservationPublisher:
                         cumulative,
                         attribute,
                         temperature_units.get(concept),
+                        isinstance(configuration.get("unit"), str),
                     )
                 )
                 stream = self._lifetime.get(self._stream_key(external_id, concept))
@@ -367,7 +373,7 @@ class RealtimeObservationPublisher:
         event: Event,
         mappings: dict[
             str,
-            list[tuple[str, str, bool, str | None, str | None]],
+            list[tuple[str, str, bool, str | None, str | None, bool]],
         ],
         derived: dict[str, list[tuple[str, bool, bool, Decimal, str | None]]],
     ) -> None:
@@ -380,6 +386,7 @@ class RealtimeObservationPublisher:
             cumulative,
             attribute,
             temperature_unit,
+            mapping_declares_unit,
         ) in mappings.get(state.entity_id, []):
             if cumulative:
                 await self._async_publish_cumulative(
@@ -388,7 +395,12 @@ class RealtimeObservationPublisher:
                 continue
             try:
                 value = _json_value(
-                    self._mapped_value(state, attribute, temperature_unit)
+                    self._mapped_value(
+                        state,
+                        attribute,
+                        temperature_unit,
+                        mapping_declares_unit,
+                    )
                 )
             except (TypeError, ValueError):
                 continue
