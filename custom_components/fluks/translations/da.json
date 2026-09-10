@@ -166,6 +166,7 @@
     "concept_site.energy": "Energi",
     "concept_site.importEnergy": "Importeret energi",
     "concept_site.exportEnergy": "Eksporteret energi",
+    "concept_site.outdoorTemperature": "Udendørstemperatur",
     "choose_ha_device": "Vælg den Home Assistant-enhed, der indeholder målingerne.",
     "review_suggestions": "Gennemgå de målinger, fluks har fundet. Ret eller fjern forslag, der ikke passer.",
     "suggested_match": "Foreslået match",

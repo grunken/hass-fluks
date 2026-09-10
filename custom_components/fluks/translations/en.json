@@ -166,6 +166,7 @@
     "concept_site.energy": "Energy",
     "concept_site.importEnergy": "Import energy",
     "concept_site.exportEnergy": "Export energy",
+    "concept_site.outdoorTemperature": "Outdoor temperature",
     "choose_ha_device": "Choose the Home Assistant device containing the measurements.",
     "review_suggestions": "Review the measurements fluks found. Change or remove any suggestion.",
     "suggested_match": "Suggested match",

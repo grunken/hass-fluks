@@ -119,6 +119,76 @@ async def test_mapped_state_publishes_raw_value_and_refreshes_without_duplicates
     assert send.await_count == 2
 
 
+async def test_site_outdoor_temperature_state_mapping_publishes_canonical_fact(hass):
+    """A normal Site entity mapping publishes the backend canonical concept unchanged."""
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "site-internal", "deviceId": "site-external", "type": "site"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "site-internal",
+        "concept": "site.outdoorTemperature",
+        "configuration": {"version": 1, "entityId": "sensor.outdoor_temperature"},
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "sensor.outdoor_temperature", "12.5", {"unit_of_measurement": "°C"}
+    )
+    await hass.async_block_till_done()
+
+    send.assert_awaited_once_with(
+        {"deviceId": "site-external", "site.outdoorTemperature": 12.5}
+    )
+
+
+async def test_site_outdoor_temperature_attribute_mapping_uses_mapping_conversion_once(hass):
+    """Explicit source units keep conversion in the persisted Mapping pipeline."""
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "site-internal", "deviceId": "site-external", "type": "site"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "site-internal",
+        "concept": "site.outdoorTemperature",
+        "configuration": {
+            "version": 1,
+            "entityId": "sensor.weather",
+            "attribute": "outdoor_temperature",
+            "unit": "°F",
+            "transforms": [
+                {"type": "offset", "amount": -32},
+                {"type": "scale", "factor": 5 / 9},
+            ],
+        },
+    }]
+    api.get_device_type_catalog.return_value = [{
+        "type": "site",
+        "concepts": [{
+            "concept": "site.outdoorTemperature",
+            "datatype": "number",
+            "unit": "°C",
+        }],
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "sensor.weather", "ok", {"outdoor_temperature": 68, "outdoor_temperature_unit": "°F"}
+    )
+    await hass.async_block_till_done()
+
+    # The backend Mapping applies °F -> °C; HA must not convert it a second time.
+    send.assert_awaited_once_with(
+        {"deviceId": "site-external", "site.outdoorTemperature": 68}
+    )
+
+
 async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
     """Input Mappings default to state and optionally select one HA attribute."""
     api = AsyncMock()

@@ -425,6 +425,7 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
       { concept: "site.energy", label: "Energy", cadence: "interval" },
       { concept: "site.importEnergy", label: "Import energy", cadence: "interval" },
       { concept: "site.exportEnergy", label: "Export energy", cadence: "interval" },
+      { concept: "site.outdoorTemperature", label: "Outdoor temperature", cadence: "realtime", datatype: "number", unit: "°C" },
     ],
     controls: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W" }],
     mappings: { "site.power": { concept: "site.power", configuration: { entityId: "sensor.grid_power" } } },
@@ -449,7 +450,7 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
   assert.deepEqual(destinations.at(-1), { name: "delete-site", stage: "confirm" });
 
   const mappingHtml = panel._mappingFields(panel._detail);
-  for (const concept of ["site.power", "site.energy", "site.importEnergy", "site.exportEnergy"]) assert.match(mappingHtml, new RegExp(concept.replace('.', '\\.')));
+  for (const concept of ["site.power", "site.energy", "site.importEnergy", "site.exportEnergy", "site.outdoorTemperature"]) assert.match(mappingHtml, new RegExp(concept.replace('.', '\\.')));
   assert.match(mappingHtml, /sensor\.grid_power/);
 
   const controlNode = { dataset: { control: "site.power" } };

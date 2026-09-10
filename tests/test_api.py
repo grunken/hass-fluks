@@ -218,6 +218,30 @@ async def test_catalog_device_and_mapping_contracts():
 
 
 @pytest.mark.asyncio
+async def test_catalog_preserves_site_outdoor_temperature_fact():
+    """The backend-owned catalog is passed through without local aliases."""
+    catalog = [{
+        "type": "site",
+        "concepts": [{
+            "concept": "site.outdoorTemperature",
+            "datatype": "number",
+            "unit": "°C",
+            "usages": ["fact"],
+            "source": "mapping",
+        }],
+    }]
+    session = FakeSession(FakeResponse(200, {"data": catalog}))
+    client = FluksApiClient(session)
+
+    result = await client.get_device_type_catalog()
+
+    assert result == catalog
+    concepts = result[0]["concepts"]
+    assert [item["concept"] for item in concepts] == ["site.outdoorTemperature"]
+    assert all(item["concept"] != "site.temperature" for item in concepts)
+
+
+@pytest.mark.asyncio
 async def test_device_management_uses_filtered_incremental_machine_contracts():
     """Milestone 3 uses integration auth and only documented incremental APIs."""
     device = {

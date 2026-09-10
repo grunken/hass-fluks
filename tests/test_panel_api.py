@@ -942,6 +942,7 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
                 {"concept": "site.energy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
                 {"concept": "site.importEnergy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
                 {"concept": "site.exportEnergy", "datatype": "number", "unit": "kWh", "cadence": "interval", "usages": ["fact"], "source": "mapping"},
+                {"concept": "site.outdoorTemperature", "datatype": "number", "unit": "°C", "cadence": "realtime", "usages": ["fact"], "source": "mapping"},
             ],
         }
     }
@@ -952,6 +953,7 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
         "concept_site.energy": "Energy",
         "concept_site.importEnergy": "Import energy",
         "concept_site.exportEnergy": "Export energy",
+        "concept_site.outdoorTemperature": "Outdoor temperature",
     }
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
@@ -969,8 +971,10 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
     assert result["type"] == "site"
     assert result["name"] == "Home"
     assert [item["concept"] for item in result["concepts"]] == [
-        "site.power", "site.energy", "site.importEnergy", "site.exportEnergy"
+        "site.power", "site.energy", "site.importEnergy", "site.exportEnergy", "site.outdoorTemperature"
     ]
+    assert result["concepts"][-1]["label"] == "Outdoor temperature"
+    assert all(item["concept"] != "site.temperature" for item in result["concepts"])
     assert [item["concept"] for item in result["controls"]] == ["site.power"]
     assert result["mappings"]["site.power"]["configuration"]["entityId"] == "sensor.grid_power"
     assert result["output_mappings"]["site.power"][0]["id"] == "power-out"
@@ -1037,6 +1041,75 @@ async def test_site_input_mapping_uses_shared_incremental_device_save(hass):
     assert payload["configuration"]["transforms"] == [{"type": "invert"}]
     refresh.assert_awaited_once_with(hass, entry.entry_id)
     api.update_device_properties.assert_not_awaited()
+
+
+async def test_site_outdoor_temperature_attribute_mapping_uses_catalog_contract(hass):
+    """The new Site fact accepts the same state/attribute Mapping contract as other facts."""
+    entry = make_entry(hass)
+    hass.states.async_set(
+        "sensor.weather", "ok", {"outdoor_temperature": 68, "outdoor_temperature_unit": "°F"}
+    )
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "site-device", "type": "site", "properties": {}}
+    )
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+    api.update_device_properties = AsyncMock()
+    catalog = {
+        "site": {
+            "type": "site",
+            "concepts": [
+                {"concept": "site.power", "datatype": "number", "unit": "W", "usages": ["fact", "control"], "source": "mapping"},
+                {"concept": "site.outdoorTemperature", "datatype": "number", "unit": "°C", "usages": ["fact"], "source": "mapping"},
+            ],
+        }
+    }
+    conn = connection()
+    refresh = AsyncMock()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api.async_refresh_observations", refresh),
+    ):
+        websocket_device_save(
+            hass,
+            conn,
+            {
+                "id": 83,
+                "type": COMMAND_DEVICE_SAVE,
+                "entry_id": entry.entry_id,
+                "device_id": "site-device",
+                "mappings": {
+                    "site.outdoorTemperature": {
+                        "version": 1,
+                        "entityId": "sensor.weather",
+                        "attribute": "outdoor_temperature",
+                        "unit": "°F",
+                        "transforms": [
+                            {"type": "offset", "amount": -32},
+                            {"type": "scale", "factor": 5 / 9},
+                        ],
+                    }
+                },
+                "properties": {},
+            },
+        )
+        await hass.async_block_till_done()
+
+    payload = api.create_mapping.await_args.args[1]
+    assert payload["concept"] == "site.outdoorTemperature"
+    assert payload["configuration"] == {
+        "version": 1,
+        "entityId": "sensor.weather",
+        "attribute": "outdoor_temperature",
+        "unit": "°F",
+        "transforms": [
+            {"type": "offset", "amount": -32},
+            {"type": "scale", "factor": 5 / 9},
+        ],
+    }
+    refresh.assert_awaited_once_with(hass, entry.entry_id)
 
 
 def output_configuration(value=50):
