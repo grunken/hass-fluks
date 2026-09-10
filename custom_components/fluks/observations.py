@@ -425,9 +425,14 @@ class RealtimeObservationPublisher:
         operating_state = self._operating_state(state, attribute)
         now = observed_at or dt_util.utcnow()
         key = self._stream_key(device_id, "spaceHeater.energy")
+        power_value: Decimal | None = None
+        energy_value: Decimal | None = None
+        power_changed = False
+        energy_changed = False
         async with self._state_lock:
             stream = self._derived.get(key)
             lifetime = Decimal("0")
+            previous_lifetime: Decimal | None = None
             previous_state: str | None = None
             previous_at: datetime | None = None
             previous_power = rated_power
@@ -436,11 +441,12 @@ class RealtimeObservationPublisher:
             if stream is not None and stream.get("source") == source:
                 try:
                     lifetime = Decimal(stream["lifetime"])
+                    previous_lifetime = lifetime
+                    previous_state = stream.get("state")
                     if not rebaseline:
                         previous_power = Decimal(
                             stream.get("power") or str(rated_power)
                         )
-                        previous_state = stream.get("state")
                         previous_at = (
                             datetime.fromisoformat(stream["at"])
                             if stream.get("at")
@@ -448,6 +454,7 @@ class RealtimeObservationPublisher:
                         )
                 except (KeyError, InvalidOperation, TypeError, ValueError):
                     lifetime = Decimal("0")
+                    previous_lifetime = None
                     previous_state = None
                     previous_at = None
             self._derived_needs_rebaseline.discard(key)
@@ -459,23 +466,33 @@ class RealtimeObservationPublisher:
                 elapsed = Decimal(str((now - previous_at).total_seconds()))
                 if elapsed > 0:
                     lifetime += previous_power * elapsed / Decimal("3600000")
-            self._derived[key] = {
+            if operating_state is not None:
+                power_value = (
+                    rated_power if operating_state == "heating" else Decimal("0")
+                )
+                energy_value = lifetime
+                power_changed = publish_power and (
+                    previous_state is not None and operating_state != previous_state
+                )
+                energy_changed = publish_energy and (
+                    previous_lifetime is not None and energy_value > previous_lifetime
+                )
+            record = {
                 "lifetime": str(lifetime),
                 "source": source,
                 "state": operating_state,
                 "at": now.isoformat(),
                 "power": str(rated_power),
             }
+            self._derived[key] = record
             await self._store.async_save(self._store_payload())
         if operating_state is None:
             return
         payload: dict[str, Any] = {"deviceId": device_id}
-        if publish_power:
-            payload["spaceHeater.power"] = self._json_decimal(
-                rated_power if operating_state == "heating" else Decimal("0")
-            )
-        if publish_energy:
-            payload["spaceHeater.energy"] = self._json_decimal(lifetime)
+        if power_changed and power_value is not None:
+            payload["spaceHeater.power"] = self._json_decimal(power_value)
+        if energy_changed and energy_value is not None:
+            payload["spaceHeater.energy"] = self._json_decimal(energy_value)
         if len(payload) > 1:
             await self._send(payload)
 

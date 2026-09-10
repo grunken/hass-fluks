@@ -526,6 +526,15 @@ async def test_space_heater_fallback_power_and_energy_use_elapsed_heating_time(h
     with patch("custom_components.fluks.observations.dt_util.utcnow", return_value=start):
         await observations.async_refresh()
 
+    idle = hass.states.get("sensor.heater_state").__class__(
+        "sensor.heater_state", "idle", {}
+    )
+    await observations._async_state_changed(
+        state_event(idle, start + timedelta(minutes=5)),
+        {"sensor.heater_state": []},
+        {"sensor.heater_state": [("heater-external", True, True, 2000, None)]},
+    )
+
     heating = hass.states.get("sensor.heater_state").__class__(
         "sensor.heater_state", "heating", {}
     )
@@ -548,16 +557,46 @@ async def test_space_heater_fallback_power_and_energy_use_elapsed_heating_time(h
         {"sensor.heater_state": [("heater-external", True, True, 2000, None)]},
     )
 
-    derived = [
-        call.args[0]
-        for call in send.await_args_list
-        if "spaceHeater.power" in call.args[0]
-    ]
-    assert derived == [
-        {"deviceId": "heater-external", "spaceHeater.power": 0, "spaceHeater.energy": 0},
-        {"deviceId": "heater-external", "spaceHeater.power": 2000, "spaceHeater.energy": 0},
-        {"deviceId": "heater-external", "spaceHeater.power": 2000, "spaceHeater.energy": 5},
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "heater-external", "spaceHeater.power": 2000},
+        {"deviceId": "heater-external", "spaceHeater.energy": 5},
         {"deviceId": "heater-external", "spaceHeater.power": 0, "spaceHeater.energy": 5.666666666666667},
+    ]
+
+
+async def test_space_heater_fallback_deduplicates_unchanged_power_and_energy(hass):
+    """Derived fallback observations are emitted only for changed values."""
+    api = AsyncMock()
+    api.list_devices.return_value = [{
+        "id": "heater-internal",
+        "deviceId": "heater-external",
+        "type": "spaceHeater",
+        "properties": {"ratedPowerW": 450},
+    }]
+    api.list_mappings.return_value = space_heater_state_mapping()
+    hass.states.async_set("sensor.heater_state", "idle")
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    with patch("custom_components.fluks.observations.dt_util.utcnow", return_value=start):
+        await observations.async_refresh()
+
+    def event(value, minutes):
+        state = hass.states.get("sensor.heater_state").__class__(
+            "sensor.heater_state", value, {}
+        )
+        return state_event(state, start + timedelta(minutes=minutes))
+
+    derived = {"sensor.heater_state": [("heater-external", True, True, 450, None)]}
+    await observations._async_state_changed(event("idle", 1), {}, derived)
+    await observations._async_state_changed(event("heating", 2), {}, derived)
+    await observations._async_state_changed(event("heating", 2), {}, derived)
+    await observations._async_state_changed(event("idle", 3), {}, derived)
+    await observations._async_state_changed(event("idle", 3), {}, derived)
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "heater-external", "spaceHeater.power": 450},
+        {"deviceId": "heater-external", "spaceHeater.power": 0, "spaceHeater.energy": 0.0075},
     ]
 
 
@@ -590,10 +629,7 @@ async def test_space_heater_fallback_energy_persists_across_reload(hass):
         return_value=start + timedelta(hours=3),
     ):
         await second.async_refresh()
-    assert second_send.await_args_list[-1].args[0] == {
-        "deviceId": "heater-external", "spaceHeater.power": 1000,
-        "spaceHeater.energy": 1,
-    }
+    assert second_send.await_args_list == []
     await second._async_state_changed(
         state_event(state, start + timedelta(hours=4)),
         {"sensor.heater_state": []},
@@ -633,7 +669,6 @@ async def test_space_heater_fallback_restart_gap_to_idle_does_not_add_energy(has
         await second.async_refresh()
     assert send.await_args_list[-1].args[0] == {
         "deviceId": "heater-external", "spaceHeater.power": 0,
-        "spaceHeater.energy": 1,
     }
 
 
