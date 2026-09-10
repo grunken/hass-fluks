@@ -12,6 +12,7 @@ from custom_components.fluks.matcher import (
     input_configuration,
     match_entities,
     normalize_input_configuration,
+    _tokens,
     unit_conversion,
 )
 
@@ -379,7 +380,13 @@ def test_selected_heat_pump_device_is_the_candidate_boundary(hass):
         concepts[1], outdoor_candidate, "heat-pump"
     )
     assert water_diagnostic["accepted"] and water_diagnostic["score"] >= 14
-    assert outdoor_diagnostic["rejection_reason"] == "semantic_role_contradiction"
+    assert outdoor_diagnostic["accepted"]
+    assert outdoor_diagnostic["score"] < water_diagnostic["score"]
+    outdoor_semantic = next(
+        item for item in outdoor_diagnostic["evidence"] if item["family"] == "semantics"
+    )
+    assert outdoor_semantic["code"] == "partial_token_coverage"
+    assert outdoor_semantic["details"]["coverage"] == 0.5
     assert proposals["heatPump.power"]["source"] == {
         "entityId": "sensor.heat_pump_power"
     }
@@ -392,13 +399,15 @@ def test_selected_heat_pump_device_is_the_candidate_boundary(hass):
         "attribute": "water_temperature",
     }
     assert proposals["heatPump.waterTemperature"]["classification"] == "auto"
-    assert all(
-        alternative["source"].get("attribute") != "outdoor_temperature"
+    outdoor = next(
+        alternative
         for alternative in proposals["heatPump.waterTemperature"]["alternatives"]
+        if alternative["source"].get("attribute") == "outdoor_temperature"
     )
+    assert outdoor["score"] < proposals["heatPump.waterTemperature"]["score"]
 
 
-def test_outdoor_temperature_is_rejected_for_water_temperature(hass):
+def test_outdoor_temperature_has_partial_coverage_for_tank_temperature(hass):
     concept = _concept("heatPump.waterTemperature", "°C")
     candidate = _candidate(
         "sensor.naervarme_outdoor_temperature",
@@ -411,21 +420,21 @@ def test_outdoor_temperature_is_rejected_for_water_temperature(hass):
     diagnostic = candidate_diagnostic(concept, candidate, "selected")
     proposal = _match(hass, [concept], [candidate])[concept["concept"]]
 
-    assert diagnostic["rejection_reason"] == "semantic_role_contradiction"
-    assert any(
-        evidence["code"] == "semantic_role_contradiction"
-        and evidence["details"]["contradictions"] == ["outdoor"]
-        for evidence in diagnostic["evidence"]
+    assert diagnostic["accepted"]
+    semantic = next(
+        evidence for evidence in diagnostic["evidence"] if evidence["family"] == "semantics"
     )
+    assert semantic["code"] == "partial_token_coverage"
+    assert semantic["details"]["coverage"] == 0.5
     assert {evidence["code"] for evidence in diagnostic["evidence"]} >= {
         "numeric_value",
         "selected_device",
         "exact_unit",
         "exact_device_class",
-        "semantic_role_contradiction",
+        "partial_token_coverage",
     }
-    assert proposal["classification"] == "unsupported"
-    assert proposal["configuration"] is None
+    assert proposal["classification"] == "suggest"
+    assert proposal["configuration"] is not None
 
 
 @pytest.mark.parametrize(
@@ -463,7 +472,112 @@ def test_water_temperature_naming_variants_match(attribute, hass):
         for evidence in proposal["evidence"]
         if evidence["family"] == "semantics"
     )
-    assert semantic["code"] == "semantic_role"
+    assert semantic["code"] == "token_coverage"
+
+
+def test_fact_token_normalization_covers_common_name_shapes():
+    assert _tokens("tankTemperature") == ("tank", "temperature")
+    assert _tokens("tank_temperature") == ("tank", "temperature")
+    assert _tokens("tank.temperature") == ("tank", "temperature")
+    assert _tokens("tank-temperature") == ("tank", "temperature")
+    assert _tokens("state_of_charge") == ("soc",)
+    assert _tokens("stateOfCharge") == ("soc",)
+
+
+def test_water_heater_temperature_uses_domain_as_supporting_evidence(hass):
+    proposal = _match(
+        hass,
+        [_concept("waterHeater.temperature", "°C")],
+        [
+            _candidate(
+                "water_heater.naervarme_tank",
+                attribute="current_temperature",
+                value=48,
+                unit="°C",
+                device_class=None,
+                state_class=None,
+                domain="water_heater",
+            )
+        ],
+    )["waterHeater.temperature"]
+
+    assert proposal["classification"] == "auto"
+    assert any(
+        item["code"] == "canonical_device_domain" for item in proposal["evidence"]
+    )
+
+
+def test_partial_fact_token_coverage_cannot_beat_full_role_match(hass):
+    proposals = _match(
+        hass,
+        [_concept("heatPump.tankTemperature", "°C")],
+        [
+            _candidate(
+                "water_heater.naervarme_tank",
+                attribute="current_temperature",
+                value=48,
+                unit="°C",
+                device_class=None,
+                state_class=None,
+                domain="water_heater",
+            ),
+            _candidate(
+                "sensor.outdoor_temperature",
+                value=7,
+                unit="°C",
+                device_class="temperature",
+                state_class="measurement",
+                domain="sensor",
+            ),
+        ],
+    )
+    proposal = proposals["heatPump.tankTemperature"]
+
+    assert proposal["source"] == {
+        "entityId": "water_heater.naervarme_tank",
+        "attribute": "current_temperature",
+    }
+    assert proposal["classification"] == "auto"
+    outdoor = next(
+        item for item in proposal["alternatives"] if item["source"]["entityId"] == "sensor.outdoor_temperature"
+    )
+    assert outdoor["score"] < proposal["score"]
+
+
+def test_poor_power_name_still_matches_structured_signal(hass):
+    proposal = _match(
+        hass,
+        [_concept("battery.power", "W")],
+        [_candidate("sensor.meter_1", value=1.25, unit="kW", device_class="power")],
+    )["battery.power"]
+
+    assert proposal["classification"] == "auto"
+    assert proposal["configuration"]["transforms"] == [
+        {"type": "scale", "factor": 1000}
+    ]
+
+
+def test_energy_structured_evidence_includes_cumulative_state_class(hass):
+    proposal = _match(
+        hass,
+        [_concept("battery.chargeEnergy", "kWh", cadence="interval")],
+        [
+            _candidate(
+                "sensor.energy_total",
+                value=14,
+                unit="kWh",
+                device_class="energy",
+                state_class="total_increasing",
+            )
+        ],
+    )["battery.chargeEnergy"]
+
+    assert proposal["classification"] == "suggest"
+    assert {item["code"] for item in proposal["evidence"]} >= {
+        "exact_unit",
+        "exact_device_class",
+        "cumulative_energy",
+    }
 
 
 def test_levenshtein_similarity_supports_small_role_variations(hass):
@@ -485,7 +599,8 @@ def test_levenshtein_similarity_supports_small_role_variations(hass):
         if evidence["family"] == "semantics"
     )
     assert diagnostic["accepted"]
-    assert semantic["details"]["role_similarity"] >= 0.82
+    assert semantic["code"] == "fuzzy_token_coverage"
+    assert semantic["details"]["fuzzy_matches"][0]["target"] == "water"
 
 
 def test_equally_strong_same_device_water_attributes_remain_unresolved(hass):
@@ -551,8 +666,8 @@ def test_small_runner_up_margin_prevents_auto_selection(hass):
                 original_name="Reading",
             ),
             _candidate(
-                "sensor.battery_watt_meter",
-                friendly_name="Battery watt meter",
+                "sensor.battery_power_meter",
+                friendly_name="Battery power meter",
                 state_class=None,
             ),
         ],
@@ -578,12 +693,70 @@ def test_friendly_original_and_entity_names_form_one_capped_family(hass):
     semantic = [item for item in proposal["evidence"] if item["family"] == "semantics"]
 
     assert len(semantic) == 1
-    assert semantic[0]["weight"] <= 4
+    assert semantic[0]["weight"] <= 6
     assert set(semantic[0]["details"]["sources"]) == {
-        "entity_id",
-        "friendly_name",
-        "original_name",
+        "object_id",
     }
+    assert semantic[0]["details"]["repetition_bonus"] == 0
+
+
+def test_repeated_target_tokens_add_one_capped_independent_bonus(hass):
+    concept = _concept("heatPump.tankTemperature", "°C")
+    repeated = _candidate(
+        "water_heater.naervarme_tank",
+        attribute="tank_accumulated",
+        value=48,
+        unit="°C",
+        device_class=None,
+        state_class=None,
+        domain="water_heater",
+        friendly_name="Tank accumulated",
+        original_name="Tank accumulated",
+    )
+    single = _candidate(
+        "water_heater.naervarme_tank",
+        attribute="reading",
+        value=48,
+        unit="°C",
+        device_class=None,
+        state_class=None,
+        domain="water_heater",
+        friendly_name="Reading",
+        original_name="Reading",
+    )
+    repeated_diagnostic = candidate_diagnostic(concept, repeated, "selected")
+    single_diagnostic = candidate_diagnostic(concept, single, "selected")
+    repeated_semantic = next(
+        item for item in repeated_diagnostic["evidence"] if item["family"] == "semantics"
+    )
+    single_semantic = next(
+        item for item in single_diagnostic["evidence"] if item["family"] == "semantics"
+    )
+
+    assert repeated_diagnostic["score"] == single_diagnostic["score"] + 1
+    assert repeated_semantic["details"]["occurrences"]["tank"] == 2
+    assert repeated_semantic["details"]["repetition_bonus"] == 1
+    assert single_semantic["details"]["occurrences"]["tank"] == 1
+    assert single_semantic["details"]["repetition_bonus"] == 0
+
+    over_repeated = _candidate(
+        "water_heater.naervarme_tank_tank",
+        attribute="tank_accumulated",
+        value=48,
+        unit="°C",
+        device_class=None,
+        state_class=None,
+        domain="water_heater",
+        friendly_name="Tank accumulated",
+        original_name="Tank accumulated",
+    )
+    over_repeated_semantic = next(
+        item
+        for item in candidate_diagnostic(concept, over_repeated, "selected")["evidence"]
+        if item["family"] == "semantics"
+    )
+    assert over_repeated_semantic["details"]["occurrences"]["tank"] == 2
+    assert over_repeated_semantic["details"]["repetition_bonus"] == 1
 
 
 def test_selected_device_relationship_is_a_hard_boundary(hass):

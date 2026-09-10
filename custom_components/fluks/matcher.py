@@ -80,50 +80,7 @@ _TEMPERATURE_UNITS = {
 }
 _KNOWN_DEVICE_CLASSES = {"battery", "distance", "energy", "power", "temperature"}
 _TOKEN_ALIASES = {
-    "temps": "temperature",
     "temp": "temperature",
-    "watt": "power",
-    "watts": "power",
-    "status": "state",
-    "running": "state",
-    "enabled": "state",
-    "plugged": "connected",
-    "range": "distance",
-}
-_TYPE_ALIASES = {
-    "temperature": {"temperature"},
-    "power": {"power"},
-    "energy": {"energy", "total"},
-    "state": {"state", "heating", "operating", "operation"},
-    "soc": {"soc", "charge", "level", "percentage"},
-    "connected": {"connected", "connection"},
-    "distance": {"distance"},
-}
-_ROLE_TOKENS = {
-    "water": {"water", "tank", "dhw", "domestic", "cylinder", "boiler"},
-    "buffer": {"buffer", "accumulator"},
-    "flow": {"flow", "supply", "forward", "outlet", "leaving"},
-    "return": {"return", "inlet", "entering"},
-    "outdoor": {"outdoor", "outside", "external", "ambient", "weather"},
-    "room": {"room", "indoor", "inside"},
-    "target": {"target", "setpoint", "desired", "requested"},
-    "charge": {"charge", "charged", "charging"},
-    "discharge": {"discharge", "discharged", "discharging"},
-    "import": {"import", "imported", "consumed", "consumption"},
-    "export": {"export", "exported", "delivered", "delivery"},
-}
-_CONTRADICTORY_ROLES = {
-    "water": {"buffer", "flow", "return", "outdoor", "room", "target"},
-    "buffer": {"water", "flow", "return", "outdoor", "room", "target"},
-    "flow": {"water", "buffer", "return", "outdoor", "room", "target"},
-    "return": {"water", "buffer", "flow", "outdoor", "room", "target"},
-    "outdoor": {"water", "buffer", "flow", "return", "room", "target"},
-    "room": {"water", "buffer", "flow", "return", "outdoor", "target"},
-    "target": {"water", "buffer", "flow", "return", "outdoor", "room"},
-    "charge": {"discharge", "export"},
-    "discharge": {"charge", "import"},
-    "import": {"export", "discharge"},
-    "export": {"import", "charge"},
 }
 
 
@@ -178,17 +135,7 @@ class ScoredCandidate:
 
 def _tokens(value: str) -> tuple[str, ...]:
     expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", value).lower()
-    for compound, replacement in {
-        "hotwater": "hot water",
-        "watertemperature": "water temperature",
-        "tanktemperature": "tank temperature",
-        "buffertemperature": "buffer temperature",
-        "outdoortemperature": "outdoor temperature",
-        "flowtemperature": "flow temperature",
-        "returntemperature": "return temperature",
-        "roomtemperature": "room temperature",
-    }.items():
-        expanded = expanded.replace(compound, replacement)
+    expanded = re.sub(r"\bstate[\s_-]+of[\s_-]+charge\b", "soc", expanded)
     return tuple(
         _TOKEN_ALIASES.get(token, token) for token in re.findall(r"[a-z0-9]+", expanded)
     )
@@ -446,125 +393,86 @@ def _datatype_evidence(
 def _semantic_assessment(
     concept: dict[str, Any], candidate: EntityCandidate
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Compare measurement roles separately from generic measurement types."""
-    suffix = str(concept.get("concept", "")).split(".")[-1]
-    target_tokens = set(_tokens(suffix))
+    """Match the canonical fact tokens against one normalized source context."""
+    fact = str(concept.get("concept", "")).split(".")[-1]
+    target_tokens = tuple(dict.fromkeys(_tokens(fact)))
     sources = {
-        "entity_id": _words(candidate.entity_id),
-        "friendly_name": _words(candidate.friendly_name),
-        "original_name": _words(candidate.original_name),
-    }
-    source_texts = {
-        "entity_id": candidate.entity_id.split(".", 1)[-1],
-        "friendly_name": candidate.friendly_name,
-        "original_name": candidate.original_name,
+        "domain": _tokens(candidate.domain),
+        "object_id": _tokens(candidate.entity_id.split(".", 1)[-1]),
+        "friendly_name": _tokens(candidate.friendly_name),
+        "original_name": _tokens(candidate.original_name),
     }
     if candidate.attribute is not None:
-        sources["attribute"] = _words(candidate.attribute)
-        source_texts["attribute"] = candidate.attribute
-    combined = set().union(*sources.values())
-
-    target_types = {
-        kind
-        for kind, aliases in _TYPE_ALIASES.items()
-        if kind in target_tokens or target_tokens & aliases
-    }
-    type_matches = sorted(
-        kind for kind in target_types if combined & _TYPE_ALIASES[kind]
-    )
-    target_roles = {
-        role for role, tokens in _ROLE_TOKENS.items() if target_tokens & tokens
-    }
-    candidate_roles = {
-        role for role, tokens in _ROLE_TOKENS.items() if combined & tokens
-    }
-    contradictory = (
-        set().union(*(_CONTRADICTORY_ROLES[role] for role in target_roles))
-        if target_roles
-        else set()
-    ) - target_roles
-    contradictions = sorted(candidate_roles & contradictory)
-    if contradictions:
-        return (
-            _evidence(
-                "semantics",
-                "semantic_role_contradiction",
-                -4,
-                target_roles=sorted(target_roles),
-                candidate_roles=sorted(candidate_roles),
-                contradictions=contradictions,
-            ),
-            "semantic_role_contradiction",
+        sources["attribute"] = _tokens(candidate.attribute)
+    seen_metadata: set[tuple[str, ...]] = set()
+    for name in ("object_id", "friendly_name", "original_name"):
+        tokens = sources[name]
+        if tokens in seen_metadata:
+            del sources[name]
+        else:
+            seen_metadata.add(tokens)
+    combined = set().union(*sources.values()) if sources else set()
+    occurrences = {
+        target: min(
+            2,
+            sum(tokens.count(target) for tokens in sources.values()),
         )
-
-    matched_roles = sorted(target_roles & candidate_roles)
-    role_similarity = 0.0
-    if target_roles and not matched_roles:
-        candidate_role_tokens = combined - set().union(*_TYPE_ALIASES.values())
-        role_similarity = max(
+        for target in target_tokens
+    }
+    exact = set(target_tokens) & combined
+    used = set(exact)
+    fuzzy_matches: list[tuple[str, str, float]] = []
+    for target in target_tokens:
+        if target in exact:
+            continue
+        best = max(
             (
-                _levenshtein_similarity(role, token)
-                for role in target_roles
-                for token in candidate_role_tokens
+                (_levenshtein_similarity(target, token), token)
+                for token in combined - used
             ),
-            default=0.0,
+            default=(0.0, ""),
         )
-        if role_similarity < 0.82:
-            return (
-                _evidence(
-                    "semantics",
-                    "semantic_role_missing",
-                    -4,
-                    target_roles=sorted(target_roles),
-                    candidate_roles=sorted(candidate_roles),
-                    role_similarity=round(role_similarity, 3),
-                ),
-                "semantic_role_missing",
-            )
-
-    target_text = "".join(_tokens(suffix))
-    text_similarity = max(
-        (
-            _levenshtein_similarity(
-                target_text,
-                "".join(_tokens(source_text)),
-            )
-            for source_text in source_texts.values()
-        ),
-        default=0.0,
-    )
-    if matched_roles or role_similarity >= 0.82:
-        weight = 4
-        code = "semantic_role"
-    elif type_matches:
-        weight = 4 if not target_roles or text_similarity >= 0.82 else 2
-        code = "normalized_text" if weight == 4 else "measurement_type"
-    elif text_similarity >= 0.82:
-        weight = 2
-        code = "normalized_text"
-    else:
+        if best[0] >= 0.82:
+            fuzzy_matches.append((target, best[1], best[0]))
+            used.add(best[1])
+    matched_count = len(exact) + len(fuzzy_matches)
+    if not matched_count:
         return None, None
-    matching_tokens = set(type_matches)
-    matching_tokens.update(
-        token
-        for role in matched_roles
-        for token in _ROLE_TOKENS[role]
-        if token in combined
+    coverage = matched_count / len(target_tokens) if target_tokens else 0.0
+    repetition_bonus = min(
+        2, sum(max(0, count - 1) for count in occurrences.values())
+    )
+    if len(exact) == len(target_tokens):
+        weight = 4 + repetition_bonus
+        code = "token_coverage"
+    elif coverage == 1:
+        weight = 2 + repetition_bonus
+        code = "fuzzy_token_coverage"
+    else:
+        weight = -4 + repetition_bonus
+        code = "partial_token_coverage"
+    matched_tokens = exact | {target for target, _, _ in fuzzy_matches}
+    source_names = sorted(
+        name
+        for name, words in sources.items()
+        if set(words) & exact
+        or any(source_token in words for _, source_token, _ in fuzzy_matches)
     )
     return (
         _evidence(
             "semantics",
             code,
             weight,
-            target_roles=sorted(target_roles),
-            candidate_roles=sorted(candidate_roles),
-            matched_roles=matched_roles,
-            type_matches=type_matches,
-            text_similarity=round(text_similarity, 3),
-            role_similarity=round(role_similarity, 3),
-            sources=sorted(
-                name for name, words in sources.items() if words & matching_tokens
-            ),
+            target_tokens=list(target_tokens),
+            matched_tokens=sorted(matched_tokens),
+            coverage=round(coverage, 3),
+            occurrences=occurrences,
+            repetition_bonus=repetition_bonus,
+            fuzzy_matches=[
+                {"target": target, "source": source, "similarity": round(similarity, 3)}
+                for target, source, similarity in fuzzy_matches
+            ],
+            sources=source_names,
         ),
         None,
     )
@@ -638,6 +546,22 @@ def _evaluate_candidate(
 
     evidence.append(_evidence("relationship", "selected_device", 4))
 
+    canonical_device = str(concept.get("concept", "")).split(".", 1)[0]
+    domain_overlap = sorted(
+        _words(canonical_device) & _words(candidate.domain)
+    )
+    if domain_overlap:
+        evidence.append(
+            _evidence(
+                "domain",
+                "canonical_device_domain",
+                2,
+                canonical_device=canonical_device,
+                domain=candidate.domain,
+                overlap=domain_overlap,
+            )
+        )
+
     expected_unit = concept.get("unit")
     unit_status, conversion = unit_conversion(candidate.unit, expected_unit)
     if expected_unit is not None:
@@ -682,17 +606,17 @@ def _evaluate_candidate(
         if actual_class in _KNOWN_DEVICE_CLASSES and actual_class != expected_class:
             return None, "incompatible_device_class", tuple(evidence)
         if actual_class == expected_class:
-            evidence.append(_evidence("device_class", "exact_device_class", 4))
+            evidence.append(_evidence("device_class", "exact_device_class", 2))
 
     if (
         candidate.state_class in {"total", "total_increasing"}
         and concept.get("cadence") == "interval"
     ):
-        evidence.append(_evidence("state_class", "cumulative_energy", 2))
+        evidence.append(_evidence("state_class", "cumulative_energy", 1))
     elif (
         candidate.state_class == "measurement" and concept.get("cadence") == "realtime"
     ):
-        evidence.append(_evidence("state_class", "realtime_measurement", 2))
+        evidence.append(_evidence("state_class", "realtime_measurement", 1))
 
     if concept.get("datatype") == "number" and _numeric(candidate.value):
         number = _apply_numeric_transforms(float(candidate.value), conversion)
@@ -967,6 +891,23 @@ def match_entities(
             item["family"] == "relationship" and item["code"] == "selected_device"
             for item in selected.evidence
         )
+        semantic_evidence = next(
+            (item for item in selected.evidence if item["family"] == "semantics"),
+            None,
+        )
+        token_coverage = (
+            float((semantic_evidence or {}).get("details", {}).get("coverage", 0))
+            if semantic_evidence
+            else 0.0
+        )
+        target_token_count = len(
+            tuple(
+                dict.fromkeys(
+                    _tokens(name.rsplit(".", 1)[-1])
+                )
+            )
+        )
+        semantic_complete = target_token_count <= 1 or token_coverage >= 1
         orientation_complete = not definitions[name].get("signConvention")
         if (
             selected.score >= AUTO_SCORE_THRESHOLD
@@ -974,6 +915,7 @@ def match_entities(
             and margin >= AUTO_MARGIN
             and selected.unit_complete
             and relationship
+            and semantic_complete
             and orientation_complete
         ):
             classification = "auto"
