@@ -110,6 +110,25 @@ test("production control path groups backend mode mappings into behavior section
   assert.match(editor.shadowRoot.innerHTML, /behavior release/i);
 });
 
+test("production Site power path forwards persisted value conditions", () => {
+  const panel = new Panel(); panel._context = { translations: {} };
+  panel._view = { name: "control", deviceId: "site-1", concept: "site.power" };
+  panel._detail = {
+    id: "site-1", type_name: "Site",
+    controls: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W", mappingModes: [null, "balance", "release"] }],
+    output_mappings: { "site.power": [{ mode: "balance", valueCondition: "ltZero", configuration: { version: 1, actions: [] } }] },
+  };
+  let editor;
+  panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
+  panel._renderControl();
+  assert.deepEqual(editor.behaviorChoices.map(({ mode, valueCondition }) => ({ mode, valueCondition })), [
+    { mode: "balance", valueCondition: "gtZero" },
+    { mode: "balance", valueCondition: "ltZero" },
+    { mode: "balance", valueCondition: "eqZero" },
+  ]);
+  assert.deepEqual(editor.behaviors.find((item) => item.mode === "balance").valueCondition, "ltZero");
+});
+
 test("production action and entity searches filter immediately and restore globally", () => {
   const editor = new Editor();
   assert.match(editor._styles(), /\.choice\[hidden\]\{display:none\}/);

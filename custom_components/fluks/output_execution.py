@@ -47,6 +47,24 @@ def _canonical_value(value: Any, datatype: str) -> Any:
     raise ValueError
 
 
+def _matches_value_condition(mapping: dict[str, Any], value: Any, datatype: str) -> bool:
+    """Return whether a Mapping accepts the incoming canonical value."""
+    condition = mapping.get("valueCondition")
+    if condition is None:
+        return True
+    if condition not in {"gtZero", "ltZero", "eqZero"} or datatype != "number":
+        return False
+    try:
+        numeric = _canonical_value(value, datatype)
+    except ValueError:
+        return False
+    if condition == "gtZero":
+        return numeric > 0
+    if condition == "ltZero":
+        return numeric < 0
+    return numeric == 0
+
+
 class RuntimeOutputExecutor:
     """Resolve runtime Decisions to this Integration's output Mappings."""
 
@@ -216,6 +234,9 @@ class RuntimeOutputExecutor:
                         and item.get("deviceId") == device["id"]
                         and item.get("concept") == concept
                         and item.get("mode") == mapping_mode
+                        and _matches_value_condition(
+                            item, raw_value, str(definition.get("datatype"))
+                        )
                     ),
                     None,
                 )

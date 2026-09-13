@@ -603,6 +603,27 @@ def test_levenshtein_similarity_supports_small_role_variations(hass):
     assert semantic["details"]["fuzzy_matches"][0]["target"] == "water"
 
 
+def test_fuzzy_only_semantics_cannot_auto_select(hass):
+    proposal = _match(
+        hass,
+        [_concept("battery.power", "W")],
+        [
+            _candidate(
+                "sensor.battery_poweer",
+                value=1.2,
+                unit="kW",
+                device_class="power",
+                state_class="measurement",
+            )
+        ],
+    )["battery.power"]
+
+    assert proposal["classification"] == "suggest"
+    assert proposal["configuration"]["transforms"] == [
+        {"type": "scale", "factor": 1000}
+    ]
+
+
 def test_equally_strong_same_device_water_attributes_remain_unresolved(hass):
     concept = _concept("heatPump.waterTemperature", "°C")
     proposal = _match(
@@ -675,6 +696,7 @@ def test_small_runner_up_margin_prevents_auto_selection(hass):
 
     assert proposal["score"] >= 14
     assert 0 < proposal["runner_up_gap"] < 4
+    assert proposal["local_runner_up_gap"] == proposal["runner_up_gap"]
     assert proposal["classification"] == "unresolved"
 
 
@@ -704,7 +726,7 @@ def test_repeated_target_tokens_add_one_capped_independent_bonus(hass):
     concept = _concept("heatPump.tankTemperature", "°C")
     repeated = _candidate(
         "water_heater.naervarme_tank",
-        attribute="tank_accumulated",
+        attribute="tank_temperature_accumulated",
         value=48,
         unit="°C",
         device_class=None,
@@ -715,7 +737,7 @@ def test_repeated_target_tokens_add_one_capped_independent_bonus(hass):
     )
     single = _candidate(
         "water_heater.naervarme_tank",
-        attribute="reading",
+        attribute="temperature",
         value=48,
         unit="°C",
         device_class=None,
@@ -741,7 +763,7 @@ def test_repeated_target_tokens_add_one_capped_independent_bonus(hass):
 
     over_repeated = _candidate(
         "water_heater.naervarme_tank_tank",
-        attribute="tank_accumulated",
+        attribute="tank_temperature_accumulated",
         value=48,
         unit="°C",
         device_class=None,
@@ -757,6 +779,28 @@ def test_repeated_target_tokens_add_one_capped_independent_bonus(hass):
     )
     assert over_repeated_semantic["details"]["occurrences"]["tank"] == 2
     assert over_repeated_semantic["details"]["repetition_bonus"] == 1
+
+
+def test_repeated_tokens_do_not_bonus_partial_coverage(hass):
+    concept = _concept("heatPump.tankTemperature", "°C")
+    candidate = _candidate(
+        "sensor.temperature_temperature",
+        value=21,
+        unit="°C",
+        device_class=None,
+        state_class=None,
+        friendly_name="Temperature temperature",
+        original_name="Temperature temperature",
+    )
+
+    diagnostic = candidate_diagnostic(concept, candidate, "selected")
+    semantic = next(
+        item for item in diagnostic["evidence"] if item["family"] == "semantics"
+    )
+
+    assert semantic["details"]["occurrences"]["temperature"] == 2
+    assert semantic["details"]["repetition_bonus"] == 0
+    assert semantic["weight"] == -4
 
 
 def test_selected_device_relationship_is_a_hard_boundary(hass):

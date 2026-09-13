@@ -294,6 +294,24 @@ async def test_device_management_uses_filtered_incremental_machine_contracts():
 
 
 @pytest.mark.asyncio
+async def test_mapping_value_condition_round_trips_through_patch():
+    mapping = {
+        "id": "mapping-id",
+        "valueCondition": "ltZero",
+        "configuration": {"version": 1, "actions": []},
+    }
+    session = FakeSession(FakeResponse(200, {"data": mapping}))
+    client = FluksApiClient(session, integration_key="machine-key")
+
+    assert await client.update_mapping(
+        "site-id", "mapping-id", mapping["configuration"], value_condition="ltZero"
+    ) == mapping
+    assert session.requests[0][2]["json"] == {
+        "configuration": mapping["configuration"], "valueCondition": "ltZero"
+    }
+
+
+@pytest.mark.asyncio
 async def test_battery_property_patch_preserves_exact_names_values_and_response():
     """Battery physical configuration crosses the real HTTP client boundary losslessly."""
     properties = {

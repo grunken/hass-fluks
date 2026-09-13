@@ -216,6 +216,7 @@ def _safe_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         "id": str(mapping["id"]),
         "concept": str(mapping["concept"]),
         "mode": mapping.get("mode"),
+        "valueCondition": mapping.get("valueCondition"),
         "configuration": dict(mapping.get("configuration") or {}),
     }
 
@@ -259,6 +260,8 @@ async def _migrate_legacy_mappings(
             }
             if item.get("direction") == "output":
                 payload["mode"] = item.get("mode")
+                if "valueCondition" in item:
+                    payload["valueCondition"] = item.get("valueCondition")
             await api.create_mapping(site_id, payload)
         await api.delete_mapping(site_id, str(item["id"]))
     return await api.list_mappings(site_id, device_id=device_id)
@@ -893,32 +896,68 @@ async def websocket_control_save(hass, connection, msg):
         allowed_modes = set(definition.get("mappingModes") or [None])
         allowed_modes.add(None)
         mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
-        existing = {item.get("mode"): item for item in mappings
-            if item.get("direction") == "output" and item.get("concept") == msg["concept"]}
-        submitted: dict[str | None, dict[str, Any]] = {}
+        existing = [item for item in mappings
+            if item.get("direction") == "output" and item.get("concept") == msg["concept"]]
+        submitted: list[tuple[str | None, str | None, dict[str, Any]]] = []
+        valid_value_conditions = {None, "gtZero", "ltZero", "eqZero"}
         for behavior in msg["behaviors"]:
-            if not isinstance(behavior, dict) or set(behavior) != {"mode", "configuration"}:
+            if not isinstance(behavior, dict) or not set(behavior).issubset(
+                {"mode", "configuration", "valueCondition"}
+            ) or "mode" not in behavior or "configuration" not in behavior:
                 raise PanelCommandError("invalid_mapping")
             mode = behavior["mode"]
-            if mode not in allowed_modes or mode in submitted:
+            value_condition = behavior.get("valueCondition")
+            if mode not in allowed_modes or value_condition not in valid_value_conditions:
+                raise PanelCommandError("invalid_mapping")
+            if value_condition is not None and not (
+                definition.get("datatype") == "number"
+                and str(msg["concept"]).endswith(".power")
+                and mode == "balance"
+            ):
+                raise PanelCommandError("invalid_mapping")
+            identity = (mode, value_condition)
+            if any(item[:2] == identity for item in submitted):
                 raise PanelCommandError("invalid_mapping")
             configuration = validate_output_configuration(behavior["configuration"])
             if not await async_validate_control_configuration(hass, configuration):
                 raise PanelCommandError("invalid_mapping")
-            submitted[mode] = configuration
+            submitted.append((mode, value_condition, configuration))
         changed = False
-        for mode, mapping in existing.items():
-            configuration = submitted.pop(mode, None)
-            if configuration is None:
-                await api.delete_mapping(site_id, str(mapping["id"])); changed = True
-            elif configuration != mapping.get("configuration"):
-                await api.update_mapping(site_id, str(mapping["id"]), configuration); changed = True
-        for mode, configuration in submitted.items():
+        unmatched = list(existing)
+        for mode, value_condition, configuration in submitted:
+            mapping = next(
+                (
+                    item for item in unmatched
+                    if item.get("mode") == mode
+                    and item.get("valueCondition") == value_condition
+                ),
+                None,
+            )
+            if mapping is None:
+                mapping = next((item for item in unmatched if item.get("mode") == mode), None)
+            if mapping is not None:
+                unmatched.remove(mapping)
+                condition_changed = mapping.get("valueCondition") != value_condition
+                if condition_changed or configuration != mapping.get("configuration"):
+                    if condition_changed:
+                        await api.update_mapping(
+                            site_id,
+                            str(mapping["id"]),
+                            configuration,
+                            value_condition=value_condition,
+                        )
+                    else:
+                        await api.update_mapping(site_id, str(mapping["id"]), configuration)
+                    changed = True
+                continue
             await api.create_mapping(site_id, {
                 "integrationId": entry.data[CONF_INTEGRATION_INTERNAL_ID],
                 "deviceId": msg["device_id"], "concept": msg["concept"],
                 "direction": "output", "mode": mode, "configuration": configuration,
+                **({"valueCondition": value_condition} if value_condition is not None else {}),
             }); changed = True
+        for mapping in unmatched:
+            await api.delete_mapping(site_id, str(mapping["id"])); changed = True
         connection.send_result(msg["id"], {"changed": changed})
     except OutputMappingValidationError:
         _send_error(

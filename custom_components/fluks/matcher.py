@@ -439,8 +439,10 @@ def _semantic_assessment(
     if not matched_count:
         return None, None
     coverage = matched_count / len(target_tokens) if target_tokens else 0.0
-    repetition_bonus = min(
-        2, sum(max(0, count - 1) for count in occurrences.values())
+    repetition_bonus = (
+        min(2, sum(max(0, count - 1) for count in occurrences.values()))
+        if len(exact) == len(target_tokens)
+        else 0
     )
     if len(exact) == len(target_tokens):
         weight = 4 + repetition_bonus
@@ -873,6 +875,7 @@ def match_entities(
                 "score": 0,
                 "evidence": [],
                 "runner_up_gap": None,
+                "local_runner_up_gap": None,
                 "classification": "unsupported" if not ranked[name] else "unresolved",
                 "alternatives": [_candidate_payload(item) for item in ranked[name][:3]],
             }
@@ -887,6 +890,16 @@ def match_entities(
             concept_names, ranked, banned=(name, selected.candidate.source_key)
         )
         margin = total - alternative_total
+        local_alternatives = [
+            item
+            for item in ranked[name]
+            if item.candidate.source_key != selected.candidate.source_key
+        ]
+        local_margin = (
+            selected.score - local_alternatives[0].score
+            if local_alternatives
+            else None
+        )
         relationship = any(
             item["family"] == "relationship" and item["code"] == "selected_device"
             for item in selected.evidence
@@ -908,6 +921,9 @@ def match_entities(
             )
         )
         semantic_complete = target_token_count <= 1 or token_coverage >= 1
+        exact_semantics = semantic_evidence is None or semantic_evidence["code"] == (
+            "token_coverage"
+        )
         orientation_complete = not definitions[name].get("signConvention")
         if (
             selected.score >= AUTO_SCORE_THRESHOLD
@@ -916,6 +932,8 @@ def match_entities(
             and selected.unit_complete
             and relationship
             and semantic_complete
+            and exact_semantics
+            and (local_margin is None or local_margin >= AUTO_MARGIN)
             and orientation_complete
         ):
             classification = "auto"
@@ -932,6 +950,7 @@ def match_entities(
             "concept": name,
             **_candidate_payload(selected),
             "runner_up_gap": margin,
+            "local_runner_up_gap": local_margin,
             "classification": classification,
             "alternatives": [_candidate_payload(item) for item in alternatives[:3]],
         }

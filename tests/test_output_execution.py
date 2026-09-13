@@ -579,3 +579,81 @@ async def test_unmapped_balance_does_not_take_ownership(hass):
     })
 
     assert calls == ["number.battery"]
+
+
+def _site_condition_api(mappings):
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[
+        {"id": "site-internal", "deviceId": "site-external", "type": "site"},
+    ])
+    api.list_mappings = AsyncMock(return_value=mappings)
+    api.get_device_type_catalog = AsyncMock(return_value=[
+        {"type": "site", "concepts": [
+            {"concept": "site.power", "datatype": "number", "usages": ["control"]},
+        ]},
+    ])
+    return api
+
+
+def _site_power_mapping(mode="balance", value_condition=None, entity="number.balance"):
+    mapping = {
+        "deviceId": "site-internal", "concept": "site.power",
+        "direction": "output", "mode": mode,
+        "configuration": {"version": 1, "actions": [{
+            "type": "serviceCall", "service": "test.execute",
+            "target": {"entityId": entity},
+            "data": {"value": {"kind": "requestedValue"}},
+        }]},
+    }
+    if value_condition is not None:
+        mapping["valueCondition"] = value_condition
+    return mapping
+
+
+async def test_site_balance_value_condition_selects_signed_mapping_and_preserves_value(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data))
+    mappings = [
+        _site_power_mapping(value_condition="gtZero", entity="number.import"),
+        _site_power_mapping(value_condition="ltZero", entity="number.export"),
+        _site_power_mapping(value_condition="eqZero", entity="number.zero"),
+    ]
+    executor = RuntimeOutputExecutor(hass, _site_condition_api(mappings), "site-a")
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", 2906)]})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", -1500)]})
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", 0)]})
+
+    assert calls == [
+        {"value": 2906, "entity_id": "number.import"},
+        {"value": -1500, "entity_id": "number.export"},
+        {"value": 0, "entity_id": "number.zero"},
+    ]
+
+
+async def test_site_balance_wrong_condition_is_not_executed(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data))
+    executor = RuntimeOutputExecutor(
+        hass,
+        _site_condition_api([_site_power_mapping(value_condition="ltZero")]),
+        "site-a",
+    )
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", 12)]})
+
+    assert calls == []
+
+
+async def test_site_balance_null_value_condition_preserves_unrestricted_behavior(hass):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data))
+    executor = RuntimeOutputExecutor(
+        hass,
+        _site_condition_api([_site_power_mapping(entity="number.unrestricted")]),
+        "site-a",
+    )
+
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", -8)]})
+
+    assert calls == [{"value": -8, "entity_id": "number.unrestricted"}]

@@ -252,3 +252,80 @@ test("backend-provided Mapping execution modes include charge and discharge", ()
   assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="charge"/);
   assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="discharge"/);
 });
+
+test("numeric power behavior editor round-trips signed value conditions", () => {
+  const editor = new Editor();
+  editor.valueType = { datatype: "number", unit: "W" };
+  editor.behaviorChoices = [
+    { mode: "balance", valueCondition: "gtZero", labelKey: "behavior_balance_import", descriptionKey: "behavior_balance_import_description" },
+    { mode: "balance", valueCondition: "ltZero", labelKey: "behavior_balance_export", descriptionKey: "behavior_balance_export_description" },
+    { mode: "balance", valueCondition: "eqZero", labelKey: "behavior_balance_zero", descriptionKey: "behavior_balance_zero_description" },
+  ];
+  editor.allowedModes = [null, "balance", "release"];
+  editor.strings = {
+    behavior_balance_import: "Balances power when importing",
+    behavior_balance_import_description: "Balance toward requested import power.",
+    behavior_balance_export: "Balances power when exporting",
+    behavior_balance_export_description: "Balance toward requested export power.",
+    behavior_balance_zero: "Balances power at zero exchange",
+    behavior_balance_zero_description: "Balance toward zero grid exchange.",
+  };
+  editor.behaviors = [
+    { mode: "balance", valueCondition: "gtZero", actions: [target] },
+    { mode: "balance", valueCondition: "ltZero", actions: [mode] },
+  ];
+  assert.match(editor.shadowRoot.innerHTML, /Balances power when importing/);
+  assert.match(editor.shadowRoot.innerHTML, /Balances power when exporting/);
+  assert.doesNotMatch(editor.shadowRoot.innerHTML, /data-value-condition-index/);
+  editor.render = () => {};
+  editor._command("save", 0);
+  assert.deepEqual(editor.lastEvent.detail.behaviors.map((item) => item.valueCondition), ["gtZero", "ltZero"]);
+});
+
+test("Site power offers semantic balance choices without exposing valueCondition", () => {
+  const editor = new Editor();
+  editor.allowedModes = [null, "target", "limit", "balance", "release"];
+  editor.behaviorChoices = [
+    { mode: "balance", valueCondition: "gtZero", labelKey: "import", descriptionKey: "import_description" },
+    { mode: "balance", valueCondition: "ltZero", labelKey: "export", descriptionKey: "export_description" },
+    { mode: "balance", valueCondition: "eqZero", labelKey: "zero", descriptionKey: "zero_description" },
+  ];
+  editor.strings = {
+    import: "Balances power when importing", import_description: "Import description",
+    export: "Balances power when exporting", export_description: "Export description",
+    zero: "Balances power at zero exchange", zero_description: "Zero description",
+  };
+  editor.behaviors = [];
+  editor._addingBehavior = true;
+  editor.render();
+  const dialog = editor.shadowRoot.innerHTML;
+  assert.match(dialog, /Balances power when importing/);
+  assert.match(dialog, /Balances power when exporting/);
+  assert.match(dialog, /Balances power at zero exchange/);
+  assert.match(dialog, /data-value-condition="gtZero"/);
+  assert.match(dialog, /data-value-condition="ltZero"/);
+  assert.match(dialog, /data-value-condition="eqZero"/);
+  assert.doesNotMatch(dialog, /Balances power<\/span>/);
+  assert.doesNotMatch(dialog, /value condition/i);
+
+  editor._command("select-behavior", 0, "balance", null, "gtZero");
+  editor._command("select-behavior", 0, "balance", null, "ltZero");
+  editor._command("select-behavior", 0, "balance", null, "eqZero");
+  assert.deepEqual(editor.behaviors.filter((item) => item.mode === "balance").map((item) => item.valueCondition), ["gtZero", "ltZero", "eqZero"]);
+  assert.deepEqual(editor._availableBehaviorChoices().filter((choice) => choice.mode === "balance"), []);
+});
+
+test("legacy unconditional Site balance remains editable without a new null choice", () => {
+  const editor = new Editor();
+  editor.allowedModes = [null, "balance"];
+  editor.behaviorChoices = [
+    { mode: "balance", valueCondition: "gtZero", labelKey: "import", descriptionKey: "import_description" },
+    { mode: "balance", valueCondition: "ltZero", labelKey: "export", descriptionKey: "export_description" },
+    { mode: "balance", valueCondition: "eqZero", labelKey: "zero", descriptionKey: "zero_description" },
+  ];
+  editor.strings = { behavior_balance: "Balances power", behavior_balance_description: "Legacy balance" };
+  editor.behaviors = [{ mode: "balance", valueCondition: null, actions: [mode] }];
+  assert.match(editor.shadowRoot.innerHTML, /Balances power/);
+  assert.doesNotMatch(editor.shadowRoot.innerHTML, /value condition/i);
+  assert.deepEqual(editor._availableBehaviorChoices().map((choice) => choice.valueCondition), ["gtZero", "ltZero", "eqZero"]);
+});

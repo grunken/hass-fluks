@@ -930,7 +930,7 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
     api.list_mappings = AsyncMock(
         return_value=[
             {"id": "power-in", "concept": "site.power", "direction": "input", "configuration": {"entityId": "sensor.grid_power"}},
-            {"id": "power-out", "concept": "site.power", "direction": "output", "configuration": output_configuration()},
+            {"id": "power-out", "concept": "site.power", "direction": "output", "mode": "balance", "valueCondition": "gtZero", "configuration": output_configuration()},
             {"id": "import-in", "concept": "site.importEnergy", "direction": "input", "configuration": {"entityId": "sensor.grid_import"}},
         ]
     )
@@ -978,6 +978,7 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
     assert [item["concept"] for item in result["controls"]] == ["site.power"]
     assert result["mappings"]["site.power"]["configuration"]["entityId"] == "sensor.grid_power"
     assert result["output_mappings"]["site.power"][0]["id"] == "power-out"
+    assert result["output_mappings"]["site.power"][0]["valueCondition"] == "gtZero"
     assert result["proposals"] == {}
     api.get_device.assert_awaited_once_with("site-a", "site-device")
     api.list_mappings.assert_awaited_once_with("site-a", device_id="site-device")
@@ -1278,6 +1279,72 @@ async def test_site_control_uses_shared_output_mapping_save(hass):
         "mode": None,
         "configuration": configuration,
     }
+
+
+async def test_site_balance_value_conditions_persist_as_normal_mappings(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "site-device", "type": "site"})
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+    configuration = output_configuration()
+    catalog = {"site": {"type": "site", "concepts": [
+        {"concept": "site.power", "datatype": "number", "unit": "W",
+         "usages": ["control"], "mappingModes": [None, "balance", "release"]},
+    ]}}
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api.async_validate_control_configuration", AsyncMock(return_value=True)),
+    ):
+        websocket_control_save(hass, conn, {
+            "id": 84, "type": COMMAND_CONTROL_SAVE, "entry_id": entry.entry_id,
+            "device_id": "site-device", "concept": "site.power",
+            "behaviors": [
+                {"mode": "balance", "valueCondition": "gtZero", "configuration": configuration},
+                {"mode": "balance", "valueCondition": "ltZero", "configuration": configuration},
+                {"mode": "balance", "valueCondition": "eqZero", "configuration": configuration},
+            ],
+        })
+        await hass.async_block_till_done()
+
+    assert [call.args[1]["valueCondition"] for call in api.create_mapping.await_args_list] == [
+        "gtZero", "ltZero", "eqZero"
+    ]
+
+
+async def test_site_balance_value_condition_updates_through_mapping_patch(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "site-device", "type": "site"})
+    api.list_mappings = AsyncMock(return_value=[{
+        "id": "balance-map", "concept": "site.power", "direction": "output",
+        "mode": "balance", "valueCondition": "gtZero", "configuration": output_configuration(),
+    }])
+    api.update_mapping = AsyncMock()
+    api.delete_mapping = AsyncMock()
+    configuration = output_configuration(75)
+    catalog = {"site": {"type": "site", "concepts": [
+        {"concept": "site.power", "datatype": "number", "unit": "W",
+         "usages": ["control"], "mappingModes": [None, "balance", "release"]},
+    ]}}
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api.async_validate_control_configuration", AsyncMock(return_value=True)),
+    ):
+        websocket_control_save(hass, conn, {
+            "id": 85, "type": COMMAND_CONTROL_SAVE, "entry_id": entry.entry_id,
+            "device_id": "site-device", "concept": "site.power",
+            "behaviors": [{"mode": "balance", "valueCondition": "ltZero", "configuration": configuration}],
+        })
+        await hass.async_block_till_done()
+
+    api.update_mapping.assert_awaited_once_with(
+        "site-a", "balance-map", configuration, value_condition="ltZero"
+    )
 
 
 async def test_control_save_is_noop_for_machine_equal_configuration(hass):

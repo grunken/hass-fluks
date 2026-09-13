@@ -12,6 +12,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout
 from .const import API_BASE_URL, API_TIMEOUT_SECONDS, INTEGRATION_TYPE
 
 INTEGRATION_KEY_PATTERN = re.compile(r"^fluks_[A-Za-z0-9_-]{43}$")
+_UNSET = object()
 
 
 class FluksApiError(Exception):
@@ -325,13 +326,21 @@ class FluksApiClient:
         return self._response_object(response)
 
     async def update_mapping(
-        self, site_id: str, mapping_id: str, configuration: dict[str, Any]
+        self,
+        site_id: str,
+        mapping_id: str,
+        configuration: dict[str, Any],
+        *,
+        value_condition: str | None | object = _UNSET,
     ) -> dict[str, Any]:
-        """Replace only one Mapping's Integration-specific configuration."""
+        """Replace one Mapping's configuration and optional value condition."""
+        payload: dict[str, Any] = {"configuration": configuration}
+        if value_condition is not _UNSET:
+            payload["valueCondition"] = value_condition
         response = await self._request(
             "PATCH",
             f"/sites/{site_id}/mappings/{mapping_id}",
-            json={"configuration": configuration},
+            json=payload,
             expected_status=200,
             auth=AuthContext.INTEGRATION,
         )

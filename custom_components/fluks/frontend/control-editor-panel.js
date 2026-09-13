@@ -629,6 +629,9 @@ class FluksControlEditorPanel extends HTMLElement {
       "behavior_target", "behavior_target_choice", "behavior_target_description",
       "behavior_limit", "behavior_limit_choice", "behavior_limit_description",
       "behavior_balance", "behavior_balance_choice", "behavior_balance_description",
+      "behavior_balance_import", "behavior_balance_import_description",
+      "behavior_balance_export", "behavior_balance_export_description",
+      "behavior_balance_zero", "behavior_balance_zero_description",
       "behavior_release", "behavior_release_choice", "behavior_release_description",
       "behavior_charge", "behavior_charge_choice", "behavior_charge_description",
       "behavior_discharge", "behavior_discharge_choice", "behavior_discharge_description",
@@ -636,8 +639,14 @@ class FluksControlEditorPanel extends HTMLElement {
     editor.capabilities = this._controlCapabilities ?? [];
     editor.referenceEntities = this._referenceEntities();
     editor.valueType = { datatype: control.datatype, unit: control.unit ?? null };
+    editor.behaviorChoices = control.concept === "site.power" && control.datatype === "number"
+      ? [
+        { mode: "balance", valueCondition: "gtZero", labelKey: "behavior_balance_import", descriptionKey: "behavior_balance_import_description" },
+        { mode: "balance", valueCondition: "ltZero", labelKey: "behavior_balance_export", descriptionKey: "behavior_balance_export_description" },
+        { mode: "balance", valueCondition: "eqZero", labelKey: "behavior_balance_zero", descriptionKey: "behavior_balance_zero_description" },
+      ] : [];
     editor.allowedModes = control.mappingModes ?? [];
-    const persisted = (this._detail.output_mappings[control.concept] ?? []).map((mapping) => ({ mode: mapping.mode ?? null, actions: mapping.configuration?.actions ?? [] }));
+    const persisted = (this._detail.output_mappings[control.concept] ?? []).map((mapping) => ({ mode: mapping.mode ?? null, ...(editor.behaviorChoices.length ? { valueCondition: mapping.valueCondition ?? null } : {}), actions: mapping.configuration?.actions ?? [] }));
     editor.behaviors = this._pendingControl?.key === key ? this._pendingControl.behaviors : persisted;
     editor.addEventListener("control-saved", async (e) => {
       this._pendingControl = { key, behaviors: e.detail.behaviors };
