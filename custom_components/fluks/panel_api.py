@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,9 @@ BASE_SCHEMA = {
 }
 TRANSLATIONS_DIRECTORY = Path(__file__).parent / "translations"
 
+_FORECAST_SOLAR_DOMAIN = "forecast_solar"
+_FORECAST_SOLAR_PLANE_TYPE = "plane"
+
 
 class PanelCommandError(Exception):
     """A safe product-level command error."""
@@ -116,6 +120,93 @@ def _mappable_concepts(catalog_item: dict[str, Any]) -> list[dict[str, Any]]:
         and "fact" in concept.get("usages", [])
         and concept.get("source") == "mapping"
     ]
+
+
+def _forecast_solar_number(value: Any) -> float | None:
+    """Return a finite Forecast.Solar number, or no prefill for bad data."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _forecast_solar_plane(entry: Any) -> dict[str, Any] | None:
+    """Return the one unambiguous Forecast.Solar plane, if present.
+
+    Forecast.Solar currently stores plane settings in config-entry subentries.
+    Older entries stored the same fields in options, so retain that compatible
+    fallback without importing or depending on that integration at runtime.
+    """
+    planes: list[Any] = []
+    getter = getattr(entry, "get_subentries_of_type", None)
+    if callable(getter):
+        try:
+            planes = list(getter(_FORECAST_SOLAR_PLANE_TYPE))
+        except (TypeError, AttributeError):
+            planes = []
+    if not planes:
+        subentries = getattr(entry, "subentries", None)
+        if isinstance(subentries, dict):
+            planes = [
+                item
+                for item in subentries.values()
+                if getattr(item, "subentry_type", None) == _FORECAST_SOLAR_PLANE_TYPE
+            ]
+    if len(planes) > 1:
+        return None
+    if len(planes) == 1:
+        data = getattr(planes[0], "data", None)
+        return dict(data) if isinstance(data, dict) else None
+
+    # Forecast.Solar config entries before plane subentries kept these values
+    # in options.  Keep data as a fallback for test/older HA representations.
+    data = getattr(entry, "data", None)
+    options = getattr(entry, "options", None)
+    combined = {}
+    if isinstance(data, dict):
+        combined.update(data)
+    if isinstance(options, dict):
+        combined.update(options)
+    if any(key in combined for key in ("azimuth", "declination", "modules_power")):
+        return combined
+    return None
+
+
+def _forecast_solar_prefill(
+    hass: HomeAssistant, existing: dict[str, Any] | None = None
+) -> dict[str, float]:
+    """Suggest missing Solar installation properties from one Solar plane.
+
+    A Forecast.Solar entry with several planes, or several entries, is
+    intentionally treated as ambiguous.  There is no supported HA relation
+    identifying which plane belongs to a Fluks Solar device, so guessing would
+    be worse than leaving the normal editable fields empty.
+    """
+    entries = list(hass.config_entries.async_entries(_FORECAST_SOLAR_DOMAIN))
+    if len(entries) != 1:
+        return {}
+    source = _forecast_solar_plane(entries[0])
+    if source is None:
+        return {}
+    values: dict[str, float] = {}
+    azimuth = _forecast_solar_number(source.get("azimuth"))
+    if azimuth is not None and 0 <= azimuth < 360:
+        values["azimuthDegrees"] = azimuth
+    tilt = _forecast_solar_number(source.get("declination"))
+    if tilt is not None and 0 <= tilt <= 90:
+        values["tiltDegrees"] = tilt
+    modules_power = _forecast_solar_number(source.get("modules_power"))
+    if modules_power is not None and modules_power > 0:
+        values["installedKWp"] = modules_power / 1000
+    current = existing or {}
+    return {
+        key: value
+        for key, value in values.items()
+        if current.get(key) is None
+    }
 
 
 @lru_cache(maxsize=2)
@@ -467,6 +558,7 @@ async def websocket_device_detail(hass, connection, msg):
             else {}
         )
         translations = await _panel_translations(hass)
+        properties = dict(device.get("properties") or {})
         connection.send_result(
             msg["id"],
             {
@@ -483,7 +575,12 @@ async def websocket_device_detail(hass, connection, msg):
                     if device_type == SITE_DEVICE_TYPE
                     else device_display_name(device, translations)
                 ),
-                "properties": dict(device.get("properties") or {}),
+                "properties": properties,
+                "property_suggestions": (
+                    _forecast_solar_prefill(hass, properties)
+                    if device_type == "solar"
+                    else {}
+                ),
                 "ha_device_id": ha_device_id,
                 "concepts": _present_concepts(concepts, translations),
                 "controls": _present_concepts([
@@ -530,16 +627,19 @@ async def websocket_add_review(hass, connection, msg):
         if _has_local_context(entry, msg["ha_device_id"], msg["device_type"]):
             raise PanelCommandError("conflict")
         concepts = _mappable_concepts(catalog[msg["device_type"]])
+        properties = {
+            "displayName": registry_device.name_by_user or registry_device.name,
+            "vendor": registry_device.manufacturer,
+            "model": registry_device.model,
+        }
+        if msg["device_type"] == "solar":
+            properties.update(_forecast_solar_prefill(hass))
         connection.send_result(
             msg["id"],
             {
                 "concepts": _present_concepts(concepts, await _panel_translations(hass)),
                 "proposals": match_entities(hass, concepts, msg["ha_device_id"]),
-                "properties": {
-                    "displayName": registry_device.name_by_user or registry_device.name,
-                    "vendor": registry_device.manufacturer,
-                    "model": registry_device.model,
-                },
+                "properties": properties,
             },
         )
     except (PanelCommandError, FluksApiError) as err:

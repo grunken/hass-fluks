@@ -728,6 +728,36 @@ test("Solar installed capacity keeps learned suggestion separate and round-trips
   assert.match(body, /data-property="installedKWp" value="" placeholder="~14\.03"/);
 });
 
+test("Solar edit merges only missing Forecast.Solar property suggestions", () => {
+  const panel = new Panel();
+  panel._context = { translations: {}, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._view = { name: "edit" };
+  panel._detail = {
+    id: "solar-device", type: "solar", type_name: "Solar", label: "Solar · Test",
+    properties: { installedKWp: 12 },
+    property_suggestions: { installedKWp: 8.45, azimuthDegrees: 182, tiltDegrees: 37 },
+    concepts: [], mappings: {}, proposals: {},
+  };
+  let body;
+  const cancel = {};
+  const save = {};
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+
+  panel._renderEdit();
+
+  assert.deepEqual(panel._editProperties, {
+    installedKWp: 12,
+    azimuthDegrees: 182,
+    tiltDegrees: 37,
+  });
+  assert.match(body, /data-property="installedKWp" value="12"/);
+  assert.match(body, /data-property="azimuthDegrees" value="182"/);
+  assert.match(body, /data-property="tiltDegrees" value="37"/);
+});
+
 test("Space Heater exposes the existing ratedPowerW Installation property", () => {
   const panel = new Panel();
   panel._context = { translations: { installation: "Installation", rated_power: "Rated power" }, entities: [] };

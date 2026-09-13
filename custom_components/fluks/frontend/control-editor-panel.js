@@ -503,7 +503,12 @@ class FluksControlEditorPanel extends HTMLElement {
         }
         return [concept.concept, clone(existing ?? (proposal?.classification === "auto" ? proposal.configuration : null) ?? { version: 1, entityId: "" })];
       }));
-      this._editProperties = clone(this._editableDeviceProperties(this._detail.properties, this._detail.type));
+      const configuredProperties = this._editableDeviceProperties(this._detail.properties, this._detail.type);
+      const suggestions = this._detail.property_suggestions ?? {};
+      this._editProperties = {
+        ...configuredProperties,
+        ...Object.fromEntries(Object.entries(suggestions).filter(([key]) => configuredProperties[key] == null)),
+      };
     }
     const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(this._detail.type, this._inputDraft, this._editProperties);
     this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError)}${this._actions("save_mapping")}`, true);

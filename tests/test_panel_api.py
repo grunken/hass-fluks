@@ -1,5 +1,6 @@
 """Tests for the finite authenticated fluks panel command boundary."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -24,6 +25,7 @@ from custom_components.fluks.panel_api import (
     COMMAND_SITE_DELETE,
     COMMANDS,
     _editable_property_keys,
+    _forecast_solar_prefill,
     _has_local_context,
     _mappable_concepts,
     _migrate_legacy_mappings,
@@ -670,6 +672,110 @@ async def test_solar_installed_capacity_uses_existing_patch_and_keeps_estimate_r
     ]
     connections[0].send_result.assert_called_once_with(73, {"properties": configured})
     connections[1].send_result.assert_called_once_with(74, {"properties": learned})
+
+
+def _forecast_entry(*planes, data=None, options=None):
+    plane_entries = [
+        SimpleNamespace(subentry_type="plane", data=dict(plane)) for plane in planes
+    ]
+    return SimpleNamespace(
+        data=dict(data or {}),
+        options=dict(options or {}),
+        subentries={str(index): plane for index, plane in enumerate(plane_entries)},
+        get_subentries_of_type=lambda subentry_type: (
+            plane_entries if subentry_type == "plane" else []
+        ),
+    )
+
+
+def test_forecast_solar_prefill_uses_supported_plane_fields_and_converts_power(hass):
+    """One Forecast.Solar plane supplies only the Fluks Solar property names."""
+    entry = _forecast_entry(
+        {"azimuth": 182, "declination": 37, "modules_power": 8450}
+    )
+    with patch.object(hass.config_entries, "async_entries", return_value=[entry]):
+        assert _forecast_solar_prefill(hass) == {
+            "azimuthDegrees": 182.0,
+            "tiltDegrees": 37.0,
+            "installedKWp": 8.45,
+        }
+
+
+def test_forecast_solar_prefill_is_optional_and_never_overwrites_values(hass):
+    """Absent and partial Forecast.Solar data leave normal editing intact."""
+    with patch.object(hass.config_entries, "async_entries", return_value=[]):
+        assert _forecast_solar_prefill(hass) == {}
+
+    entry = _forecast_entry(
+        {"azimuth": 182, "declination": None, "modules_power": 8450}
+    )
+    with patch.object(hass.config_entries, "async_entries", return_value=[entry]):
+        assert _forecast_solar_prefill(
+            hass, {"azimuthDegrees": 90, "installedKWp": 3.2}
+        ) == {}
+        assert _forecast_solar_prefill(hass, {"azimuthDegrees": 90}) == {
+            "installedKWp": 8.45
+        }
+
+
+def test_forecast_solar_prefill_does_not_guess_between_entries_or_planes(hass):
+    """Ambiguous Forecast.Solar installations produce no combined suggestion."""
+    entries = [
+        _forecast_entry({"azimuth": 10, "declination": 20, "modules_power": 1000}),
+        _forecast_entry({"azimuth": 200, "declination": 30, "modules_power": 2000}),
+    ]
+    with patch.object(hass.config_entries, "async_entries", return_value=entries):
+        assert _forecast_solar_prefill(hass) == {}
+    entry = _forecast_entry(
+        {"azimuth": 10, "declination": 20, "modules_power": 1000},
+        {"azimuth": 200, "declination": 30, "modules_power": 2000},
+    )
+    with patch.object(hass.config_entries, "async_entries", return_value=[entry]):
+        assert _forecast_solar_prefill(hass) == {}
+
+
+async def test_solar_add_review_exposes_forecast_prefill_as_editable_properties(hass):
+    """The normal Solar add review carries suggestions through its existing draft."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    registry_device = MagicMock(
+        name_by_user="Roof Solar", name="Roof Solar", manufacturer="Example", model="PV"
+    )
+    registry = MagicMock()
+    registry.async_get.return_value = registry_device
+    forecast = _forecast_entry(
+        {"azimuth": 182, "declination": 37, "modules_power": 8450}
+    )
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value={"solar": {"concepts": []}})),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={})),
+        patch("custom_components.fluks.panel_api.match_entities", return_value={}),
+        patch("custom_components.fluks.panel_api.dr.async_get", return_value=registry),
+        patch.object(hass.config_entries, "async_entries", return_value=[forecast]),
+    ):
+        conn = connection()
+        websocket_add_review(
+            hass,
+            conn,
+            {
+                "id": 81,
+                "type": COMMAND_ADD_REVIEW,
+                "entry_id": entry.entry_id,
+                "device_type": "solar",
+                "ha_device_id": "ha-solar",
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert conn.send_result.call_args.args[1]["properties"] == {
+        "displayName": "Roof Solar",
+        "vendor": "Example",
+        "model": "PV",
+        "azimuthDegrees": 182.0,
+        "tiltDegrees": 37.0,
+        "installedKWp": 8.45,
+    }
 
 
 async def test_device_detail_preserves_existing_mapping_and_matches_only_missing(hass):
