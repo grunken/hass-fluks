@@ -19,6 +19,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._view = { name: "home" };
     this._pendingControl = undefined;
     this._spaceHeaterValidationError = false;
+    this._mappingSuggestionsLoading = false;
     this._clearedInputConcepts = new Set();
     this._proposalDraftConcepts = new Set();
     this._popstate = () => {
@@ -40,6 +41,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._context = this._detail = this._draft = undefined;
       this._pendingControl = undefined;
       this._spaceHeaterValidationError = false;
+      this._mappingSuggestionsLoading = false;
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
       this._view = { name: "home" };
@@ -94,8 +96,17 @@ class FluksControlEditorPanel extends HTMLElement {
   async _loadView() {
     if (!this._context) return;
     if (["device", "edit", "controls", "control", "site-information", "delete-device"].includes(this._view.name)) {
+      const loadingSuggestions = this._view.name === "edit";
+      if (loadingSuggestions) {
+        this._mappingSuggestionsLoading = true;
+        this._error = undefined;
+        this._mappingSuggestionsMessage();
+      }
       try { this._detail = await this._call("fluks/config/device", { device_id: this._view.deviceId }); }
       catch (_) { return this._message(this._error); }
+      finally {
+        if (loadingSuggestions) this._mappingSuggestionsLoading = false;
+      }
     }
     if (this._view.name === "control") {
       try {
@@ -123,6 +134,9 @@ class FluksControlEditorPanel extends HTMLElement {
     this.shadowRoot.querySelector("#back")?.addEventListener("click", () => history.back());
   }
   _message(message) { this._frame("fluks", `<section class="card"><p>${esc(message)}</p></section>`); }
+  _mappingSuggestionsMessage() {
+    this._frame(this._t("edit_mappings"), `<section class="card mapping-loading" role="status" aria-live="polite"><p>${esc(this._t("loading_mapping_suggestions"))}</p></section>`, true);
+  }
 
   _iconPath(type) {
     const filename = type.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -269,7 +283,8 @@ class FluksControlEditorPanel extends HTMLElement {
     const sourceValue = item && attribute
       ? this._formatTemperatureSource(this._hass.states[id]?.attributes?.[attribute], this._temperatureUnit({ ...this._hass.states[id], entity_id: id }, attribute))
       : item?.trailing;
-    return `<button type="button" class="picker-value" data-picker-kind="${kind}" data-picker-key="${esc(key)}" data-picker-value="${esc(id || "")}" data-picker-attribute="${esc(attribute)}">
+    const disabled = kind === "device" && this._mappingSuggestionsLoading ? " disabled" : "";
+    return `<button type="button" class="picker-value"${disabled} data-picker-kind="${kind}" data-picker-key="${esc(key)}" data-picker-value="${esc(id || "")}" data-picker-attribute="${esc(attribute)}">
       <span class="source-icon"><ha-icon icon="${esc(item?.icon || (kind === "device" ? "mdi:devices" : "mdi:chart-bell-curve-cumulative"))}"></ha-icon></span>
       <span class="row-copy"><strong title="${esc(name)}">${esc(name)}</strong><span title="${esc(secondary || this._t("optional"))}">${esc(secondary || this._t("optional"))}</span></span>${sourceValue ? `<span class="trailing" title="${esc(sourceValue)}">${esc(sourceValue)}</span>` : ""}<span class="chevron">⌄</span></button>`;
   }
@@ -541,7 +556,7 @@ class FluksControlEditorPanel extends HTMLElement {
   _actions(saveKey = "save") { return `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save">${esc(this._t(saveKey))}</button></div>`; }
   _renderAdd() {
     const type = this._context.device_types.find((t) => t.type === this._view.deviceType);
-    const typePicker = `<section><h2>${esc(this._t("choose_type"))}</h2><div class="type-grid">${this._context.device_types.map((item) => `<button type="button" class="type-option ${item.type === this._view.deviceType ? "selected" : ""}" data-type="${esc(item.type)}">${this._typeIcon(item.type, "picker")}<strong>${esc(item.name)}</strong></button>`).join("")}</div></section>`;
+    const typePicker = `<section><h2>${esc(this._t("choose_type"))}</h2><div class="type-grid">${this._context.device_types.map((item) => `<button type="button" class="type-option ${item.type === this._view.deviceType ? "selected" : ""}" data-type="${esc(item.type)}"${this._mappingSuggestionsLoading ? " disabled" : ""}>${this._typeIcon(item.type, "picker")}<strong>${esc(item.name)}</strong></button>`).join("")}</div></section>`;
     let body = typePicker;
     if (type) {
       body += `<section class="add-source"><div class="device-heading compact">${this._typeIcon(type.type, "header")}<div><h2>${esc(type.name)}</h2><p>${esc(this._t("choose_ha_device"))}</p></div></div>
@@ -552,6 +567,7 @@ class FluksControlEditorPanel extends HTMLElement {
       const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(type.type, this._inputDraft, this._draft.properties);
       body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError)}`;
     }
+    if (this._mappingSuggestionsLoading) body += `<section class="card mapping-loading" role="status" aria-live="polite"><p>${esc(this._t("loading_mapping_suggestions"))}</p></section>`;
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
     this._frame(type ? `${this._t("add_device")} · ${type.name}` : this._t("add_device"), body, true);
     this.shadowRoot.querySelectorAll("[data-type]").forEach((node) => node.onclick = () => {
@@ -584,7 +600,11 @@ class FluksControlEditorPanel extends HTMLElement {
     };
   }
   async _selectAddHaDevice(haDeviceId) {
-    if (!haDeviceId || !this._view.deviceType) return;
+    if (!haDeviceId || !this._view.deviceType || this._mappingSuggestionsLoading) return;
+    this._mappingSuggestionsLoading = true;
+    this._error = undefined;
+    this._view = { ...this._view, haDeviceId };
+    this._renderAdd();
     try {
       const draft = await this._call("fluks/config/add_review", { device_type: this._view.deviceType, ha_device_id: haDeviceId });
       this._draft = draft;
@@ -603,8 +623,11 @@ class FluksControlEditorPanel extends HTMLElement {
           : { version: 1, entityId: "" })];
       }));
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
+    } catch (_) { /* The final render below exposes the existing error state. */ }
+    finally {
+      this._mappingSuggestionsLoading = false;
       this._renderAdd();
-    } catch (_) { this._renderAdd(); }
+    }
   }
   _renderControls() {
     const rows = this._detail.controls.map((c) => `<button class="row" data-control="${esc(c.concept)}"><span class="row-copy"><strong>${esc(this._conceptLabel(c))}</strong><small>${esc(this._detail.output_mappings[c.concept] ? this._t("configured") : this._t("not_configured"))}</small></span><span>›</span></button>`).join("");

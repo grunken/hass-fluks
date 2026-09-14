@@ -133,6 +133,14 @@ class ScoredCandidate:
         }
 
 
+@dataclass(frozen=True)
+class PreparedMatches:
+    """The existing compatible candidate set before semantic selection."""
+
+    definitions: dict[str, dict[str, Any]]
+    ranked: dict[str, list[ScoredCandidate]]
+
+
 def _tokens(value: str) -> tuple[str, ...]:
     expanded = re.sub(r"([a-z])([A-Z])", r"\1 \2", value).lower()
     expanded = re.sub(r"\bstate[\s_-]+of[\s_-]+charge\b", "soc", expanded)
@@ -787,13 +795,13 @@ def _configured_source_key(configuration: dict[str, Any]) -> str | None:
     return entity_id if not isinstance(attribute, str) else f"{entity_id}#{attribute}"
 
 
-def match_entities(
+def prepare_matches(
     hass: HomeAssistant,
     concepts: list[dict[str, Any]],
     selected_device_id: str,
     existing_configurations: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Return one coherent evidence-bearing proposal for every fact concept."""
+) -> PreparedMatches:
+    """Collect and filter candidates exactly as the existing matcher does."""
     candidates = collect_candidates(hass, selected_device_id)
     definitions = {
         str(concept["concept"]): concept
@@ -805,7 +813,6 @@ def match_entities(
         for configuration in (existing_configurations or {}).values()
         if (source := _configured_source_key(configuration)) is not None
     }
-    concept_names = list(definitions)
     ranked: dict[str, list[ScoredCandidate]] = {}
     for name, concept in definitions.items():
         values: list[ScoredCandidate] = []
@@ -863,7 +870,90 @@ def match_entities(
             values, key=lambda item: (-item.score, item.candidate.source_key)
         )
 
-    assignment, total = _maximum_assignment(concept_names, ranked)
+    return PreparedMatches(definitions=definitions, ranked=ranked)
+
+
+def suggestion_candidates(
+    prepared: PreparedMatches, concept: str
+) -> list[dict[str, Any]]:
+    """Return the prepared candidate set in the backend suggestion schema."""
+    definition = prepared.definitions[concept]
+    datatype = definition.get("datatype")
+    expected_dimension = _unit_family(definition.get("unit"))
+    device_class_dimensions = {
+        "battery": "percentage",
+        "distance": "distance",
+        "energy": "energy",
+        "power": "power",
+        "temperature": "temperature",
+    }
+    result: list[dict[str, Any]] = []
+    for item in prepared.ranked[concept]:
+        candidate = item.candidate
+        unit_dimension = _unit_family(candidate.unit)
+        device_class_dimension = device_class_dimensions.get(
+            (candidate.device_class or "").lower()
+        )
+        if expected_dimension is not None and expected_dimension not in {
+            unit_dimension,
+            device_class_dimension,
+        }:
+            continue
+        payload = {
+            "entityId": candidate.entity_id,
+            "attribute": candidate.attribute,
+            "name": candidate.friendly_name,
+            "originalName": candidate.original_name,
+            "sourceType": "attribute" if candidate.attribute is not None else "state",
+            "datatype": datatype,
+            "domain": candidate.domain,
+            "deviceClass": candidate.device_class,
+            "unit": candidate.unit,
+            "stateClass": candidate.state_class,
+            "currentValue": candidate.value,
+        }
+        result.append(
+            {key: value for key, value in payload.items() if value is not None}
+        )
+    return result
+
+
+def match_entities(
+    hass: HomeAssistant,
+    concepts: list[dict[str, Any]],
+    selected_device_id: str,
+    existing_configurations: dict[str, dict[str, Any]] | None = None,
+    *,
+    prepared: PreparedMatches | None = None,
+    selected_sources: dict[str, dict[str, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return one evidence-bearing proposal for every fact concept."""
+    matches = prepared or prepare_matches(
+        hass, concepts, selected_device_id, existing_configurations
+    )
+    definitions = matches.definitions
+    ranked = matches.ranked
+    concept_names = list(definitions)
+
+    if selected_sources is None:
+        assignment, total = _maximum_assignment(concept_names, ranked)
+    else:
+        assignment = {}
+        for name, source in selected_sources.items():
+            source_key = _configured_source_key(source)
+            if name not in ranked or source_key is None:
+                continue
+            selected = next(
+                (
+                    item
+                    for item in ranked[name]
+                    if item.candidate.source_key == source_key
+                ),
+                None,
+            )
+            if selected is not None:
+                assignment[name] = selected
+        total = sum(item.score for item in assignment.values())
     proposals: dict[str, dict[str, Any]] = {}
     for name in concept_names:
         selected = assignment.get(name)
@@ -886,10 +976,13 @@ def match_entities(
                 proposals[name]["classification"],
             )
             continue
-        _, alternative_total = _maximum_assignment(
-            concept_names, ranked, banned=(name, selected.candidate.source_key)
-        )
-        margin = total - alternative_total
+        if selected_sources is None:
+            _, alternative_total = _maximum_assignment(
+                concept_names, ranked, banned=(name, selected.candidate.source_key)
+            )
+            margin = total - alternative_total
+        else:
+            margin = None
         local_alternatives = [
             item
             for item in ranked[name]
@@ -925,7 +1018,9 @@ def match_entities(
             "token_coverage"
         )
         orientation_complete = not definitions[name].get("signConvention")
-        if (
+        if selected_sources is not None:
+            classification = "suggest"
+        elif (
             selected.score >= AUTO_SCORE_THRESHOLD
             and len(selected.positive_families) >= AUTO_MIN_EVIDENCE_FAMILIES
             and margin >= AUTO_MARGIN

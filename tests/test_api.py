@@ -218,6 +218,128 @@ async def test_catalog_device_and_mapping_contracts():
 
 
 @pytest.mark.asyncio
+async def test_mapping_suggestion_uses_integration_auth_and_attribute_identity():
+    """Mapping assistance preserves the selected state-or-attribute identity."""
+    candidates = [
+        {
+            "entityId": "climate.example",
+            "attribute": "current_temperature",
+            "sourceType": "attribute",
+            "datatype": "number",
+            "unit": "°C",
+        },
+        {
+            "entityId": "climate.example",
+            "attribute": "temperature",
+            "sourceType": "attribute",
+            "datatype": "number",
+            "unit": "°C",
+        },
+    ]
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "entityId": "climate.example",
+                "attribute": "current_temperature",
+                "confidence": 0.96,
+            },
+        )
+    )
+    client = FluksApiClient(session, integration_key="integration-key")
+
+    result = await client.suggest_mapping(
+        "site-id", "heatPump", "heatPump.temperature", candidates
+    )
+
+    assert result == {
+        "entityId": "climate.example",
+        "attribute": "current_temperature",
+        "confidence": 0.96,
+    }
+    request = session.requests[0]
+    assert request[0:2] == (
+        "POST",
+        f"{API_BASE_URL}/sites/site-id/mappings/suggest",
+    )
+    assert request[2]["json"] == {
+        "deviceType": "heatPump",
+        "concept": "heatPump.temperature",
+        "candidates": candidates,
+    }
+    assert request[2]["headers"] == {"Authorization": "Bearer integration-key"}
+
+
+@pytest.mark.asyncio
+async def test_mapping_suggestions_batch_uses_integration_auth_and_validates_sources():
+    """Batch suggestions preserve concept and state/attribute source identity."""
+    candidates = [
+        {
+            "entityId": "sensor.energy",
+            "sourceType": "state",
+            "datatype": "number",
+            "unit": "kWh",
+        },
+        {
+            "entityId": "climate.example",
+            "attribute": "current_temperature",
+            "sourceType": "attribute",
+            "datatype": "number",
+            "unit": "°C",
+        },
+    ]
+    groups = [{"deviceId": "ha-device", "candidates": candidates}]
+    session = FakeSession(
+        FakeResponse(
+            200,
+            {
+                "suggestions": {
+                    "heatPump.energy": {
+                        "entityId": "sensor.energy",
+                        "attribute": None,
+                        "confidence": 0.98,
+                    },
+                    "heatPump.temperature": {
+                        "entityId": "climate.example",
+                        "attribute": "current_temperature",
+                        "confidence": 0.96,
+                    },
+                }
+            },
+        )
+    )
+    client = FluksApiClient(session, integration_key="integration-key")
+
+    result = await client.suggest_mappings(
+        "site-id", "heatPump", ["heatPump.energy", "heatPump.temperature"], groups
+    )
+
+    assert result == {
+        "heatPump.energy": {
+            "entityId": "sensor.energy",
+            "attribute": None,
+            "confidence": 0.98,
+        },
+        "heatPump.temperature": {
+            "entityId": "climate.example",
+            "attribute": "current_temperature",
+            "confidence": 0.96,
+        },
+    }
+    request = session.requests[0]
+    assert request[0:2] == (
+        "POST",
+        f"{API_BASE_URL}/sites/site-id/mappings/suggestions",
+    )
+    assert request[2]["json"] == {
+        "deviceType": "heatPump",
+        "concepts": ["heatPump.energy", "heatPump.temperature"],
+        "candidateGroups": groups,
+    }
+    assert request[2]["headers"] == {"Authorization": "Bearer integration-key"}
+
+
+@pytest.mark.asyncio
 async def test_catalog_preserves_site_outdoor_temperature_fact():
     """The backend-owned catalog is passed through without local aliases."""
     catalog = [{

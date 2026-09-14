@@ -453,6 +453,240 @@ async def test_add_review_proposal_persists_unchanged_through_add_save(hass):
     save_connection.send_result.assert_called_once_with(62, {"device_id": "device-new"})
 
 
+async def test_add_review_uses_backend_choice_from_existing_filtered_candidates(hass):
+    """Add review replaces the local final choice with the batch result."""
+    entry = make_entry(hass)
+    hass.states.async_set(
+        "sensor.generic_energy",
+        "12.5",
+        {
+            "friendly_name": "Generic accumulated consumption",
+            "unit_of_measurement": "kWh",
+            "device_class": "energy",
+            "state_class": "total_increasing",
+        },
+    )
+    hass.states.async_set(
+        "sensor.generic_temperature",
+        "21",
+        {
+            "unit_of_measurement": "°C",
+            "device_class": "temperature",
+        },
+    )
+    entity_registry = SimpleNamespace(
+        entities={
+            entity_id: SimpleNamespace(
+                entity_id=entity_id,
+                device_id="ha-new",
+                disabled=False,
+                name=None,
+                original_name=None,
+                original_device_class=None,
+                config_entry_id=None,
+                config_entry_ids=frozenset(),
+            )
+            for entity_id in (
+                "sensor.generic_energy",
+                "sensor.generic_temperature",
+            )
+        }
+    )
+    registry_device = MagicMock(
+        name_by_user="Generic heat pump",
+        name="Generic heat pump",
+        manufacturer=None,
+        model=None,
+    )
+    device_registry = MagicMock()
+    device_registry.async_get.return_value = registry_device
+    concept = {
+        "concept": "heatPump.energy",
+        "datatype": "number",
+        "unit": "kWh",
+        "cadence": "interval",
+        "usages": ["fact"],
+        "source": "mapping",
+    }
+    api = MagicMock(spec=FluksApiClient)
+    api.suggest_mappings = AsyncMock(
+        return_value={
+            "heatPump.energy": {
+                "entityId": "sensor.generic_energy",
+                "attribute": None,
+                "confidence": 0.98,
+            }
+        }
+    )
+    conn = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._catalog",
+            AsyncMock(
+                return_value={
+                    "heatPump": {"type": "heatPump", "concepts": [concept]}
+                }
+            ),
+        ),
+        patch(
+            "custom_components.fluks.panel_api._panel_translations",
+            AsyncMock(return_value={}),
+        ),
+        patch("custom_components.fluks.panel_api.dr.async_get", return_value=device_registry),
+        patch("custom_components.fluks.matcher.er.async_get", return_value=entity_registry),
+    ):
+        websocket_add_review(
+            hass,
+            conn,
+            {
+                "id": 63,
+                "type": COMMAND_ADD_REVIEW,
+                "entry_id": entry.entry_id,
+                "device_type": "heatPump",
+                "ha_device_id": "ha-new",
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert api.suggest_mappings.await_count == 1
+    batch_args = api.suggest_mappings.await_args.args
+    assert batch_args[0:3] == ("site-a", "heatPump", ["heatPump.energy"])
+    candidates = batch_args[3][0]["candidates"]
+    assert [item["entityId"] for item in candidates] == ["sensor.generic_energy"]
+    proposal = conn.send_result.call_args.args[1]["proposals"]["heatPump.energy"]
+    assert proposal["source"] == {"entityId": "sensor.generic_energy"}
+    assert proposal["configuration"] == {
+        "version": 1,
+        "entityId": "sensor.generic_energy",
+        "unit": "kWh",
+        "source": {"kind": "cumulative"},
+    }
+    assert proposal["classification"] == "suggest"
+
+
+async def test_device_detail_uses_backend_attribute_choice(hass):
+    """Edit mappings preserves attribute identity selected by the backend."""
+    entry = make_entry(hass)
+    hass.states.async_set(
+        "climate.generic",
+        "heat",
+        {
+            "friendly_name": "Generic climate",
+            "current_temperature": 42,
+            "temperature": 50,
+            "temperature_unit": "°C",
+        },
+    )
+    hass.states.async_set(
+        "sensor.generic_fahrenheit",
+        "72",
+        {
+            "unit_of_measurement": "°F",
+            "device_class": "temperature",
+        },
+    )
+    entity_registry = SimpleNamespace(
+        entities={
+            "climate.generic": SimpleNamespace(
+                entity_id="climate.generic",
+                device_id="ha-a",
+                disabled=False,
+                name=None,
+                original_name="Generic climate",
+                original_device_class=None,
+                config_entry_id=None,
+                config_entry_ids=frozenset(),
+            ),
+            "sensor.generic_fahrenheit": SimpleNamespace(
+                entity_id="sensor.generic_fahrenheit",
+                device_id="ha-a",
+                disabled=False,
+                name=None,
+                original_name="Generic Fahrenheit",
+                original_device_class="temperature",
+                config_entry_id=None,
+                config_entry_ids=frozenset(),
+            ),
+        }
+    )
+    concept = {
+        "concept": "heatPump.temperature",
+        "datatype": "number",
+        "unit": "°C",
+        "cadence": "realtime",
+        "usages": ["fact"],
+        "source": "mapping",
+    }
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "device-a", "type": "heatPump", "properties": {}}
+    )
+    api.list_mappings = AsyncMock(return_value=[])
+    api.suggest_mappings = AsyncMock(
+        return_value={
+            "heatPump.temperature": {
+                "entityId": "climate.generic",
+                "attribute": "current_temperature",
+                "confidence": 0.96,
+            }
+        }
+    )
+    conn = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._catalog",
+            AsyncMock(
+                return_value={
+                    "heatPump": {"type": "heatPump", "concepts": [concept]}
+                }
+            ),
+        ),
+        patch(
+            "custom_components.fluks.panel_api._panel_translations",
+            AsyncMock(return_value={"device_type_heatPump": "Heat pump"}),
+        ),
+        patch("custom_components.fluks.matcher.er.async_get", return_value=entity_registry),
+    ):
+        websocket_device_detail(
+            hass,
+            conn,
+            {
+                "id": 64,
+                "type": COMMAND_DEVICE_DETAIL,
+                "entry_id": entry.entry_id,
+                "device_id": "device-a",
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert api.suggest_mappings.await_count == 1
+    candidates = api.suggest_mappings.await_args.args[3][0]["candidates"]
+    assert {(item["entityId"], item.get("attribute")) for item in candidates} == {
+        ("climate.generic", "current_temperature"),
+        ("climate.generic", "temperature"),
+        ("sensor.generic_fahrenheit", None),
+    }
+    assert next(
+        item for item in candidates if item["entityId"] == "sensor.generic_fahrenheit"
+    )["unit"] == "°F"
+    proposal = conn.send_result.call_args.args[1]["proposals"]["heatPump.temperature"]
+    assert proposal["source"] == {
+        "entityId": "climate.generic",
+        "attribute": "current_temperature",
+    }
+    assert proposal["configuration"] == {
+        "version": 1,
+        "entityId": "climate.generic",
+        "attribute": "current_temperature",
+        "unit": "°C",
+    }
+    assert proposal["classification"] == "suggest"
+
+
 async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(hass):
     """Production Edit performs PATCH, POST, and DELETE without recreating Device."""
     entry = make_entry(hass)

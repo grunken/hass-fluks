@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from enum import StrEnum
+import logging
 import re
-from typing import Any
+from typing import Any, NoReturn
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from .const import API_BASE_URL, API_TIMEOUT_SECONDS, INTEGRATION_TYPE
+
+_LOGGER = logging.getLogger(__name__)
 
 INTEGRATION_KEY_PATTERN = re.compile(r"^fluks_[A-Za-z0-9_-]{43}$")
 _UNSET = object()
@@ -312,6 +315,171 @@ class FluksApiClient:
             raise FluksApiError("INVALID_RESPONSE")
         return data
 
+    async def suggest_mapping(
+        self,
+        site_id: str,
+        device_type: str,
+        concept: str,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Ask the backend to select one of the submitted Mapping sources."""
+        request_body = {
+            "deviceType": device_type,
+            "concept": concept,
+            "candidates": candidates,
+        }
+        _LOGGER.debug(
+            "fluks Mapping suggestion request for %s: %s", concept, request_body
+        )
+        result = await self._request(
+            "POST",
+            f"/sites/{site_id}/mappings/suggest",
+            json=request_body,
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+            diagnostic_context=f"Mapping suggestion for {concept}",
+        )
+
+        def invalid(reason: str) -> NoReturn:
+            _LOGGER.debug(
+                "fluks Mapping suggestion response rejected for %s: reason=%s "
+                "response=%s",
+                concept,
+                reason,
+                result,
+            )
+            raise FluksApiError("INVALID_RESPONSE")
+
+        if set(result) - {"entityId", "attribute", "confidence"}:
+            invalid("unexpected_fields")
+        entity_id = result.get("entityId")
+        attribute = result.get("attribute")
+        confidence = result.get("confidence")
+        if (
+            (
+                entity_id is not None
+                and (not isinstance(entity_id, str) or not entity_id)
+            )
+            or (
+                attribute is not None
+                and (not isinstance(attribute, str) or not attribute)
+            )
+            or isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not 0 <= confidence <= 1
+        ):
+            invalid("invalid_field_type_or_value")
+        if entity_id is None:
+            if attribute is not None:
+                invalid("attribute_without_entity")
+            no_selection = {"entityId": None, "confidence": confidence}
+            _LOGGER.debug(
+                "fluks Mapping suggestion validated result for %s: %s",
+                concept,
+                no_selection,
+            )
+            return no_selection
+        if not any(
+            candidate.get("entityId") == entity_id
+            and candidate.get("attribute") == attribute
+            for candidate in candidates
+        ):
+            invalid("source_not_submitted")
+        selection: dict[str, Any] = {
+            "entityId": entity_id,
+            "confidence": confidence,
+        }
+        if attribute is not None:
+            selection["attribute"] = attribute
+        _LOGGER.debug(
+            "fluks Mapping suggestion validated result for %s: %s",
+            concept,
+            selection,
+        )
+        return selection
+
+    async def suggest_mappings(
+        self,
+        site_id: str,
+        device_type: str,
+        concepts: list[str],
+        candidate_groups: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Ask the backend for suggestions for several concepts at once."""
+        request_body = {
+            "deviceType": device_type,
+            "concepts": concepts,
+            "candidateGroups": candidate_groups,
+        }
+        _LOGGER.debug(
+            "fluks Mapping suggestions batch request for %s: %s",
+            concepts,
+            request_body,
+        )
+        result = await self._request(
+            "POST",
+            f"/sites/{site_id}/mappings/suggestions",
+            json=request_body,
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+            diagnostic_context=f"Mapping suggestions batch for {device_type}",
+        )
+        suggestions = result.get("suggestions")
+        if not isinstance(suggestions, dict):
+            _LOGGER.debug(
+                "fluks Mapping suggestions batch response rejected: "
+                "reason=missing_suggestions response=%s",
+                result,
+            )
+            raise FluksApiError("INVALID_RESPONSE")
+        submitted_concepts = set(concepts)
+        submitted_sources = {
+            (
+                candidate.get("entityId"),
+                candidate.get("attribute"),
+            )
+            for group in candidate_groups
+            for candidate in group.get("candidates", [])
+            if isinstance(candidate, dict)
+        }
+        validated: dict[str, dict[str, Any]] = {}
+        for name, suggestion in suggestions.items():
+            if name not in submitted_concepts or not isinstance(suggestion, dict):
+                continue
+            if set(suggestion) - {"entityId", "attribute", "confidence"}:
+                continue
+            entity_id = suggestion.get("entityId")
+            attribute = suggestion.get("attribute")
+            confidence = suggestion.get("confidence")
+            if (
+                (
+                    entity_id is not None
+                    and (not isinstance(entity_id, str) or not entity_id)
+                )
+                or (
+                    attribute is not None
+                    and (not isinstance(attribute, str) or not attribute)
+                )
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0 <= confidence <= 1
+            ):
+                continue
+            if entity_id is None:
+                if attribute is not None:
+                    continue
+            elif (entity_id, attribute) not in submitted_sources:
+                continue
+            validated[name] = {
+                "entityId": entity_id,
+                "attribute": attribute,
+                "confidence": confidence,
+            }
+        _LOGGER.debug(
+            "fluks Mapping suggestions batch validated result: %s", validated
+        )
+        return validated
+
     async def create_mapping(
         self, site_id: str, mapping: dict[str, Any]
     ) -> dict[str, Any]:
@@ -366,6 +534,7 @@ class FluksApiClient:
         expected_status: int,
         auth: AuthContext,
         response_body_required: bool = True,
+        diagnostic_context: str | None = None,
     ) -> dict[str, Any]:
         headers = self._authorization_headers(auth)
 
@@ -384,9 +553,23 @@ class FluksApiClient:
                     try:
                         body = await response.json()
                     except (ClientError, ValueError) as err:
+                        if diagnostic_context is not None:
+                            _LOGGER.debug(
+                                "fluks %s raw response: status=%s body=<invalid JSON>",
+                                diagnostic_context,
+                                response.status,
+                            )
                         raise FluksApiError("INVALID_RESPONSE") from err
         except (ClientError, asyncio.TimeoutError) as err:
             raise FluksCannotConnect from err
+
+        if diagnostic_context is not None:
+            _LOGGER.debug(
+                "fluks %s raw response: status=%s body=%s",
+                diagnostic_context,
+                response.status,
+                body,
+            )
 
         if response.status == expected_status:
             if not isinstance(body, dict):

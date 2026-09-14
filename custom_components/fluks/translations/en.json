@@ -105,6 +105,7 @@
     "title": "fluks",
     "tagline": "Your Energy. Decides together.",
     "loading": "Loading fluks configuration…",
+    "loading_mapping_suggestions": "Loading mapping suggestions…",
     "context_missing": "This configuration context is no longer available.",
     "back": "Back",
     "cancel": "Cancel",

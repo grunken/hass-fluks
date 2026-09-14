@@ -12,6 +12,8 @@ from custom_components.fluks.matcher import (
     input_configuration,
     match_entities,
     normalize_input_configuration,
+    prepare_matches,
+    suggestion_candidates,
     _tokens,
     unit_conversion,
 )
@@ -132,6 +134,60 @@ def test_supported_linear_unit_conversions_are_deterministic():
         "convertible",
         [{"type": "scale", "factor": 1_000_000}],
     )
+
+
+def test_backend_candidates_require_known_compatible_physical_dimension(hass):
+    concepts = [
+        _concept("heatPump.energy", "kWh", cadence="interval"),
+        _concept("heatPump.power", "W"),
+        _concept("heatPump.temperature", "°C"),
+    ]
+    candidates = [
+        _candidate("sensor.energy", unit="kWh", device_class="energy"),
+        _candidate("sensor.energy_class", unit=None, device_class="energy"),
+        _candidate(
+            "sensor.counter",
+            unit=None,
+            device_class=None,
+            state_class="total",
+        ),
+        _candidate("sensor.power", unit="kW", device_class="power"),
+        _candidate("sensor.celsius", unit="°C", device_class="temperature"),
+        _candidate("sensor.fahrenheit", unit="°F", device_class="temperature"),
+        _candidate(
+            "climate.example",
+            attribute="current_temperature",
+            unit="°F",
+            device_class=None,
+            domain="climate",
+        ),
+    ]
+
+    with patch(
+        "custom_components.fluks.matcher.collect_candidates",
+        return_value=candidates,
+    ):
+        prepared = prepare_matches(hass, concepts, "selected")
+
+    assert {
+        (item["entityId"], item.get("attribute"))
+        for item in suggestion_candidates(prepared, "heatPump.energy")
+    } == {
+        ("sensor.energy", None),
+        ("sensor.energy_class", None),
+    }
+    assert {
+        (item["entityId"], item.get("attribute"))
+        for item in suggestion_candidates(prepared, "heatPump.power")
+    } == {("sensor.power", None)}
+    assert {
+        (item["entityId"], item.get("attribute"))
+        for item in suggestion_candidates(prepared, "heatPump.temperature")
+    } == {
+        ("sensor.celsius", None),
+        ("sensor.fahrenheit", None),
+        ("climate.example", "current_temperature"),
+    }
 
 
 def test_kw_to_w_proposal_contains_complete_conversion_once(hass):

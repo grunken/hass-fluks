@@ -267,6 +267,45 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   assert.match(rendered, /Scale/);
 });
 
+test("mapping suggestions show loading state and prevent duplicate Add requests", async () => {
+  const panel = new Panel();
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._context = {
+    translations: {
+      add_device: "Add device", choose_type: "Choose type", choose_ha_device: "Choose a Home Assistant device",
+      home_assistant_device: "Home Assistant device", cancel: "Cancel", save_device: "Save device",
+      loading_mapping_suggestions: "Loading mapping suggestions…", optional: "Optional",
+    },
+    device_types: [{ type: "battery", name: "Battery" }],
+    ha_devices: [{ id: "ha-battery", name: "Battery", manufacturer: "Example", model: "One" }],
+  };
+  panel._view = { name: "add", deviceType: "battery" };
+  panel.shadowRoot.querySelector = (selector) => selector.startsWith("#") ? {} : null;
+  panel.shadowRoot.querySelectorAll = () => [];
+  let rendered = "";
+  panel._frame = (_title, body) => { rendered = body; };
+  let resolveReview;
+  const review = new Promise((resolve) => { resolveReview = resolve; });
+  let reviewCalls = 0;
+  panel._call = async (type) => {
+    if (type !== "fluks/config/add_review") return {};
+    reviewCalls += 1;
+    return review;
+  };
+
+  const first = panel._selectAddHaDevice("ha-battery");
+  assert.equal(panel._mappingSuggestionsLoading, true);
+  assert.match(rendered, /Loading mapping suggestions…/);
+  assert.match(rendered, /disabled[^>]*data-picker-kind="device"/);
+  const second = panel._selectAddHaDevice("ha-battery");
+  await Promise.resolve();
+  assert.equal(reviewCalls, 1);
+  resolveReview({ concepts: [], proposals: {}, properties: {} });
+  await first;
+  await second;
+  assert.equal(panel._mappingSuggestionsLoading, false);
+});
+
 test("suggested and ambiguous proposals require acceptance and remain fully overridable", () => {
   for (const classification of ["suggest", "unresolved"]) {
     const panel = new Panel();

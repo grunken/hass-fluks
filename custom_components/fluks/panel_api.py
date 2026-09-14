@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from functools import lru_cache
 from pathlib import Path
@@ -49,9 +50,16 @@ from .device import (
     device_type_name,
     stable_device_id,
 )
-from .matcher import match_entities, normalize_input_configuration
+from .matcher import (
+    match_entities,
+    normalize_input_configuration,
+    prepare_matches,
+    suggestion_candidates,
+)
 from .observations import async_refresh_observations
 from .output_mapping import OutputMappingValidationError, validate_output_configuration
+
+_LOGGER = logging.getLogger(__name__)
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
 COMMAND_DEVICE_DETAIL = f"{DOMAIN}/config/device"
@@ -109,6 +117,98 @@ async def _catalog(api: FluksApiClient) -> dict[str, dict[str, Any]]:
     if not catalog:
         raise PanelCommandError("backend_unavailable")
     return catalog
+
+
+async def _mapping_proposals(
+    hass: HomeAssistant,
+    api: FluksApiClient,
+    site_id: str,
+    device_type: str,
+    concepts: list[dict[str, Any]],
+    ha_device_id: str,
+    existing_configurations: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Replace only the matcher's final semantic choice with backend selection."""
+    prepared = prepare_matches(
+        hass, concepts, ha_device_id, existing_configurations
+    )
+    # The batch contract groups sources by owning device.  Keep the candidate
+    # collection/filtering above unchanged and submit the union of those
+    # already-prepared sources for this selected HA device.  A source may be
+    # relevant to more than one unresolved concept, but state and attribute
+    # sources remain distinct by their (entityId, attribute) identity.
+    concept_names = list(prepared.definitions)
+    candidate_by_source: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for concept in concept_names:
+        candidates = suggestion_candidates(prepared, concept)
+        _LOGGER.debug(
+            "fluks Mapping suggestion candidates after compatibility filtering "
+            "for %s: %s",
+            concept,
+            candidates,
+        )
+        for candidate in candidates:
+            entity_id = candidate.get("entityId")
+            if not isinstance(entity_id, str) or not entity_id:
+                continue
+            attribute = candidate.get("attribute")
+            key = (entity_id, attribute if isinstance(attribute, str) else None)
+            candidate_by_source.setdefault(key, candidate)
+
+    selected_sources: dict[str, dict[str, str]] = {}
+    suggestions: dict[str, dict[str, Any]] = {}
+    if concept_names and candidate_by_source:
+        candidate_groups = [
+            {
+                "deviceId": ha_device_id,
+                "candidates": list(candidate_by_source.values()),
+            }
+        ]
+        try:
+            suggestions = await api.suggest_mappings(
+                site_id,
+                device_type,
+                concept_names,
+                candidate_groups,
+            )
+        except FluksApiError as err:
+            _LOGGER.debug(
+                "fluks Mapping suggestions batch has no validated result: %s",
+                err.code or type(err).__name__,
+            )
+
+    for concept in concept_names:
+        result = suggestions.get(concept)
+        _LOGGER.debug(
+            "fluks Mapping suggestion result after validation for %s: %s",
+            concept,
+            result,
+        )
+        if not isinstance(result, dict):
+            continue
+        entity_id = result.get("entityId")
+        if not isinstance(entity_id, str) or not entity_id:
+            continue
+        attribute = result.get("attribute")
+        source = {"entityId": entity_id}
+        if isinstance(attribute, str) and attribute:
+            source["attribute"] = attribute
+        selected_sources[concept] = source
+    proposals = match_entities(
+        hass,
+        concepts,
+        ha_device_id,
+        existing_configurations,
+        prepared=prepared,
+        selected_sources=selected_sources,
+    )
+    for concept in prepared.definitions:
+        _LOGGER.debug(
+            "fluks Mapping suggestion final proposal for %s: %s",
+            concept,
+            proposals.get(concept),
+        )
+    return proposals
 
 
 def _mappable_concepts(catalog_item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -545,8 +645,11 @@ async def websocket_device_detail(hass, connection, msg):
             if item["concept"] not in existing and item["concept"] not in cleared
         ]
         proposals = (
-            match_entities(
+            await _mapping_proposals(
                 hass,
+                api,
+                site_id,
+                device_type,
                 missing,
                 ha_device_id,
                 {
@@ -638,7 +741,14 @@ async def websocket_add_review(hass, connection, msg):
             msg["id"],
             {
                 "concepts": _present_concepts(concepts, await _panel_translations(hass)),
-                "proposals": match_entities(hass, concepts, msg["ha_device_id"]),
+                "proposals": await _mapping_proposals(
+                    hass,
+                    api,
+                    entry.data[CONF_SITE_ID],
+                    msg["device_type"],
+                    concepts,
+                    msg["ha_device_id"],
+                ),
                 "properties": properties,
             },
         )
