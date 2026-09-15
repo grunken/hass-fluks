@@ -87,11 +87,88 @@ test("saving an empty existing sequence requests Mapping removal", () => {
 test("editor exposes every documented requested-value transform as structured UI", () => {
   const editor = new Editor();
   editor.valueType = { datatype: "number", unit: "W" };
+  editor._transformTypeDraft = { field: "value", type: "powerToCurrent" };
   const html = editor._transformEditor("value", []);
   for (const transform of ["powerToCurrent", "difference", "round", "clamp", "nearest", "valueMap", "invert", "scale", "offset"]) {
     assert.match(html, new RegExp(`value="${transform}"`));
   }
   assert.doesNotMatch(html, /textarea|JSON|YAML/);
+});
+
+test("entity search includes actions and fields that the entity can provide", () => {
+  const editor = new Editor();
+  const capability = {
+    service: "climate.set_temperature", name: "Set temperature", description: "Set a target temperature",
+    entities: [{ entity_id: "climate.zone_1", name: "Zone 1", fields: [{ id: "temperature", name: "Temperature", description: "Target value", selector: { type: "number" } }] }],
+  };
+  editor.capabilities = [capability];
+  const html = editor._dialog();
+  assert.match(html, /data-search="[^"]*climate\.set_temperature[^"]*Set temperature[^"]*temperature/i);
+  const node = { dataset: { search: editor._entitySearchText(capability.entities[0]) }, textContent: "Zone 1", hidden: false };
+  editor.shadowRoot.querySelectorAll = () => [node];
+  editor._filterChoices("entity", "temperature");
+  assert.equal(node.hidden, false);
+  editor._filterChoices("entity", "missing capability");
+  assert.equal(node.hidden, true);
+});
+
+test("selected Home Assistant device entities rank before global fallback entities", () => {
+  const editor = new Editor();
+  editor.selectedDeviceId = "device-naervarme";
+  editor.entityDeviceIds = { "climate.zone_1": "device-naervarme", "climate.goodwe": "device-goodwe" };
+  editor.capabilities = [{
+    service: "climate.set_temperature", name: "Set temperature", entities: [
+      { entity_id: "climate.goodwe", name: "GoodWe temperature", fields: [] },
+      { entity_id: "climate.zone_1", name: "Nærvarme Zone 1", fields: [] },
+    ],
+  }];
+  assert.deepEqual(editor._allEntities().map((entity) => entity.entity_id), ["climate.zone_1", "climate.goodwe"]);
+});
+
+test("entity list keeps executable actions without value fields and ignores non-action metadata", () => {
+  const editor = new Editor();
+  editor.capabilities = [
+    { service: "", name: "Observation only", entities: [{ entity_id: "sensor.read_only", name: "Read only", fields: [] }] },
+    { service: "switch.turn_on", name: "Turn on", entities: [{ entity_id: "switch.enable", name: "Enable", fields: [] }] },
+  ];
+  assert.deepEqual(editor._allEntities().map((entity) => entity.entity_id), ["switch.enable"]);
+  assert.deepEqual(editor._capsForEntity("switch.enable").map((capability) => capability.service), ["switch.turn_on"]);
+});
+
+test("action editor selects retain full width with chevron spacing", () => {
+  const editor = new Editor();
+  assert.match(editor._styles(), /select\{[^}]*width:100%[^}]*padding:10px 1\.5rem 10px 10px/);
+});
+
+test("new numeric action inputs default to Control value and commit that binding", () => {
+  const editor = new Editor();
+  editor.capabilities = [{
+    service: "climate.set_temperature", name: "Set temperature", entities: [{
+      entity_id: "climate.zone_1", name: "Zone 1", fields: [{ id: "temperature", name: "Temperature", required: false, selector: { type: "number" } }],
+    }],
+  }];
+  editor._editing = null;
+  editor._dialogDraft = { type: "serviceCall", service: "climate.set_temperature", target: { entityId: "climate.zone_1" }, data: {} };
+  const html = editor._dialog();
+  assert.match(html, /<option value="requestedValue" selected>control value<\/option>/);
+  editor.shadowRoot.querySelector = (selector) => selector === "#action-error" ? { textContent: "" } : null;
+  editor._commitAction();
+  assert.equal(editor.actions[0].data.temperature.kind, "requestedValue");
+});
+
+test("value adjustments start collapsed and are added only after choosing Add adjustment", () => {
+  const editor = new Editor();
+  editor.valueType = { datatype: "number", unit: "W" };
+  const initial = editor._transformEditor("value", []);
+  assert.match(initial, /<details class="transforms"/);
+  assert.doesNotMatch(initial, /<select data-transform-type/);
+  assert.match(initial, /no transforms/);
+  editor._dialogDraft = { data: { value: { kind: "requestedValue" } } };
+  editor._refreshDialog = () => {};
+  editor._transformCommand({ dataset: { fieldId: "value", transformCommand: "start" } });
+  const adding = editor._transformEditor("value", []);
+  assert.match(adding, /data-transform-type/);
+  assert.match(adding, /value="powerToCurrent"/);
 });
 
 test("reference transform exposes entity state and attribute selection", () => {

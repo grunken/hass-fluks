@@ -50,9 +50,10 @@ test("production panel passes discovered actions and compatible entities to actu
     entities: [{ entity_id: "number.goodwe_target", name: "Charge limit", metadata: "GoodWe Inverter · goodwe · GoodWe · GW10K-ET", fields: [{ id: "value", name: "Value", required: true, selector: { type: "number" }, constraints: { min: 0, max: 100, step: 1 } }] }],
   };
   const panel = new Panel();
-  panel._context = { translations: {} };
+  panel._context = { translations: {}, entities: [{ entity_id: "number.goodwe_target", device_id: "ha-battery" }] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
   panel._view = { name: "control", deviceId: "device-1", concept: "battery.power" };
-  panel._detail = { id: "device-1", type_name: "Battery", controls: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W" }], output_mappings: {} };
+  panel._detail = { id: "device-1", ha_device_id: "ha-battery", type_name: "Battery", controls: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W" }], output_mappings: {} };
   panel._controlCapabilities = [capability];
   let editor;
   panel._frame = () => {
@@ -62,6 +63,8 @@ test("production panel passes discovered actions and compatible entities to actu
   panel._renderControl();
 
   assert.deepEqual(editor.capabilities, [capability]);
+  assert.equal(editor.selectedDeviceId, "ha-battery");
+  assert.deepEqual(editor.entityDeviceIds, { "number.goodwe_target": "ha-battery" });
   assert.deepEqual(editor.valueType, { datatype: "number", unit: "W" });
   editor._dialogDraft = { type: "serviceCall", service: "number.set_value", target: { entityId: "number.goodwe_target" }, data: {} };
   const rendered = editor._dialog();
@@ -390,17 +393,18 @@ test("production action dialog selects a global Entity before compatible Action"
   assert.ok(selectDialog.indexOf('id="entity-search"') < selectDialog.indexOf('id="action-search"'));
   assert.match(selectDialog, /select\.select_option/);
   assert.match(selectDialog, /select\.select_next/);
-  assert.doesNotMatch(selectDialog, /number\.set_value|water_heater\.set_temperature/);
+  const actionChoices = (html) => html.match(/<div class="choices" data-choices="action">([\s\S]*?)<\/div>/)?.[1] ?? "";
+  assert.doesNotMatch(actionChoices(selectDialog), /number\.set_value|water_heater\.set_temperature/);
 
   editor._selectEntity("number.monta_limit");
   const numberDialog = editor._dialog();
-  assert.match(numberDialog, /number\.set_value/);
-  assert.doesNotMatch(numberDialog, /select\.select_option|water_heater\.set_temperature/);
+  assert.match(actionChoices(numberDialog), /number\.set_value/);
+  assert.doesNotMatch(actionChoices(numberDialog), /select\.select_option|water_heater\.set_temperature/);
 
   editor._selectEntity("water_heater.naervarme");
   const heaterDialog = editor._dialog();
-  assert.match(heaterDialog, /water_heater\.set_temperature/);
-  assert.doesNotMatch(heaterDialog, /number\.set_value|select\.select_option/);
+  assert.match(actionChoices(heaterDialog), /water_heater\.set_temperature/);
+  assert.doesNotMatch(actionChoices(heaterDialog), /number\.set_value|select\.select_option/);
 });
 
 test("changing Entity retains only proven-compatible Action and clears stale fields", () => {

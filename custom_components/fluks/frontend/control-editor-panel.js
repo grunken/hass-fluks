@@ -665,6 +665,8 @@ class FluksControlEditorPanel extends HTMLElement {
       "behavior_discharge", "behavior_discharge_choice", "behavior_discharge_description",
     ].map((key) => [key, this._t(key)]));
     editor.capabilities = this._controlCapabilities ?? [];
+    editor.selectedDeviceId = this._detail?.ha_device_id || this._view.haDeviceId || null;
+    editor.entityDeviceIds = Object.fromEntries((this._context?.entities ?? []).filter((item) => item.entity_id && item.device_id).map((item) => [item.entity_id, item.device_id]));
     editor.referenceEntities = this._referenceEntities();
     editor.valueType = { datatype: control.datatype, unit: control.unit ?? null };
     editor.behaviorChoices = control.concept === "site.power" && control.datatype === "number"
