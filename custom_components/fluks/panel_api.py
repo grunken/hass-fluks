@@ -808,6 +808,8 @@ def _editable_property_keys(device_type: str) -> set[str]:
         keys.add("ratedPowerW")
     elif device_type == "battery":
         keys.update({"capacityKwh", "battery.socMinimum", "battery.socMaximum"})
+    elif device_type == SITE_DEVICE_TYPE:
+        keys.update({"arbitrageEnabled", "arbitrageMinimumReturnPercentage"})
     return keys
 
 

@@ -525,6 +525,42 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
   assert.deepEqual(destinations.at(-1), { name: "control", deviceId: "site-device", concept: "site.power" });
 });
 
+test("Site information edits arbitrage properties through the existing Device save path", async () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    site_information: "Site information", name: "Name", energy_optimization: "Energy optimization",
+    allow_arbitrage: "Allow arbitrage", minimum_return: "Minimum return", save: "Save", cancel: "Cancel",
+  } };
+  panel._detail = {
+    id: "site-device", type: "site", name: "Home", properties: {},
+    mappings: { "site.power": { configuration: { version: 1, entityId: "sensor.site_power" } } },
+  };
+  let body; let changeHandler; let saveHandler; let saved;
+  const enabled = { type: "checkbox", checked: false, dataset: { property: "arbitrageEnabled" }, addEventListener: (_event, handler) => { changeHandler = handler; } };
+  const minimum = { type: "number", value: "50", dataset: { property: "arbitrageMinimumReturnPercentage" } };
+  const minimumContainer = { innerHTML: "", querySelector: () => minimum };
+  const save = { addEventListener: (_event, handler) => { saveHandler = handler; } };
+  const cancel = { addEventListener: () => {} };
+  panel._frame = (_title, html) => { body = html; };
+  panel.shadowRoot.querySelector = (selector) => selector.includes("arbitrageEnabled") ? enabled
+    : selector === "#arbitrage-minimum-return-container" ? minimumContainer : selector === "#save" ? save : selector === "#cancel" ? cancel : null;
+  panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [enabled, minimum] : [];
+  panel._call = async (_type, payload) => { saved = payload; return { properties: payload.properties }; };
+
+  panel._renderSiteInformation();
+  assert.match(body, /Energy optimization/);
+  assert.match(body, /Allow arbitrage/);
+  assert.doesNotMatch(body, /Minimum return/);
+  assert.equal(minimumContainer.innerHTML, "");
+  enabled.checked = true;
+  changeHandler();
+  assert.match(minimumContainer.innerHTML, /Minimum return/);
+  minimum.value = "65";
+  await saveHandler();
+  assert.deepEqual(saved.properties, { arbitrageEnabled: true, arbitrageMinimumReturnPercentage: 65 });
+  assert.deepEqual(saved.mappings, { "site.power": { version: 1, entityId: "sensor.site_power" } });
+});
+
 test("heat pump mapping UI renders only finalized catalog concepts", () => {
   const panel = new Panel();
   panel._context = { translations: { measurements: "Measurements", energy: "Energy", configured: "Configured", not_configured: "Not configured" }, entities: [] };

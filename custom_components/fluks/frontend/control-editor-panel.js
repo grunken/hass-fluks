@@ -185,7 +185,38 @@ class FluksControlEditorPanel extends HTMLElement {
     this.shadowRoot.querySelector("#delete").onclick = () => this._go(site ? { name: "delete-site", stage: "confirm" } : { name: "delete-device", deviceId: this._detail.id, stage: "confirm" });
   }
   _renderSiteInformation() {
-    this._frame(this._t("site_information"), `<section class="card"><h2>${esc(this._t("name"))}</h2><p>${esc(this._detail.name)}</p></section>`, true);
+    const properties = this._detail.properties ?? {};
+    const arbitrageEnabled = properties.arbitrageEnabled === true;
+    const minimumReturn = properties.arbitrageMinimumReturnPercentage ?? 50;
+    const minimumReturnField = (value) => `<label id="arbitrage-minimum-return-field">${esc(this._t("minimum_return"))}<span class="property-input"><input id="arbitrage-minimum-return" type="number" min="0" max="100" step="any" data-property="arbitrageMinimumReturnPercentage" value="${esc(value)}"><span>%</span></span></label>`;
+    this._frame(this._t("site_information"), `<section class="card"><h2>${esc(this._t("name"))}</h2><p>${esc(this._detail.name)}</p></section>
+      <section class="card"><h2>${esc(this._t("energy_optimization"))}</h2>
+        <label class="toggle-property"><span>${esc(this._t("allow_arbitrage"))}</span><span class="toggle-control"><input type="checkbox" data-property="arbitrageEnabled" ${arbitrageEnabled ? "checked" : ""}><span class="toggle-track" aria-hidden="true"></span></span></label>
+        <div id="arbitrage-minimum-return-container">${arbitrageEnabled ? minimumReturnField(minimumReturn) : ""}</div>
+      </section>${this._actions("save")}`, true);
+    const enabled = this.shadowRoot.querySelector('[data-property="arbitrageEnabled"]');
+    const minimumContainer = this.shadowRoot.querySelector("#arbitrage-minimum-return-container");
+    let currentMinimumReturn = minimumReturn;
+    const updateEnabled = () => {
+      const current = minimumContainer.querySelector?.("#arbitrage-minimum-return");
+      if (current?.value !== undefined && current.value !== "") currentMinimumReturn = current.value;
+      minimumContainer.innerHTML = enabled.checked ? minimumReturnField(currentMinimumReturn) : "";
+    };
+    enabled?.addEventListener("change", updateEnabled);
+    this.shadowRoot.querySelector("#cancel")?.addEventListener("click", () => history.back());
+    this.shadowRoot.querySelector("#save")?.addEventListener("click", async () => {
+      try {
+        const form = this._collectForm();
+        const mappings = Object.fromEntries(Object.entries(this._detail.mappings ?? {}).map(([concept, mapping]) => [concept, clone(mapping.configuration ?? mapping)]));
+        const result = await this._call("fluks/config/device_save", {
+          device_id: this._detail.id,
+          mappings,
+          properties: form.properties,
+        });
+        if (result?.properties) this._detail = { ...this._detail, properties: clone(result.properties) };
+        history.back();
+      } catch (_) { this._renderSiteInformation(); }
+    });
   }
   _wireMenu(buttonId, menuId) {
     const button = this.shadowRoot.querySelector(`#${buttonId}`);
@@ -335,7 +366,7 @@ class FluksControlEditorPanel extends HTMLElement {
     return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(entity.name)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
   }
   _editableDeviceProperties(properties, deviceType) {
-    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : [])];
+    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
     return Object.fromEntries(keys.filter((key) => Object.hasOwn(properties, key)).map((key) => [key, properties[key]]));
   }
   _spaceHeaterNeedsRatedPower(deviceType, mappings, properties) {
@@ -369,7 +400,7 @@ class FluksControlEditorPanel extends HTMLElement {
     const mappings = useInputDraft
       ? Object.fromEntries(Object.entries(this._inputDraft).filter(([concept, value]) => value.entityId || this._clearedInputConcepts.has(concept)).map(([concept, value]) => [concept, clone(value)]))
       : Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-concept]")].map((n) => [n.dataset.concept, n.value]).filter(([, v]) => v));
-    const properties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((n) => [n.dataset.property, n.value === "" ? null : n.type === "number" ? Number(n.value) : n.value.trim()]));
+    const properties = Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((n) => [n.dataset.property, n.type === "checkbox" ? n.checked : n.value === "" ? null : n.type === "number" ? Number(n.value) : n.value.trim()]));
     return { mappings, properties };
   }
   _wirePickers() {
@@ -734,7 +765,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
     .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
-    label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}input,select{box-sizing:border-box;width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}.property-input{position:relative;display:block;min-width:0}.property-input input{min-width:0;padding-right:54px}.property-input>span{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--secondary-text-color);font-weight:500;pointer-events:none}.physical-property small{font-weight:400}.validation-error{color:var(--error-color);font-weight:500}
+    label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}.toggle-property{display:flex;align-items:center;justify-content:space-between;gap:16px}.toggle-control{position:relative;display:inline-flex;align-items:center;flex:none}.toggle-control input{position:absolute;width:1px;height:1px;opacity:0}.toggle-track{position:relative;width:42px;height:24px;border-radius:999px;background:var(--disabled-text-color,var(--secondary-text-color));transition:background .15s ease;cursor:pointer}.toggle-track::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--card-background-color);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .15s ease}.toggle-control input:checked + .toggle-track{background:var(--primary-color)}.toggle-control input:checked + .toggle-track::after{transform:translateX(18px)}.toggle-control input:focus-visible + .toggle-track{outline:2px solid var(--primary-color);outline-offset:2px}input,select{box-sizing:border-box;width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}.property-input{position:relative;display:block;min-width:0}.property-input input{min-width:0;padding-right:54px}.property-input>span{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--secondary-text-color);font-weight:500;pointer-events:none}.physical-property small{font-weight:400}.validation-error{color:var(--error-color);font-weight:500}
     .mapping-field{min-width:0}.matcher-proposal{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 12px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.matcher-proposal span{display:grid;min-width:0}.matcher-proposal small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color)}.input-conversions{display:grid;gap:10px;margin-top:10px}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}.input-conversions li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.input-conversions .order{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--primary-color);color:#fff;font-weight:700}.conversion-copy{display:grid;min-width:0}.conversion-copy strong,.conversion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.input-conversions .row-actions{display:flex;gap:4px;flex-wrap:wrap}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.add-conversion{justify-self:start}.conversion-editor{padding:8px 18px 18px}.conversion-editor [hidden]{display:none}
     .picker-value{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;padding:10px 12px;background:var(--secondary-background-color);overflow:hidden}.source-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;color:var(--primary-color)}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}
