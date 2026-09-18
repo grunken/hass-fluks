@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -25,6 +27,8 @@ _TEMPERATURE_CONTROLS = {
     "waterHeater.temperature",
     "spaceHeater.temperature",
 }
+_ACTION_ATTEMPTS = 3
+_ACTION_RETRY_DELAY = 1.0
 
 
 def _canonical_value(value: Any, datatype: str) -> Any:
@@ -76,10 +80,12 @@ class RuntimeOutputExecutor:
         entry_id: str | None = None,
         *,
         ownership_store: Store[dict[str, Any]] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._hass = hass
         self._api = api
         self._site_id = site_id
+        self._sleep = sleep
         self._balance_active = False
         self._temperature_store = ownership_store or Store(
             hass,
@@ -351,10 +357,130 @@ class RuntimeOutputExecutor:
                         reference_resolver=self._output_reference,
                     )
             domain, service = action["service"].split(".", 1)
-            await self._hass.services.async_call(
-                domain,
-                service,
-                data,
-                blocking=True,
-                target={"entity_id": action["target"]["entityId"]},
+            await self._async_execute_action(action, domain, service, data)
+
+    async def _async_execute_action(
+        self,
+        action: dict[str, Any],
+        domain: str,
+        service: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Call one resolved Home Assistant action with bounded retries."""
+        target = {"entity_id": action["target"]["entityId"]}
+        verifiable = self._can_verify_action(action, data)
+        for attempt in range(1, _ACTION_ATTEMPTS + 1):
+            try:
+                await self._hass.services.async_call(
+                    domain,
+                    service,
+                    data,
+                    blocking=True,
+                    target=target,
+                )
+            except Exception:  # noqa: BLE001 - retry the failed HA call
+                if attempt == _ACTION_ATTEMPTS:
+                    _LOGGER.error(
+                        "Home Assistant action %s targeting %s failed after %s attempts",
+                        action["service"],
+                        action["target"]["entityId"],
+                        attempt,
+                        exc_info=True,
+                    )
+                    raise
+                _LOGGER.debug(
+                    "Home Assistant action failed on attempt %s/%s; retrying: %s",
+                    attempt,
+                    _ACTION_ATTEMPTS,
+                    action["service"],
+                )
+                await self._sleep(_ACTION_RETRY_DELAY)
+                continue
+
+            if not verifiable:
+                return
+            await self._sleep(_ACTION_RETRY_DELAY)
+            verification = self._verify_action_result(action, data)
+            if verification is True:
+                return
+            if attempt == _ACTION_ATTEMPTS:
+                _LOGGER.error(
+                    "Home Assistant action %s targeting %s did not reach its expected value "
+                    "after %s attempts (expected=%r)",
+                    action["service"],
+                    action["target"]["entityId"],
+                    attempt,
+                    data,
+                )
+                raise RuntimeError("Home Assistant action result verification failed")
+            _LOGGER.debug(
+                "Home Assistant action %s targeting %s did not reach its expected value "
+                "on attempt %s/%s; retrying",
+                action["service"],
+                action["target"]["entityId"],
+                attempt,
+                _ACTION_ATTEMPTS,
             )
+
+    def _verify_action_result(
+        self, action: dict[str, Any], data: dict[str, Any]
+    ) -> bool | None:
+        """Compare resolved action values with a safely identifiable HA result."""
+        state = self._hass.states.get(action["target"]["entityId"])
+        if not self._can_verify_action(action, data, state=state):
+            return None
+        observed: list[Any] = []
+        for field in data:
+            if field in state.attributes:
+                observed.append(state.attributes[field])
+            elif len(data) == 1 and self._state_value_field(action, field):
+                observed.append(state.state)
+            else:
+                return None
+        return all(
+            self._same_value(expected, actual)
+            for expected, actual in zip(data.values(), observed)
+        )
+
+    def _can_verify_action(
+        self,
+        action: dict[str, Any],
+        data: dict[str, Any],
+        *,
+        state: Any | None = None,
+    ) -> bool:
+        """Return whether action data has a safe state/attribute read-back."""
+        if not data:
+            return False
+        if state is None:
+            state = self._hass.states.get(action["target"]["entityId"])
+        if state is None:
+            return False
+        return all(
+            field in state.attributes
+            or len(data) == 1 and self._state_value_field(action, field)
+            for field in data
+        )
+
+    @staticmethod
+    def _state_value_field(action: dict[str, Any], field: str) -> bool:
+        """Return whether a generic HA setter exposes its value as entity state."""
+        service = action.get("service", "").split(".", 1)[-1]
+        return (service == "set_value" and field == "value") or (
+            service == "select_option" and field == "option"
+        )
+
+    @classmethod
+    def _same_value(cls, expected: Any, actual: Any) -> bool:
+        """Compare HA state representations without string-format false negatives."""
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            if isinstance(expected, bool) and isinstance(actual, str):
+                normalized = actual.lower()
+                if normalized in {"on", "off"}:
+                    return expected == (normalized == "on")
+            return expected is actual or str(expected).lower() == str(actual).lower()
+        expected_number = cls._numeric(expected)
+        actual_number = cls._numeric(actual)
+        if expected_number is not None and actual_number is not None:
+            return Decimal(str(expected_number)) == Decimal(str(actual_number))
+        return expected == actual or str(expected) == str(actual)

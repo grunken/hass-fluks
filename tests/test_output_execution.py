@@ -1,7 +1,8 @@
 """Tests for runtime execution of persisted output Mappings."""
 
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
 from copy import deepcopy
+from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.fluks.output_execution import RuntimeOutputExecutor
 
@@ -61,6 +62,263 @@ def _catalog():
             "usages": ["fact", "control"], "mappingModes": [None, "target"],
         }],
     }]
+
+
+def _retry_mapping(*, actions=None):
+    return {
+        "deviceId": "internal-battery", "concept": "battery.power",
+        "direction": "output", "mode": None,
+        "configuration": {"version": 1, "actions": actions or [{
+            "type": "serviceCall", "service": "test.execute",
+            "target": {"entityId": "number.battery_power"},
+            "data": {"value": {"kind": "requestedValue"}},
+        }]},
+    }
+
+
+def _retry_api(mapping):
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[{
+        "id": "internal-battery", "deviceId": "external-battery", "type": "battery",
+    }])
+    api.list_mappings = AsyncMock(return_value=[mapping])
+    api.get_device_type_catalog = AsyncMock(return_value=_catalog())
+    return api
+
+
+async def _run_retry(hass, mapping, failures, *, sleep=None):
+    calls = []
+
+    async def execute(call):
+        calls.append(call)
+        if len(calls) <= failures:
+            raise RuntimeError("service failed")
+
+    hass.services.async_register("test", "execute", execute)
+    executor = RuntimeOutputExecutor(
+        hass, _retry_api(mapping), "site-a", sleep=sleep or (lambda _delay: asyncio.sleep(0))
+    )
+    await executor.async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "external-battery", "deviceType": "battery",
+            "power": "3000", "mode": None,
+        }],
+    })
+    return calls
+
+
+async def _run_verified(hass, mapping, *, updates=(), failures=0, attribute=None, sleep=None):
+    calls = []
+    entity_id = mapping["configuration"]["actions"][0]["target"]["entityId"]
+    field = next(iter(mapping["configuration"]["actions"][0]["data"]), "value")
+    domain, service = ("climate", "set_temperature") if attribute else ("number", "set_value")
+    mapping["configuration"]["actions"][0]["service"] = f"{domain}.{service}"
+    if attribute is None:
+        hass.states.async_set(entity_id, "0", {})
+    else:
+        hass.states.async_set(entity_id, "idle", {attribute: 0})
+
+    async def execute(call):
+        calls.append(call)
+        attempt = len(calls)
+        if attempt <= failures:
+            raise RuntimeError("service failed")
+        if attempt in updates:
+            if attribute is None:
+                hass.states.async_set(entity_id, str(call.data[field]), {})
+            else:
+                hass.states.async_set(entity_id, "idle", {attribute: call.data[field]})
+
+    hass.services.async_register(domain, service, execute)
+    executor = RuntimeOutputExecutor(
+        hass, _retry_api(mapping), "site-a", sleep=sleep or (lambda _delay: asyncio.sleep(0))
+    )
+    await executor.async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "external-battery", "deviceType": "battery",
+            "power": "3000", "mode": None,
+        }],
+    })
+    return calls
+
+
+async def test_action_result_is_verified_after_first_attempt(hass):
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    calls = await _run_verified(hass, _retry_mapping(), updates={1}, sleep=sleep)
+
+    assert len(calls) == 1
+    assert delays == [1.0]
+
+
+async def test_successful_service_without_result_change_is_retried(hass):
+    calls = await _run_verified(hass, _retry_mapping(), updates={2})
+
+    assert len(calls) == 2
+
+
+async def test_action_result_change_after_second_attempt_stops_retries(hass):
+    calls = await _run_verified(hass, _retry_mapping(), updates={2}, failures=1)
+
+    assert len(calls) == 2
+
+
+async def test_action_result_never_changes_after_three_attempts(hass, caplog):
+    calls = await _run_verified(hass, _retry_mapping())
+
+    assert len(calls) == 3
+    assert "did not reach its expected value after 3 attempts" in caplog.text
+
+
+async def test_action_result_verifies_mapped_attribute(hass):
+    mapping = _retry_mapping(actions=[{
+        "type": "serviceCall", "service": "test.execute",
+        "target": {"entityId": "climate.zone"},
+        "data": {"temperature": {"kind": "requestedValue"}},
+    }])
+    calls = await _run_verified(
+        hass, mapping, updates={1}, attribute="temperature"
+    )
+
+    assert len(calls) == 1
+
+
+async def test_numeric_state_verification_accepts_equivalent_representations(hass):
+    executor = RuntimeOutputExecutor(hass, MagicMock(), "site-a")
+
+    assert executor._same_value(55, "55.0")
+
+
+async def test_action_retry_succeeds_on_second_attempt(hass):
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    calls = await _run_retry(hass, _retry_mapping(), 1, sleep=sleep)
+
+    assert len(calls) == 2
+    assert [call.data["value"] for call in calls] == [3000, 3000]
+    assert delays == [1.0]
+
+
+async def test_action_success_does_not_retry(hass):
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    calls = await _run_retry(hass, _retry_mapping(), 0, sleep=sleep)
+
+    assert len(calls) == 1
+    assert delays == []
+
+
+async def test_action_retry_succeeds_on_third_attempt(hass):
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    calls = await _run_retry(hass, _retry_mapping(), 2, sleep=sleep)
+
+    assert len(calls) == 3
+    assert delays == [1.0, 1.0]
+
+
+async def test_action_retry_is_bounded_after_final_failure(hass, caplog):
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    calls = await _run_retry(hass, _retry_mapping(), 3, sleep=sleep)
+
+    assert len(calls) == 3
+    assert delays == [1.0, 1.0]
+    assert "failed after 3 attempts" in caplog.text
+
+
+async def test_action_retry_does_not_repeat_successful_actions(hass):
+    calls = []
+    failures = {"number.battery_power": 1}
+
+    async def execute(call):
+        entity_id = call.data["entity_id"]
+        calls.append(entity_id)
+        if entity_id in failures:
+            failures[entity_id] -= 1
+            if failures[entity_id] == 0:
+                raise RuntimeError("service failed")
+
+    hass.services.async_register("test", "execute", execute)
+    mapping = _retry_mapping(actions=[
+        {
+            "type": "serviceCall", "service": "test.execute",
+            "target": {"entityId": "select.inverter_mode"},
+            "data": {"option": {"kind": "literal", "value": "eco"}},
+        },
+        {
+            "type": "serviceCall", "service": "test.execute",
+            "target": {"entityId": "number.battery_power"},
+            "data": {"value": {"kind": "requestedValue"}},
+        },
+    ])
+    executor = RuntimeOutputExecutor(
+        hass, _retry_api(mapping), "site-a", sleep=lambda _delay: asyncio.sleep(0)
+    )
+
+    await executor.async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "external-battery", "deviceType": "battery",
+            "power": "3000", "mode": None,
+        }],
+    })
+
+    assert calls == ["select.inverter_mode", "number.battery_power", "number.battery_power"]
+
+
+async def test_action_retry_wait_does_not_block_an_unrelated_action(hass):
+    retry_started = asyncio.Event()
+    release_retry = asyncio.Event()
+    calls = []
+
+    async def failing(call):
+        calls.append("failing")
+        raise RuntimeError("service failed")
+
+    async def unrelated(call):
+        calls.append("unrelated")
+
+    async def sleep(_delay):
+        retry_started.set()
+        await release_retry.wait()
+
+    hass.services.async_register("test", "failing", failing)
+    hass.services.async_register("test", "unrelated", unrelated)
+    executor = RuntimeOutputExecutor(
+        hass, _retry_api(_retry_mapping()), "site-a", sleep=sleep
+    )
+    retry_task = asyncio.create_task(executor._async_execute_action(
+        {"service": "test.failing", "target": {"entityId": "number.one"}},
+        "test", "failing", {},
+    ))
+    await retry_started.wait()
+    await asyncio.wait_for(executor._async_execute_action(
+        {"service": "test.unrelated", "target": {"entityId": "number.two"}},
+        "test", "unrelated", {},
+    ), timeout=0.1)
+    release_retry.set()
+    result = await asyncio.gather(retry_task, return_exceptions=True)
+
+    assert calls == ["failing", "unrelated", "failing", "failing"]
+    assert isinstance(result[0], RuntimeError)
 
 
 def _mapping(mode=None):
@@ -388,6 +646,9 @@ async def test_water_heater_temperature_decision_uses_renamed_canonical_field(ha
 
     async def record(call):
         calls.append(call.data)
+        hass.states.async_set(
+            "water_heater.tank", "idle", {"temperature": call.data["temperature"]}
+        )
 
     hass.services.async_register("water_heater", "set_temperature", record)
     hass.states.async_set("water_heater.tank", "idle", {"temperature": 50})
@@ -438,6 +699,9 @@ async def test_heat_pump_temperature_and_tank_temperature_decisions_remain_disti
 
     async def record(call):
         calls.append((call.service, call.data))
+        entity_id = call.data["entity_id"]
+        field = next(field for field in call.data if field != "entity_id")
+        hass.states.async_set(entity_id, str(call.data[field]), {})
 
     hass.services.async_register("number", "set_value", record)
     hass.states.async_set("number.flow_target", "20", {})
