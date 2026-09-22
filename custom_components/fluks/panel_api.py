@@ -67,6 +67,7 @@ COMMAND_ADD_REVIEW = f"{DOMAIN}/config/add_review"
 COMMAND_ADD_SAVE = f"{DOMAIN}/config/add_save"
 COMMAND_DEVICE_SAVE = f"{DOMAIN}/config/device_save"
 COMMAND_CONTROL_SAVE = f"{DOMAIN}/config/control_save"
+COMMAND_CONTROL_SUGGESTIONS = f"{DOMAIN}/config/control_suggestions"
 COMMAND_CONTROL_CAPABILITIES = f"{DOMAIN}/config/control_capabilities"
 COMMAND_DEVICE_DELETE = f"{DOMAIN}/config/device_delete"
 COMMAND_SITE_DELETE = f"{DOMAIN}/config/site_delete"
@@ -220,6 +221,111 @@ def _mappable_concepts(catalog_item: dict[str, Any]) -> list[dict[str, Any]]:
         and "fact" in concept.get("usages", [])
         and concept.get("source") == "mapping"
     ]
+
+
+def _control_concepts(catalog_item: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return catalog controls exposed during the Add-device review."""
+    return [
+        concept
+        for concept in catalog_item["concepts"]
+        if isinstance(concept, dict)
+        and isinstance(concept.get("concept"), str)
+        and "control" in concept.get("usages", [])
+    ]
+
+
+def _control_behaviors(concept: dict[str, Any]) -> list[str]:
+    """Use the same local behavior labels as the output editor."""
+    behaviors: list[str] = []
+    for mode in concept.get("mappingModes") or [None]:
+        behavior = "default" if mode is None else mode
+        if isinstance(behavior, str) and behavior and behavior not in behaviors:
+            behaviors.append(behavior)
+    if concept.get("concept") == "battery.power" and concept.get("datatype") == "number":
+        for behavior in ("charge", "discharge", "hold"):
+            if behavior not in behaviors:
+                behaviors.append(behavior)
+    if concept.get("concept") == "site.power" and concept.get("datatype") == "number":
+        behaviors = [behavior for behavior in behaviors if behavior != "balance"]
+        behaviors.extend(
+            behavior
+            for behavior in ("balance:gtZero", "balance:ltZero", "balance:eqZero")
+            if behavior not in behaviors
+        )
+    return behaviors
+
+
+async def _control_action_candidates(
+    hass: HomeAssistant, ha_device_id: str
+) -> list[dict[str, Any]]:
+    """Serialize executable capabilities limited to one selected HA device."""
+    registry = er.async_get(hass)
+    candidates: list[dict[str, Any]] = []
+    for capability in await async_control_capabilities(hass):
+        service = capability.get("service")
+        if not isinstance(service, str) or "." not in service:
+            continue
+        for entity in capability.get("entities", []):
+            entity_id = entity.get("entity_id")
+            if not isinstance(entity_id, str):
+                continue
+            registry_entity = registry.async_get(entity_id)
+            if registry_entity is None or registry_entity.device_id != ha_device_id:
+                continue
+            fields = {}
+            for field in entity.get("fields", []):
+                if not isinstance(field, dict) or not isinstance(field.get("id"), str):
+                    continue
+                selector = field.get("selector") or {}
+                field_type = selector.get("type") if isinstance(selector, dict) else None
+                fields[field["id"]] = {
+                    "type": (
+                        field_type
+                        if field_type in {"number", "boolean", "select", "state", "text"}
+                        else "string"
+                    ),
+                    **(
+                        {"options": field["constraints"]["options"]}
+                        if isinstance(field.get("constraints"), dict)
+                        and isinstance(field["constraints"].get("options"), list)
+                        else {}
+                    ),
+                }
+                constraints = field.get("constraints")
+                if isinstance(constraints, dict):
+                    for key in ("min", "max", "step"):
+                        if key in constraints and isinstance(constraints[key], (int, float)):
+                            fields[field["id"]][key] = constraints[key]
+            candidates.append({
+                "entityId": entity_id,
+                "attribute": None,
+                "name": entity.get("name"),
+                "metadata": entity.get("metadata"),
+                "sourceType": "action",
+                "domain": entity_id.split(".", 1)[0],
+                "service": service,
+                "actionName": capability.get("name"),
+                "description": capability.get("description"),
+                "target": capability.get("target"),
+                "fields": fields,
+            })
+    return candidates
+
+
+async def _output_suggestions(
+    api: FluksApiClient,
+    site_id: str,
+    device_type: str,
+    concept: str,
+    behaviors: list[str],
+    actions: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Call the shared output-suggestion client used by Add and Edit flows."""
+    if not behaviors or not actions:
+        return {}
+    return await api.suggest_output_mapping(
+        site_id, device_type, concept, behaviors, actions
+    )
 
 
 def _forecast_solar_number(value: Any) -> float | None:
@@ -686,11 +792,7 @@ async def websocket_device_detail(hass, connection, msg):
                 ),
                 "ha_device_id": ha_device_id,
                 "concepts": _present_concepts(concepts, translations),
-                "controls": _present_concepts([
-                    item
-                    for item in catalog[device_type]["concepts"]
-                    if isinstance(item, dict) and "control" in item.get("usages", [])
-                ], translations),
+                "controls": _present_concepts(_control_concepts(catalog[device_type]), translations),
                 "mappings": {
                     name: _safe_mapping(mapping) for name, mapping in existing.items()
                 },
@@ -716,7 +818,7 @@ async def websocket_device_detail(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_add_review(hass, connection, msg):
-    """Validate uniqueness and return deterministic fact-mapping proposals."""
+    """Validate uniqueness and return fact and control review suggestions."""
     entry = None
     try:
         entry = _entry(hass, msg["entry_id"])
@@ -730,6 +832,7 @@ async def websocket_add_review(hass, connection, msg):
         if _has_local_context(entry, msg["ha_device_id"], msg["device_type"]):
             raise PanelCommandError("conflict")
         concepts = _mappable_concepts(catalog[msg["device_type"]])
+        controls = _control_concepts(catalog[msg["device_type"]])
         properties = {
             "displayName": registry_device.name_by_user or registry_device.name,
             "vendor": registry_device.manufacturer,
@@ -737,10 +840,35 @@ async def websocket_add_review(hass, connection, msg):
         }
         if msg["device_type"] == "solar":
             properties.update(_forecast_solar_prefill(hass))
+        translations = await _panel_translations(hass)
+        control_suggestions: dict[str, dict[str, dict[str, Any]]] = {}
+        action_candidates = await _control_action_candidates(hass, msg["ha_device_id"])
+        if action_candidates:
+            for control in controls:
+                behaviors = _control_behaviors(control)
+                if not behaviors:
+                    continue
+                try:
+                    control_suggestions[control["concept"]] = await _output_suggestions(
+                        api,
+                        entry.data[CONF_SITE_ID],
+                        msg["device_type"],
+                        control["concept"],
+                        behaviors,
+                        action_candidates,
+                    )
+                except FluksApiError as err:
+                    _LOGGER.debug(
+                        "fluks Add review output suggestion unavailable for %s: %s",
+                        control["concept"],
+                        err.code or type(err).__name__,
+                    )
         connection.send_result(
             msg["id"],
             {
-                "concepts": _present_concepts(concepts, await _panel_translations(hass)),
+                "concepts": _present_concepts(concepts, translations),
+                "controls": _present_concepts(controls, translations),
+                "control_suggestions": control_suggestions,
                 "proposals": await _mapping_proposals(
                     hass,
                     api,
@@ -1107,6 +1235,10 @@ async def websocket_control_save(hass, connection, msg):
             raise PanelCommandError("not_found")
         allowed_modes = set(definition.get("mappingModes") or [None])
         allowed_modes.add(None)
+        if msg["concept"] == "battery.power" and definition.get("datatype") == "number":
+            # Charge/discharge/hold are local HACS execution behaviors. They
+            # are selected from the signed value and are not backend modes.
+            allowed_modes.update({"charge", "discharge", "hold"})
         mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
         existing = [item for item in mappings
             if item.get("direction") == "output" and item.get("concept") == msg["concept"]]
@@ -1175,6 +1307,55 @@ async def websocket_control_save(hass, connection, msg):
         _send_error(
             hass, entry, connection, msg["id"], PanelCommandError("invalid_mapping")
         )
+    except (PanelCommandError, FluksApiError) as err:
+        _send_error(hass, entry, connection, msg["id"], err)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): COMMAND_CONTROL_SUGGESTIONS,
+        **BASE_SCHEMA,
+        vol.Required("device_id"): str,
+        vol.Required("concept"): str,
+        vol.Required("behaviors"): list,
+        vol.Required("actions"): list,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_control_suggestions(hass, connection, msg):
+    """Return advisory output configurations for one existing control draft."""
+    entry = None
+    try:
+        entry = _entry(hass, msg["entry_id"])
+        api = _api(hass, entry)
+        site_id = entry.data[CONF_SITE_ID]
+        device = await api.get_device(site_id, msg["device_id"])
+        catalog = await _catalog(api)
+        device_type = str(device.get("type"))
+        definition = next(
+            (
+                item
+                for item in catalog.get(device_type, {}).get("concepts", [])
+                if isinstance(item, dict)
+                and item.get("concept") == msg["concept"]
+                and "control" in item.get("usages", [])
+            ),
+            None,
+        )
+        if definition is None or not all(
+            isinstance(item, str) and item for item in msg["behaviors"]
+        ) or not all(isinstance(item, dict) for item in msg["actions"]):
+            raise PanelCommandError("invalid_mapping")
+        suggestions = await _output_suggestions(
+            api,
+            site_id,
+            device_type,
+            str(msg["concept"]),
+            msg["behaviors"],
+            msg["actions"],
+        )
+        connection.send_result(msg["id"], {"suggestions": suggestions})
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)
 
@@ -1275,6 +1456,7 @@ COMMANDS = (
     websocket_add_save,
     websocket_device_save,
     websocket_control_save,
+    websocket_control_suggestions,
     websocket_control_capabilities,
     websocket_device_delete,
     websocket_site_delete,

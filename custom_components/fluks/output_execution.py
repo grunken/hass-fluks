@@ -229,23 +229,46 @@ class RuntimeOutputExecutor:
                     continue
                 if self._balance_active and concept == "battery.power":
                     continue
-                mapping_mode = decision.get("mode")
-                if concept in _TEMPERATURE_CONTROLS and mapping_mode == "release":
-                    mapping_mode = "target"
-                mapping = next(
-                    (
-                        item
-                        for item in mappings
-                        if item.get("direction") == "output"
-                        and item.get("deviceId") == device["id"]
-                        and item.get("concept") == concept
-                        and item.get("mode") == mapping_mode
-                        and _matches_value_condition(
-                            item, raw_value, str(definition.get("datatype"))
+                mapping_modes = [decision.get("mode")]
+                if concept == "battery.power" and decision.get("mode") != "release":
+                    try:
+                        signed_power = _canonical_value(
+                            raw_value, str(definition.get("datatype"))
                         )
-                    ),
-                    None,
-                )
+                    except ValueError:
+                        signed_power = None
+                    if signed_power is not None:
+                        sign_mode = (
+                            "charge"
+                            if signed_power > 0
+                            else "discharge"
+                            if signed_power < 0
+                            else "hold"
+                        )
+                        # Prefer the signed Battery Power behavior when it is
+                        # configured, while retaining legacy target/limit/
+                        # default mappings as a compatibility fallback.
+                        mapping_modes.insert(0, sign_mode)
+                if concept in _TEMPERATURE_CONTROLS and decision.get("mode") == "release":
+                    mapping_modes = ["target"]
+                mapping = None
+                for mapping_mode in mapping_modes:
+                    mapping = next(
+                        (
+                            item
+                            for item in mappings
+                            if item.get("direction") == "output"
+                            and item.get("deviceId") == device["id"]
+                            and item.get("concept") == concept
+                            and item.get("mode") == mapping_mode
+                            and _matches_value_condition(
+                                item, raw_value, str(definition.get("datatype"))
+                            )
+                        ),
+                        None,
+                    )
+                    if mapping is not None:
+                        break
                 if mapping is None:
                     if concept in _TEMPERATURE_CONTROLS and decision.get("mode") == "release":
                         self._temperature_ownership.pop(

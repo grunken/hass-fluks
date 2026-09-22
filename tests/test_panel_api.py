@@ -19,6 +19,7 @@ from custom_components.fluks.panel_api import (
     COMMAND_CONTEXT,
     COMMAND_CONTROL_CAPABILITIES,
     COMMAND_CONTROL_SAVE,
+    COMMAND_CONTROL_SUGGESTIONS,
     COMMAND_DEVICE_DELETE,
     COMMAND_DEVICE_DETAIL,
     COMMAND_DEVICE_SAVE,
@@ -35,6 +36,7 @@ from custom_components.fluks.panel_api import (
     websocket_context,
     websocket_control_capabilities,
     websocket_control_save,
+    websocket_control_suggestions,
     websocket_device_delete,
     websocket_device_detail,
     websocket_device_save,
@@ -99,7 +101,7 @@ def test_registers_only_finite_product_commands(hass):
         "custom_components.fluks.panel_api.websocket_api.async_register_command"
     ) as register:
         async_register_panel_commands(hass)
-    assert register.call_count == len(COMMANDS) == 9
+    assert register.call_count == len(COMMANDS) == 10
 
 
 async def test_control_capabilities_command_is_admin_and_never_returns_credentials(hass):
@@ -111,6 +113,47 @@ async def test_control_capabilities_command_is_admin_and_never_returns_credentia
         await hass.async_block_till_done()
     conn.send_result.assert_called_once_with(31, {"actions": capabilities})
     assert KEY not in repr(conn.send_result.call_args)
+
+
+async def test_control_suggestions_command_forwards_local_behavior_labels_and_actions(hass):
+    entry = make_entry(hass)
+    conn = connection()
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.suggest_output_mapping = AsyncMock(return_value={
+        "Holds": {"configuration": None, "confidence": 0, "explanation": None},
+    })
+    catalog = {
+        "battery": {
+            "type": "battery",
+            "concepts": [{"concept": "battery.power", "datatype": "number", "usages": ["control"]}],
+        }
+    }
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        websocket_control_suggestions(hass, conn, {
+            "id": 32,
+            "type": COMMAND_CONTROL_SUGGESTIONS,
+            "entry_id": entry.entry_id,
+            "device_id": "device-a",
+            "concept": "battery.power",
+            "behaviors": ["charge", "hold"],
+            "actions": [{"entityId": "number.battery", "service": "number.set_value"}],
+        })
+        await hass.async_block_till_done()
+
+    api.suggest_output_mapping.assert_awaited_once_with(
+        "site-a",
+        "battery",
+        "battery.power",
+        ["charge", "hold"],
+        [{"entityId": "number.battery", "service": "number.set_value"}],
+    )
+    conn.send_result.assert_called_once_with(32, {"suggestions": {
+        "Holds": {"configuration": None, "confidence": 0, "explanation": None},
+    }})
 
 
 def test_catalog_source_semantics_and_local_duplicate_context_are_reused(hass):
@@ -564,6 +607,87 @@ async def test_add_review_uses_backend_choice_from_existing_filtered_candidates(
         "source": {"kind": "cumulative"},
     }
     assert proposal["classification"] == "suggest"
+
+
+async def test_add_review_exposes_controls_and_suggests_selected_device_actions(hass):
+    """Add review includes controls without requiring a persisted output Mapping."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.suggest_mappings = AsyncMock(return_value={})
+    api.suggest_output_mapping = AsyncMock(
+        return_value={
+            "default": {
+                "configuration": {
+                    "version": 1,
+                    "actions": [{
+                        "type": "serviceCall",
+                        "service": "water_heater.turn_on",
+                        "target": {"entityId": "water_heater.tank"},
+                        "data": {},
+                    }],
+                },
+                "confidence": 0.9,
+                "explanation": "Use the tank action.",
+            }
+        }
+    )
+    catalog = {
+        "heatPump": {
+            "type": "heatPump",
+            "concepts": [{
+                "concept": "heatPump.tankTemperature",
+                "datatype": "number",
+                "usages": ["control"],
+                "mappingModes": [None],
+            }],
+        }
+    }
+    device_registry = MagicMock()
+    device_registry.async_get.return_value = MagicMock(
+        name_by_user="Nærvarme", name="Nærvarme", manufacturer=None, model=None
+    )
+    entity_registry = SimpleNamespace(
+        async_get=lambda entity_id: SimpleNamespace(
+            device_id="ha-heat-pump" if entity_id == "water_heater.tank" else "ha-other"
+        )
+    )
+    capabilities = [{
+        "service": "water_heater.turn_on",
+        "name": "Turn on",
+        "entities": [{"entity_id": "water_heater.tank", "name": "Tank", "fields": []}],
+    }, {
+        "service": "switch.turn_on",
+        "name": "Turn on",
+        "entities": [{"entity_id": "switch.other", "name": "Other", "fields": []}],
+    }]
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={})),
+        patch("custom_components.fluks.panel_api.dr.async_get", return_value=device_registry),
+        patch("custom_components.fluks.panel_api.er.async_get", return_value=entity_registry),
+        patch("custom_components.fluks.panel_api.async_control_capabilities", AsyncMock(return_value=capabilities)),
+    ):
+        websocket_add_review(hass, conn, {
+            "id": 64,
+            "type": COMMAND_ADD_REVIEW,
+            "entry_id": entry.entry_id,
+            "device_type": "heatPump",
+            "ha_device_id": "ha-heat-pump",
+        })
+        await hass.async_block_till_done()
+
+    result = conn.send_result.call_args.args[1]
+    assert [item["concept"] for item in result["controls"]] == ["heatPump.tankTemperature"]
+    assert result["control_suggestions"]["heatPump.tankTemperature"]["default"]["confidence"] == 0.9
+    api.suggest_output_mapping.assert_awaited_once()
+    assert api.suggest_output_mapping.await_args.args[:4] == (
+        "site-a", "heatPump", "heatPump.tankTemperature", ["default"]
+    )
+    assert [item["entityId"] for item in api.suggest_output_mapping.await_args.args[4]] == [
+        "water_heater.tank"
+    ]
 
 
 async def test_device_detail_uses_backend_attribute_choice(hass):
@@ -1485,7 +1609,7 @@ def control_catalog():
     }
 
 
-async def run_control_save(hass, entry, api, configuration, *, msg_id=20):
+async def run_control_save(hass, entry, api, configuration, *, msg_id=20, behaviors=None):
     conn = connection()
     message = {
         "id": msg_id,
@@ -1494,9 +1618,11 @@ async def run_control_save(hass, entry, api, configuration, *, msg_id=20):
         "device_id": "device-a",
         "concept": "battery.power",
     }
-    message["behaviors"] = [] if configuration is None else [
-        {"mode": None, "configuration": configuration}
-    ]
+    message["behaviors"] = (
+        behaviors
+        if behaviors is not None
+        else [] if configuration is None else [{"mode": None, "configuration": configuration}]
+    )
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
         patch(
@@ -1533,6 +1659,27 @@ async def test_control_save_creates_documented_output_mapping(hass):
         "configuration": configuration,
     }
     conn.send_result.assert_called_once_with(20, {"changed": True})
+
+
+async def test_control_save_accepts_local_battery_hold_without_catalog_mode(hass):
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": "battery"})
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+    configuration = output_configuration()
+
+    await run_control_save(
+        hass,
+        entry,
+        api,
+        None,
+        msg_id=21,
+        behaviors=[{"mode": "hold", "configuration": configuration}],
+    )
+
+    payload = api.create_mapping.await_args.args[1]
+    assert payload["mode"] == "hold"
 
 
 async def test_control_save_reconciles_separate_mode_mapping_records(hass):

@@ -20,6 +20,8 @@ class FluksControlEditorPanel extends HTMLElement {
     this._pendingControl = undefined;
     this._spaceHeaterValidationError = false;
     this._mappingSuggestionsLoading = false;
+    this._outputSuggestionRequests = new Set();
+    this._outputSuggestions = new Map();
     this._clearedInputConcepts = new Set();
     this._proposalDraftConcepts = new Set();
     this._popstate = () => {
@@ -42,6 +44,8 @@ class FluksControlEditorPanel extends HTMLElement {
       this._pendingControl = undefined;
       this._spaceHeaterValidationError = false;
       this._mappingSuggestionsLoading = false;
+      this._outputSuggestionRequests.clear();
+      this._outputSuggestions.clear();
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
       this._view = { name: "home" };
@@ -596,7 +600,7 @@ class FluksControlEditorPanel extends HTMLElement {
     if (type && this._draft && this._view.haDeviceId) {
       const detail = { concepts: this._draft.concepts, mappings: {}, proposals: this._draft.proposals };
       const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(type.type, this._inputDraft, this._draft.properties);
-      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError)}`;
+      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._renderAddControlSuggestions(this._draft)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError)}`;
     }
     if (this._mappingSuggestionsLoading) body += `<section class="card mapping-loading" role="status" aria-live="polite"><p>${esc(this._t("loading_mapping_suggestions"))}</p></section>`;
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
@@ -629,6 +633,20 @@ class FluksControlEditorPanel extends HTMLElement {
         this._context = await this._call("fluks/config/context"); this._go({ name: "home" });
       } catch (_) { this._renderAdd(); }
     };
+  }
+  _renderAddControlSuggestions(draft) {
+    const controls = Array.isArray(draft.controls) ? draft.controls : [];
+    if (!controls.length) return "";
+    const suggestions = draft.control_suggestions ?? {};
+    const rows = controls.map((control) => {
+      const matches = Object.values(suggestions[control.concept] ?? {})
+        .filter((item) => item?.configuration?.actions?.length)
+        .flatMap((item) => item.configuration.actions)
+        .map((action) => `${action.service ?? ""} · ${action.target?.entityId ?? ""}`)
+        .filter(Boolean);
+      return `<div class="row"><span class="row-copy"><strong>${esc(this._conceptLabel(control))}</strong><small>${esc(matches.length ? `${this._t("suggested_match")}: ${matches.join(", ")}` : this._t("not_configured"))}</small></span></div>`;
+    }).join("");
+    return `<section><h2>${esc(this._t("controls"))}</h2><div class="card list">${rows}</div></section>`;
   }
   async _selectAddHaDevice(haDeviceId) {
     if (!haDeviceId || !this._view.deviceType || this._mappingSuggestionsLoading) return;
@@ -694,6 +712,12 @@ class FluksControlEditorPanel extends HTMLElement {
       "behavior_release", "behavior_release_choice", "behavior_release_description",
       "behavior_charge", "behavior_charge_choice", "behavior_charge_description",
       "behavior_discharge", "behavior_discharge_choice", "behavior_discharge_description",
+      "behavior_hold", "behavior_hold_choice", "behavior_hold_description",
+      "suggested_match", "use_suggestion", "loading_mapping_suggestions",
+      "finding_best_match", "finding_best_match_description", "action_sequence_help",
+      "manual_behavior_help", "manual_action_title", "manual_action_description",
+      "suggested_action_intro", "suggested_action_reason", "uses_control_value",
+      "uses_fixed_value",
     ].map((key) => [key, this._t(key)]));
     editor.capabilities = this._controlCapabilities ?? [];
     editor.selectedDeviceId = this._detail?.ha_device_id || this._view.haDeviceId || null;
@@ -706,9 +730,17 @@ class FluksControlEditorPanel extends HTMLElement {
         { mode: "balance", valueCondition: "ltZero", labelKey: "behavior_balance_export", descriptionKey: "behavior_balance_export_description" },
         { mode: "balance", valueCondition: "eqZero", labelKey: "behavior_balance_zero", descriptionKey: "behavior_balance_zero_description" },
       ] : [];
-    editor.allowedModes = control.mappingModes ?? [];
+    const localBatteryPowerModes = control.concept === "battery.power" && control.datatype === "number"
+      ? ["charge", "discharge", "hold"] : [];
+    editor.allowedModes = [...new Set([...(control.mappingModes ?? []), ...localBatteryPowerModes])];
     const persisted = (this._detail.output_mappings[control.concept] ?? []).map((mapping) => ({ mode: mapping.mode ?? null, ...(editor.behaviorChoices.length ? { valueCondition: mapping.valueCondition ?? null } : {}), actions: mapping.configuration?.actions ?? [] }));
     editor.behaviors = this._pendingControl?.key === key ? this._pendingControl.behaviors : persisted;
+    editor.outputSuggestions = this._outputSuggestions.get(key) ?? {};
+    editor.outputSuggestionsLoading = false;
+    if (!this._outputSuggestionRequests.has(key) && typeof this._hass?.callWS === "function") {
+      editor.outputSuggestionsLoading = true;
+      this._loadOutputSuggestions(key, control, editor).catch(() => {});
+    }
     editor.addEventListener("control-saved", async (e) => {
       this._pendingControl = { key, behaviors: e.detail.behaviors };
       try {
@@ -725,6 +757,104 @@ class FluksControlEditorPanel extends HTMLElement {
       if (this._pendingControl?.key === key) this._pendingControl = undefined;
       history.back();
     }, { once: true });
+  }
+  _outputBehaviorDescriptors(editor) {
+    const descriptors = [];
+    const add = (
+      mode,
+      valueCondition = null,
+      label = mode === null ? editor._behaviorLabel(mode, valueCondition) : editor._behaviorChoiceLabel(mode),
+      behavior = mode === null ? "default" : valueCondition ? `${mode}:${valueCondition}` : mode,
+    ) => {
+      const identity = `${mode ?? ""}|${valueCondition ?? ""}`;
+      if (!descriptors.some((item) => item.identity === identity)) descriptors.push({ identity, mode, valueCondition, label, behavior });
+    };
+    if (editor.behaviorChoices.length) {
+      editor.allowedModes.filter((mode) => mode !== null && mode !== "balance").forEach((mode) => add(mode));
+      editor.behaviorChoices.forEach((choice) => add(choice.mode, choice.valueCondition ?? null, editor._behaviorChoiceLabel(choice)));
+    } else {
+      editor.allowedModes.forEach((mode) => add(mode));
+    }
+    editor.behaviors.forEach((behavior) => add(behavior.mode, behavior.valueCondition ?? null));
+    return descriptors;
+  }
+  _outputActionCandidates(editor) {
+    const candidates = [];
+    const selectedDevice = editor.selectedDeviceId;
+    for (const capability of editor.capabilities ?? []) {
+      if (!editor._isExecutableCapability(capability)) continue;
+      for (const entity of capability.entities ?? []) {
+        if (selectedDevice && editor._entityDeviceId(entity) !== selectedDevice) continue;
+        const fields = Object.fromEntries((entity.fields ?? []).map((field) => {
+          const selector = field.selector ?? {};
+          const type = selector.type === "number" ? "number" : selector.type === "boolean" ? "boolean" : "string";
+          const constraints = field.constraints ?? {};
+          return [field.id, {
+            type,
+            ...(Array.isArray(constraints.options) ? { options: constraints.options } : {}),
+            ...(constraints.min !== undefined ? { min: constraints.min } : {}),
+            ...(constraints.max !== undefined ? { max: constraints.max } : {}),
+            ...(constraints.step !== undefined ? { step: constraints.step } : {}),
+          }];
+        }));
+        const state = this._hass?.states?.[entity.entity_id];
+        const attributes = state?.attributes ?? {};
+        const context = (this._context?.entities ?? []).find((item) => item.entity_id === entity.entity_id) ?? {};
+        candidates.push({
+          entityId: entity.entity_id,
+          attribute: null,
+          name: entity.name ?? null,
+          originalName: null,
+          sourceType: "state",
+          availableAttributes: Array.isArray(context.attributes) ? context.attributes.filter((item) => typeof item === "string") : [],
+          attributeMetadata: [],
+          domain: entity.entity_id.split(".", 1)[0],
+          service: capability.service,
+          datatype: "unknown",
+          deviceClass: typeof (attributes.device_class ?? context.device_class) === "string" ? (attributes.device_class ?? context.device_class) : null,
+          state: null,
+          currentValue: null,
+          integration: null,
+          platform: null,
+          stateClass: typeof attributes.state_class === "string" ? attributes.state_class : null,
+          attributes: null,
+          relevantAttributes: null,
+          options: Array.isArray(attributes.options) ? attributes.options.filter((item) => typeof item === "string") : [],
+          unit: typeof attributes.unit_of_measurement === "string" ? attributes.unit_of_measurement : null,
+          ...(typeof attributes.min === "number" ? { min: attributes.min } : {}),
+          ...(typeof attributes.max === "number" ? { max: attributes.max } : {}),
+          ...(typeof attributes.step === "number" && attributes.step > 0 ? { step: attributes.step } : {}),
+          supportedFeatures: capability.target?.supported_features ?? [],
+          fields,
+        });
+      }
+    }
+    return candidates;
+  }
+  async _loadOutputSuggestions(key, control, editor) {
+    this._outputSuggestionRequests.add(key);
+    try {
+      const descriptors = this._outputBehaviorDescriptors(editor);
+      const actions = this._outputActionCandidates(editor);
+      if (!descriptors.length || !actions.length) return;
+      const response = await this._call("fluks/config/control_suggestions", {
+        device_id: this._detail.id,
+        concept: control.concept,
+        behaviors: descriptors.map((item) => item.behavior),
+        actions,
+      });
+      if (this._view.name !== "control" || this._view.deviceId !== this._detail.id || this._view.concept !== control.concept) return;
+      const byBehavior = Object.fromEntries(Object.entries(response.suggestions ?? {}).map(([behavior, suggestion]) => {
+        const descriptor = descriptors.find((item) => item.behavior === behavior);
+        return descriptor ? [behavior, { ...suggestion, behavior, label: descriptor.label, mode: descriptor.mode, valueCondition: descriptor.valueCondition }] : null;
+      }).filter(Boolean));
+      this._outputSuggestions.set(key, byBehavior);
+      editor.outputSuggestions = byBehavior;
+    } catch (_) {
+      // Suggestions are advisory; preserve the normal manual editor on failure.
+    } finally {
+      editor.outputSuggestionsLoading = false;
+    }
   }
   _credentials(titleKey, bodyKey, label) {
     return `<section class="card"><h2>${esc(this._t(titleKey))}</h2><p>${esc(this._t(bodyKey))}</p><label>${esc(this._t("email"))}<input id="email" type="email" autocomplete="username"></label><label>${esc(this._t("password"))}<input id="password" type="password" autocomplete="current-password"></label></section><div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="danger" id="confirm">${esc(label)}</button></div>`;

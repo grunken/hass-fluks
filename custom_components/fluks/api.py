@@ -11,6 +11,7 @@ from typing import Any, NoReturn
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from .const import API_BASE_URL, API_TIMEOUT_SECONDS, INTEGRATION_TYPE
+from .output_mapping import OutputMappingValidationError, validate_output_configuration
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -333,7 +334,7 @@ class FluksApiClient:
         )
         result = await self._request(
             "POST",
-            f"/sites/{site_id}/mappings/suggest",
+            f"/sites/{site_id}/mappings/suggestions/input",
             json=request_body,
             expected_status=200,
             auth=AuthContext.INTEGRATION,
@@ -418,7 +419,7 @@ class FluksApiClient:
         )
         result = await self._request(
             "POST",
-            f"/sites/{site_id}/mappings/suggestions",
+            f"/sites/{site_id}/mappings/suggestions/input",
             json=request_body,
             expected_status=200,
             auth=AuthContext.INTEGRATION,
@@ -478,6 +479,79 @@ class FluksApiClient:
         _LOGGER.debug(
             "fluks Mapping suggestions batch validated result: %s", validated
         )
+        return validated
+
+    async def suggest_output_mapping(
+        self,
+        site_id: str,
+        device_type: str,
+        concept: str,
+        behaviors: list[str],
+        actions: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Ask the backend for advisory output configurations by local behavior."""
+        request_body = {
+            "deviceType": device_type,
+            "concept": concept,
+            "behaviors": behaviors,
+            "actions": actions,
+        }
+        _LOGGER.warning(
+            "fluks output Mapping suggestion outgoing request: POST %s payload=%s",
+            f"{self._base_url}/sites/{site_id}/mappings/suggestions/output",
+            request_body,
+        )
+        result = await self._request(
+            "POST",
+            f"/sites/{site_id}/mappings/suggestions/output",
+            json=request_body,
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+        )
+        suggestions = result.get("suggestions")
+        if not isinstance(suggestions, dict):
+            raise FluksApiError("INVALID_RESPONSE")
+        allowed_behaviors = set(behaviors)
+        allowed_actions = {
+            (item.get("entityId"), item.get("service"))
+            for item in actions
+            if isinstance(item, dict)
+        }
+        validated: dict[str, dict[str, Any]] = {}
+        for behavior, suggestion in suggestions.items():
+            if not isinstance(behavior, str) or behavior not in allowed_behaviors:
+                raise FluksApiError("INVALID_RESPONSE")
+            if not isinstance(suggestion, dict) or set(suggestion) != {
+                "configuration", "confidence", "explanation"
+            }:
+                raise FluksApiError("INVALID_RESPONSE")
+            confidence = suggestion["confidence"]
+            explanation = suggestion["explanation"]
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not 0 <= confidence <= 1
+                or explanation is not None
+                and not isinstance(explanation, str)
+            ):
+                raise FluksApiError("INVALID_RESPONSE")
+            configuration = suggestion["configuration"]
+            if configuration is not None:
+                try:
+                    configuration = validate_output_configuration(configuration)
+                except OutputMappingValidationError as err:
+                    raise FluksApiError("INVALID_RESPONSE") from err
+                if any(
+                    (action["target"]["entityId"], action["service"])
+                    not in allowed_actions
+                    for action in configuration["actions"]
+                ):
+                    raise FluksApiError("INVALID_RESPONSE")
+            validated[behavior] = {
+                "configuration": configuration,
+                "confidence": confidence,
+                "explanation": explanation,
+            }
         return validated
 
     async def create_mapping(

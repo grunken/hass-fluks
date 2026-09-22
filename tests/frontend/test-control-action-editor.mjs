@@ -330,6 +330,103 @@ test("backend-provided Mapping execution modes include charge and discharge", ()
   assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="discharge"/);
 });
 
+test("Battery Power exposes local signed execution modes including hold", () => {
+  const editor = new Editor();
+  editor.controlName = "Power";
+  editor.allowedModes = [null, "charge", "discharge", "hold", "release"];
+  editor.behaviors = [];
+  editor._addingBehavior = true;
+  editor.render();
+  assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="charge"/);
+  assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="discharge"/);
+  assert.match(editor.shadowRoot.innerHTML, /data-behavior-choice="hold"/);
+});
+
+test("output Mapping suggestions render and require explicit acceptance", () => {
+  const editor = new Editor();
+  editor.controlName = "Power";
+  editor.allowedModes = [null, "hold"];
+  editor.behaviors = [];
+  editor.strings = { suggested_match: "Suggested match", use_suggestion: "Use", loading_mapping_suggestions: "Loading" };
+  const suggestion = {
+    mode: "hold",
+    configuration: { version: 1, actions: [mode] },
+    confidence: 0.91,
+    explanation: "Use the idle action.",
+  };
+  editor.outputSuggestions = { hold: { ...suggestion, behavior: "hold", label: "Holds" } };
+  assert.match(editor.shadowRoot.innerHTML, /Holds/);
+  assert.match(editor.shadowRoot.innerHTML, /Use/);
+  assert.deepEqual(editor.behaviors, [{ mode: null, actions: [] }]);
+  editor.render = () => {};
+  editor._command("use-output-suggestion", 0);
+  assert.deepEqual(editor.behaviors.find((item) => item.mode === "hold").actions, [mode]);
+});
+
+test("control editor explains configured action order and manual fallback", () => {
+  const editor = new Editor();
+  editor.controlName = "Power";
+  editor.capabilities = capabilities;
+  editor.strings = {
+    default_behavior: "Default behavior", default_behavior_description: "Use these actions for the requested power.",
+    action_sequence_help: "These actions run from top to bottom.", uses_control_value: "Uses the requested value",
+    uses_fixed_value: "Uses a fixed value", target_only: "Runs without a value", no_actions: "No actions configured.",
+    manual_behavior_help: "Add the actions for this behavior.", manual_action_title: "Configure the actions",
+    manual_action_description: "No suggestion is available. Add the actions manually.",
+    add_action: "Add action", suggested_match: "Suggested match", use_suggestion: "Use",
+  };
+  editor.allowedModes = [null];
+  editor.behaviors = [{ mode: null, actions: [mode, target] }];
+  assert.match(editor.shadowRoot.innerHTML, /These actions run from top to bottom/);
+  assert.match(editor.shadowRoot.innerHTML, /Select option · GoodWe mode/);
+  assert.match(editor.shadowRoot.innerHTML, /Set value · GoodWe target/);
+
+  editor.behaviors = [];
+  assert.match(editor.shadowRoot.innerHTML, /Configure the actions/);
+  assert.match(editor.shadowRoot.innerHTML, /No suggestion is available/);
+});
+
+test("control editor presents a friendly loading state for suggestions", () => {
+  const editor = new Editor();
+  editor.strings = {
+    finding_best_match: "Finding the best match…",
+    finding_best_match_description: "fluks is examining the selected device's available controls.",
+  };
+  editor.behaviors = [];
+  editor.outputSuggestionsLoading = true;
+  assert.match(editor.shadowRoot.innerHTML, /loading-spinner/);
+  assert.match(editor.shadowRoot.innerHTML, /Finding the best match/);
+  assert.match(editor.shadowRoot.innerHTML, /examining the selected device/);
+  assert.match(editor.shadowRoot.innerHTML, /role="status"/);
+});
+
+test("control editor explains a suggested action sequence and its reason", () => {
+  const editor = new Editor();
+  editor.controlName = "Tank temperature";
+  editor.capabilities = capabilities;
+  editor.strings = {
+    suggested_match: "Suggested match", suggested_action_intro: "Review this sequence before using it.",
+    suggested_action_reason: "Best match", use_suggestion: "Use", uses_fixed_value: "Uses a fixed value",
+    uses_control_value: "Uses the requested value", target_only: "Runs without a value",
+    default_behavior: "Default behavior", default_behavior_description: "Set the requested temperature.",
+    action_sequence_help: "These actions run from top to bottom.", add_action: "Add action",
+  };
+  editor.allowedModes = [null];
+  editor.behaviors = [];
+  editor.outputSuggestions = {
+    default: {
+      mode: null,
+      label: "Targets tank temperature",
+      explanation: "The selected tank action accepts the requested value.",
+      configuration: { version: 1, actions: [target] },
+    },
+  };
+  assert.match(editor.shadowRoot.innerHTML, /Targets tank temperature/);
+  assert.match(editor.shadowRoot.innerHTML, /Set value · GoodWe target/);
+  assert.match(editor.shadowRoot.innerHTML, /selected tank action accepts/);
+  assert.match(editor.shadowRoot.innerHTML, /Use/);
+});
+
 test("numeric power behavior editor round-trips signed value conditions", () => {
   const editor = new Editor();
   editor.valueType = { datatype: "number", unit: "W" };

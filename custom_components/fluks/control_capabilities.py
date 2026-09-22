@@ -34,6 +34,9 @@ def _target(description: dict[str, Any], action_domain: str) -> dict[str, Any] |
     device_classes = sorted({device_class for item in entity_filters for device_class in _string_list(item.get("device_class"))})
     if device_classes:
         result["device_classes"] = device_classes
+    integrations = sorted({integration for item in entity_filters for integration in _string_list(item.get("integration"))})
+    if integrations and action_domain not in domains:
+        result["integrations"] = integrations
     feature_groups = [item.get("supported_features") for item in entity_filters if isinstance(item.get("supported_features"), list)]
     if feature_groups:
         result["supported_features"] = [candidate for group in feature_groups for candidate in group]
@@ -123,12 +126,18 @@ def _features_match(required: Any, supported: int) -> bool:
     return False
 
 
-def _entity_matches(state: State, target: dict[str, Any]) -> bool:
+def _entity_matches(state: State, target: dict[str, Any], registry_entry: Any = None) -> bool:
     domain = state.entity_id.split(".", 1)[0]
     if domain not in target["domains"]:
         return False
     if target.get("device_classes") and state.attributes.get("device_class") not in target["device_classes"]:
         return False
+    if target.get("integrations"):
+        platform = getattr(registry_entry, "platform", None)
+        # An entity without registry integration metadata remains eligible;
+        # only a known, conflicting platform proves the service cannot apply.
+        if isinstance(platform, str) and platform not in target["integrations"]:
+            return False
     return _features_match(
         target.get("supported_features"), int(state.attributes.get("supported_features", 0))
     )
@@ -214,7 +223,8 @@ async def async_control_capabilities(hass: HomeAssistant) -> list[dict[str, Any]
                 continue
             entities = []
             for state in hass.states.async_all():
-                if not _entity_matches(state, target):
+                registry_entry = entity_registry.async_get(state.entity_id)
+                if not _entity_matches(state, target, registry_entry):
                     continue
                 applicable = []
                 unsupported_required = False
@@ -228,7 +238,6 @@ async def async_control_capabilities(hass: HomeAssistant) -> list[dict[str, Any]
                     applicable.append(presented)
                 if unsupported_required:
                     continue
-                registry_entry = entity_registry.async_get(state.entity_id)
                 device_entry = (
                     device_registry.async_get(registry_entry.device_id)
                     if registry_entry is not None and registry_entry.device_id

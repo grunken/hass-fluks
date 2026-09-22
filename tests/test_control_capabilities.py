@@ -51,6 +51,77 @@ async def test_target_only_action_is_supported_when_entity_target_is_described(h
     assert actions[0]["entities"][0]["fields"] == []
 
 
+async def test_target_integration_prevents_unrelated_services_from_matching_entities(hass):
+    """Target integration metadata must scope services to their real platform."""
+    hass.states.async_set("sensor.aquarea_energy", "1")
+    hass.states.async_set("sensor.utility_meter", "1")
+    entity_registry = MagicMock()
+    entity_registry.async_get.side_effect = lambda entity_id: SimpleNamespace(
+        device_id=None,
+        platform="utility_meter" if entity_id == "sensor.utility_meter" else "aquarea",
+    )
+    descriptions = {
+        "utility_meter": {
+            "calibrate": {
+                "name": "Calibrate",
+                "target": {"entity": {"domain": "sensor", "integration": "utility_meter"}},
+                "fields": {"value": {"required": True, "selector": {"text": {}}}},
+            }
+        }
+    }
+    with (
+        patch(
+            "custom_components.fluks.control_capabilities.async_get_all_descriptions",
+            AsyncMock(return_value=descriptions),
+        ),
+        patch("custom_components.fluks.control_capabilities.er.async_get", return_value=entity_registry),
+    ):
+        actions = await async_control_capabilities(hass)
+
+    assert [item["entity_id"] for item in actions[0]["entities"]] == [
+        "sensor.utility_meter"
+    ]
+
+
+async def test_water_heater_temperature_capability_keeps_live_constraints(hass):
+    """The cleanup must retain the water-heater setter and its HA ranges."""
+    hass.states.async_set(
+        "water_heater.naervarme_tank",
+        "eco",
+        {"friendly_name": "Tank", "min_temp": 40, "max_temp": 65, "target_temp_step": 1},
+    )
+    entity_registry = MagicMock()
+    entity_registry.async_get.return_value = SimpleNamespace(
+        device_id="heat-pump", platform="aquarea"
+    )
+    descriptions = {
+        "water_heater": {
+            "set_temperature": {
+                "name": "Set temperature",
+                "target": {"entity": {"domain": "water_heater", "integration": "aquarea"}},
+                "fields": {
+                    "temperature": {
+                        "required": True,
+                        "selector": {"number": {"min": 0, "max": 250, "step": 0.5}},
+                    }
+                },
+            }
+        }
+    }
+    with (
+        patch(
+            "custom_components.fluks.control_capabilities.async_get_all_descriptions",
+            AsyncMock(return_value=descriptions),
+        ),
+        patch("custom_components.fluks.control_capabilities.er.async_get", return_value=entity_registry),
+    ):
+        actions = await async_control_capabilities(hass)
+
+    entity = actions[0]["entities"][0]
+    assert entity["entity_id"] == "water_heater.naervarme_tank"
+    assert entity["fields"][0]["constraints"] == {"min": 40, "max": 65, "step": 1}
+
+
 async def test_entity_search_metadata_comes_from_ha_registries_without_fluks_scoping(hass):
     hass.states.async_set("switch.powerful", "off", {"friendly_name": "Powerful"})
     descriptions = {

@@ -91,7 +91,7 @@ test("production Controls path passes global reference entities and attributes",
   assert.deepEqual(editor.referenceEntities, [{ entity_id: "climate.buffer", name: "Buffer", attributes: ["current_temperature", "temperature"] }]);
 });
 
-test("production control path groups backend mode mappings into behavior sections", () => {
+test("production control path adds local Battery Power signed behaviors", () => {
   const panel = new Panel(); panel._context = { translations: {} };
   panel._view = { name: "control", deviceId: "device-1", concept: "battery.power" };
   panel._detail = {
@@ -107,10 +107,153 @@ test("production control path groups backend mode mappings into behavior section
   let editor;
   panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
   panel._renderControl();
-  assert.deepEqual(editor.allowedModes, [null, "target", "limit", "balance", "release"]);
+  assert.deepEqual(editor.allowedModes, [null, "target", "limit", "balance", "release", "charge", "discharge", "hold"]);
   assert.deepEqual(editor.behaviors.map(({ mode }) => mode), [null, "release"]);
   assert.match(editor.shadowRoot.innerHTML, /default behavior/i);
   assert.match(editor.shadowRoot.innerHTML, /behavior release/i);
+});
+
+test("production control path requests output suggestions and renders them", async () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    default_behavior: "Default behavior",
+    behavior_release_choice: "Releases control",
+    behavior_charge_choice: "Charges",
+    behavior_discharge_choice: "Discharges",
+    behavior_hold_choice: "Holds",
+  }, entities: [{ entity_id: "number.battery", device_id: "ha-battery" }] };
+  const requests = [];
+  panel._hass = {
+    states: {},
+    language: "en",
+    localize: () => undefined,
+    callWS: async (message) => {
+      requests.push(message);
+      return {
+        suggestions: {
+          hold: {
+            configuration: { version: 1, actions: [{ type: "serviceCall", service: "switch.turn_on", target: { entityId: "number.battery" }, data: {} }] },
+            confidence: 0.9,
+            explanation: "Use the idle action.",
+          },
+        },
+      };
+    },
+  };
+  panel._view = { name: "control", deviceId: "device-1", concept: "battery.power" };
+  panel._detail = {
+    id: "device-1", ha_device_id: "ha-battery", type_name: "Battery",
+    controls: [{ concept: "battery.power", label: "Power", datatype: "number", unit: "W", mappingModes: [null, "release"] }],
+    output_mappings: {},
+  };
+  panel._controlCapabilities = [{
+    service: "switch.turn_on", name: "Turn on", description: "Turns on.",
+    entities: [{ entity_id: "number.battery", name: "Battery", fields: [] }],
+  }];
+  let editor;
+  panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
+  panel._renderControl();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].type, "fluks/config/control_suggestions");
+  assert.deepEqual(requests[0].behaviors, ["default", "release", "charge", "discharge", "hold"]);
+  assert.equal(requests[0].actions[0].entityId, "number.battery");
+  assert.match(editor.shadowRoot.innerHTML, /Holds/);
+  assert.match(editor.shadowRoot.innerHTML, /Use/);
+});
+
+test("heat-pump control renders the returned action suggestion after loading", async () => {
+  const panel = new Panel();
+  panel._context = {
+    translations: {
+      default_behavior: "Default behavior",
+      suggested_match: "Suggested match",
+      use_suggestion: "Use suggestion",
+      loading_mapping_suggestions: "Loading mapping suggestions...",
+    },
+    entities: [{ entity_id: "water_heater.tank", device_id: "ha-heat-pump" }],
+  };
+  panel._hass = {
+    states: {}, language: "en", localize: () => undefined,
+    callWS: async () => ({ suggestions: {
+      default: {
+        configuration: {
+          version: 1,
+          actions: [{
+            type: "serviceCall",
+            service: "water_heater.set_temperature",
+            target: { entityId: "water_heater.tank" },
+            data: { temperature: { kind: "requestedValue" } },
+          }],
+        },
+        confidence: 0.98,
+        explanation: "Set the tank temperature.",
+      },
+    } }),
+  };
+  panel._view = { name: "control", deviceId: "device-1", concept: "heatPump.tankTemperature" };
+  panel._detail = {
+    id: "device-1", ha_device_id: "ha-heat-pump", type_name: "Heat pump",
+    controls: [{ concept: "heatPump.tankTemperature", label: "Tank temperature", datatype: "number", unit: "°C", mappingModes: [null] }],
+    output_mappings: {},
+  };
+  panel._controlCapabilities = [{
+    service: "water_heater.set_temperature", name: "Set temperature", description: "Sets temperature.",
+    entities: [{ entity_id: "water_heater.tank", name: "Tank", fields: [{ id: "temperature", required: true, selector: { type: "number" } }] }],
+  }];
+  let editor;
+  panel._frame = () => {
+    editor = new Editor();
+    panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null;
+  };
+  panel._renderControl();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.doesNotMatch(editor.shadowRoot.innerHTML, /Loading mapping suggestions/);
+  assert.match(editor.shadowRoot.innerHTML, /Suggested match/);
+  assert.match(editor.shadowRoot.innerHTML, /Use suggestion/);
+  editor._command("use-output-suggestion", 0);
+  assert.equal(editor.behaviors[0].actions[0].service, "water_heater.set_temperature");
+});
+
+test("output suggestions scope executable actions to the selected HA device", async () => {
+  const panel = new Panel();
+  panel._context = {
+    translations: { default_behavior: "Default behavior" },
+    entities: [
+      { entity_id: "water_heater.naervarme_tank", device_id: "ha-heat-pump" },
+      { entity_id: "climate.naervarme_zone_1", device_id: "ha-heat-pump" },
+      { entity_id: "switch.other_device", device_id: "ha-other" },
+    ],
+  };
+  const requests = [];
+  panel._hass = {
+    states: {},
+    language: "en",
+    localize: () => undefined,
+    callWS: async (message) => { requests.push(message); return { suggestions: {} }; },
+  };
+  panel._view = { name: "control", deviceId: "device-1", concept: "heatPump.tankTemperature" };
+  panel._detail = {
+    id: "device-1", ha_device_id: "ha-heat-pump", type_name: "Heat pump",
+    controls: [{ concept: "heatPump.tankTemperature", label: "Tank temperature", datatype: "number", unit: "°C", mappingModes: [null] }],
+    output_mappings: {},
+  };
+  panel._controlCapabilities = [
+    { service: "water_heater.set_temperature", name: "Set temperature", entities: [{ entity_id: "water_heater.naervarme_tank", name: "Tank", fields: [] }] },
+    { service: "water_heater.turn_on", name: "Turn on", entities: [{ entity_id: "water_heater.naervarme_tank", name: "Tank", fields: [] }] },
+    { service: "climate.set_temperature", name: "Set temperature", entities: [{ entity_id: "climate.naervarme_zone_1", name: "Zone 1", fields: [] }] },
+    { service: "switch.turn_on", name: "Turn on", entities: [{ entity_id: "switch.other_device", name: "Other", fields: [] }] },
+  ];
+  let editor;
+  panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
+  panel._renderControl();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].actions.map(({ entityId, service }) => ({ entityId, service })), [
+    { entityId: "water_heater.naervarme_tank", service: "water_heater.set_temperature" },
+    { entityId: "water_heater.naervarme_tank", service: "water_heater.turn_on" },
+    { entityId: "climate.naervarme_zone_1", service: "climate.set_temperature" },
+  ]);
 });
 
 test("production Site power path forwards persisted value conditions", () => {
@@ -307,6 +450,28 @@ test("mapping suggestions show loading state and prevent duplicate Add requests"
   await first;
   await second;
   assert.equal(panel._mappingSuggestionsLoading, false);
+});
+
+test("Add review exposes controls and their advisory output suggestions", () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    controls: "Controls", suggested_match: "Suggested match", not_configured: "Not configured",
+  } };
+  const rendered = panel._renderAddControlSuggestions({
+    controls: [{ concept: "heatPump.tankTemperature", label: "Tank temperature" }],
+    control_suggestions: {
+      "heatPump.tankTemperature": {
+        default: {
+          configuration: {
+            actions: [{ service: "water_heater.set_temperature", target: { entityId: "water_heater.tank" } }],
+          },
+        },
+      },
+    },
+  });
+  assert.match(rendered, /Controls/);
+  assert.match(rendered, /Tank temperature/);
+  assert.match(rendered, /water_heater\.set_temperature/);
 });
 
 test("suggested and ambiguous proposals require acceptance and remain fully overridable", () => {

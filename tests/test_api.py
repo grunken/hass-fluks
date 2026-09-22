@@ -260,7 +260,7 @@ async def test_mapping_suggestion_uses_integration_auth_and_attribute_identity()
     request = session.requests[0]
     assert request[0:2] == (
         "POST",
-        f"{API_BASE_URL}/sites/site-id/mappings/suggest",
+        f"{API_BASE_URL}/sites/site-id/mappings/suggestions/input",
     )
     assert request[2]["json"] == {
         "deviceType": "heatPump",
@@ -329,12 +329,67 @@ async def test_mapping_suggestions_batch_uses_integration_auth_and_validates_sou
     request = session.requests[0]
     assert request[0:2] == (
         "POST",
-        f"{API_BASE_URL}/sites/site-id/mappings/suggestions",
+        f"{API_BASE_URL}/sites/site-id/mappings/suggestions/input",
     )
     assert request[2]["json"] == {
         "deviceType": "heatPump",
         "concepts": ["heatPump.energy", "heatPump.temperature"],
         "candidateGroups": groups,
+    }
+    assert request[2]["headers"] == {"Authorization": "Bearer integration-key"}
+
+
+@pytest.mark.asyncio
+async def test_output_mapping_suggestion_uses_labels_and_validates_configuration():
+    """Output suggestions preserve local behavior labels and HA action identity."""
+    actions = [{
+        "entityId": "number.battery_power",
+        "attribute": None,
+        "name": "Battery power",
+        "originalName": None,
+        "sourceType": "state",
+        "domain": "number",
+        "service": "number.set_value",
+        "datatype": "unknown",
+        "fields": {"value": {"type": "number"}},
+    }]
+    configuration = {
+        "version": 1,
+        "actions": [{
+            "type": "serviceCall",
+            "service": "number.set_value",
+            "target": {"entityId": "number.battery_power"},
+            "data": {"value": {"kind": "requestedValue"}},
+        }],
+    }
+    session = FakeSession(FakeResponse(200, {
+        "suggestions": {
+            "charge": {
+                "configuration": configuration,
+                "confidence": 0.94,
+                "explanation": "Use the power setter.",
+            },
+            "hold": {"configuration": None, "confidence": 0, "explanation": None},
+        }
+    }))
+    client = FluksApiClient(session, integration_key="integration-key")
+
+    result = await client.suggest_output_mapping(
+        "site-id", "battery", "battery.power", ["charge", "hold"], actions
+    )
+
+    assert result["charge"]["configuration"] == configuration
+    assert result["hold"]["configuration"] is None
+    request = session.requests[0]
+    assert request[0:2] == (
+        "POST",
+        f"{API_BASE_URL}/sites/site-id/mappings/suggestions/output",
+    )
+    assert request[2]["json"] == {
+        "deviceType": "battery",
+        "concept": "battery.power",
+        "behaviors": ["charge", "hold"],
+        "actions": actions,
     }
     assert request[2]["headers"] == {"Authorization": "Bearer integration-key"}
 

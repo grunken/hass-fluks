@@ -64,6 +64,34 @@ def _catalog():
     }]
 
 
+def _battery_signed_mapping(mode, entity):
+    return {
+        "deviceId": "internal-battery", "concept": "battery.power",
+        "direction": "output", "mode": mode,
+        "configuration": {"version": 1, "actions": [{
+            "type": "serviceCall", "service": "test.execute",
+            "target": {"entityId": entity}, "data": {},
+        }]},
+    }
+
+
+def _battery_signed_api(mappings):
+    api = MagicMock()
+    api.list_devices = AsyncMock(return_value=[{
+        "id": "internal-battery", "deviceId": "external-battery", "type": "battery",
+    }])
+    api.list_mappings = AsyncMock(return_value=mappings)
+    api.get_device_type_catalog = AsyncMock(return_value=[{
+        "type": "battery",
+        "concepts": [{
+            "concept": "battery.power", "datatype": "number",
+            "usages": ["control"],
+            "mappingModes": [None, "release"],
+        }],
+    }])
+    return api
+
+
 def _retry_mapping(*, actions=None):
     return {
         "deviceId": "internal-battery", "concept": "battery.power",
@@ -745,6 +773,81 @@ async def test_heat_pump_temperature_and_tank_temperature_decisions_remain_disti
         ("set_value", {"temperature": 40, "entity_id": "number.flow_target"}),
         ("set_value", {"tankTemperature": 55, "entity_id": "number.tank_target"}),
     ]
+
+
+async def test_battery_power_sign_selects_charge_discharge_and_hold(hass):
+    calls = []
+
+    hass.services.async_register(
+        "test", "execute", lambda call: calls.append(call.data["entity_id"])
+    )
+    executor = RuntimeOutputExecutor(
+        hass,
+        _battery_signed_api([
+            _battery_signed_mapping("charge", "number.charge"),
+            _battery_signed_mapping("discharge", "number.discharge"),
+            _battery_signed_mapping("hold", "button.hold"),
+        ]),
+        "site-a",
+    )
+
+    for value in (1200, -800, 0):
+        await executor.async_handle({
+            "type": "decision.snapshot",
+            "decisions": [{
+                "deviceId": "external-battery", "deviceType": "battery",
+                "power": value, "mode": "target",
+            }],
+        })
+
+    assert calls == ["number.charge", "number.discharge", "button.hold"]
+
+
+async def test_battery_power_release_selects_release_not_hold(hass):
+    calls = []
+    hass.services.async_register(
+        "test", "execute", lambda call: calls.append(call.data["entity_id"])
+    )
+    executor = RuntimeOutputExecutor(
+        hass,
+        _battery_signed_api([
+            _battery_signed_mapping("hold", "button.hold"),
+            _battery_signed_mapping("release", "button.release"),
+        ]),
+        "site-a",
+    )
+
+    await executor.async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "external-battery", "deviceType": "battery",
+            "power": 0, "mode": "release",
+        }],
+    })
+
+    assert calls == ["button.release"]
+
+
+async def test_battery_hold_is_not_used_for_nonzero_power(hass):
+    calls = []
+    hass.services.async_register(
+        "test", "execute", lambda call: calls.append(call.data["entity_id"])
+    )
+    executor = RuntimeOutputExecutor(
+        hass,
+        _battery_signed_api([_battery_signed_mapping("hold", "button.hold")]),
+        "site-a",
+    )
+
+    await executor.async_handle({
+        "type": "decision.snapshot",
+        "decisions": [{
+            "deviceId": "external-battery", "deviceType": "battery",
+            "power": 1, "mode": "target",
+        }],
+    })
+
+    assert calls == []
 
 
 def _ownership_api():
