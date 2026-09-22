@@ -66,7 +66,7 @@ def test_panel_frontend_uses_hass_without_credentials_or_direct_backend_calls():
     assert "this._hass.states" in source
     assert "integrationKey" not in source
     assert "human JWT" not in source
-    assert "energy-api.grunken.dk" not in source
+    assert "app.fluks.one" not in source
     assert "fetch(" not in source
     assert ".callService(" not in source
     assert "history.back()" in source

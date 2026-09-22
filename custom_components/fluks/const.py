@@ -1,7 +1,7 @@
 """Constants for the fluks integration."""
 
 DOMAIN = "fluks"
-API_BASE_URL = "https://energy-api.grunken.dk"
+API_BASE_URL = "https://app.fluks.one"
 API_TIMEOUT_SECONDS = 10
 DATA_RUNTIME = "runtime"
 DATA_OBSERVATIONS = "observations"

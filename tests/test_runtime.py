@@ -81,7 +81,7 @@ async def test_connection_uses_integration_authorization_and_heartbeat():
     runtime.start(asyncio.create_task)
     await _wait_for(lambda: len(session.calls) == 1)
     url, kwargs = session.calls[0]
-    assert url == "wss://energy-api.grunken.dk/ws"
+    assert url == "wss://app.fluks.one/ws"
     assert kwargs["headers"] == {"Authorization": f"Bearer {KEY}"}
     assert kwargs["heartbeat"] == RUNTIME_HEARTBEAT_SECONDS
     assert kwargs["autoping"] is True
