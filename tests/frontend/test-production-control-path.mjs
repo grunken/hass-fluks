@@ -915,7 +915,7 @@ test("configured Battery values take precedence, clear to hints, and remain Batt
 });
 
 test("Solar installed capacity keeps learned suggestion separate and round-trips backend state", async () => {
-  const learned = { "solar.installedKwpEstimated": 14.038032 };
+  const learned = { "solar.maximumKwpObserved": 14.038032 };
   const panel = new Panel();
   panel._context = { translations: {}, entities: [] };
   panel._hass = { states: {}, language: "en", localize: () => undefined };

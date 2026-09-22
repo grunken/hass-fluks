@@ -390,7 +390,7 @@ class FluksControlEditorPanel extends HTMLElement {
     return `<section class="card"><h2>${esc(this._t("device_information"))}</h2><div class="fields three">
       ${[["displayName", "name"], ["vendor", "vendor"], ["model", "model"]].map(([key, label]) => `<label>${esc(this._t(label))}<input data-property="${key}" value="${esc(properties[key] || "")}"></label>`).join("")}</div></section>
       ${deviceType === "solar" ? `<section class="card"><h2>${esc(this._t("installation"))}</h2><div class="fields three">
-      ${physicalField("installedKWp", "solar.installedKwpEstimated", "installed_solar_capacity", "estimated_by_fluks", "kWp", 'min="0"')}
+      ${physicalField("installedKWp", "solar.maximumKwpObserved", "installed_solar_capacity", "estimated_by_fluks", "kWp", 'min="0"')}
       <label>${esc(this._t("direction"))}<input type="number" min="0" max="359.999" data-property="azimuthDegrees" value="${esc(properties.azimuthDegrees ?? "")}"></label>
       <label>${esc(this._t("panel_angle"))}<input type="number" min="0" max="90" data-property="tiltDegrees" value="${esc(properties.tiltDegrees ?? "")}"></label></div></section>` : ""}
       ${deviceType === "spaceHeater" ? `<section class="card"><h2>${esc(this._t("installation"))}</h2><div class="fields three"><label>${esc(this._t("rated_power"))}<span class="property-input"><input type="number" step="any" min="0" data-property="ratedPowerW" value="${esc(properties.ratedPowerW ?? "")}"><span>W</span></span>${validationError ? `<small class="validation-error" role="alert">${esc(this._t("rated_power_required"))}</small>` : ""}</label></div></section>` : ""}
