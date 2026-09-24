@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from homeassistant.core import State
+
 from custom_components.fluks.observations import RealtimeObservationPublisher
 
 
@@ -19,14 +21,18 @@ class MemoryStore:
         self.data = deepcopy(data)
 
 
-def publisher(hass, api, send, store=None, entry_id="entry"):
-    result = RealtimeObservationPublisher(hass, api, "site", entry_id, send)
+def publisher(hass, api, send, store=None, entry_id="entry", cooldown=300):
+    result = RealtimeObservationPublisher(
+        hass, api, "site", entry_id, send, availability_cooldown=cooldown
+    )
     result._store = store or MemoryStore()
     return result
 
 
 def state_event(state, when):
-    return SimpleNamespace(data={"new_state": state}, time_fired=when)
+    return SimpleNamespace(
+        data={"entity_id": state.entity_id, "new_state": state}, time_fired=when
+    )
 
 
 def space_heater_state_mapping(*, power=False, energy=False):
@@ -722,3 +728,181 @@ async def test_real_space_heater_mappings_override_fallback_values(hass):
     assert send.await_args_list[-1].args[0] == {
         "deviceId": "heater-external", "spaceHeater.energy": 12.5
     }
+
+
+def _availability_mapping(concept="solar.power", entity="sensor.source", attribute=None):
+    configuration = {"entityId": entity}
+    if attribute is not None:
+        configuration["attribute"] = attribute
+    return [{
+        "direction": "input",
+        "deviceId": "device-internal",
+        "concept": concept,
+        "configuration": configuration,
+    }]
+
+
+def _availability_api(api, mappings):
+    api.list_devices.return_value = [{
+        "id": "device-internal", "deviceId": "device-external"
+    }]
+    api.list_mappings.return_value = mappings
+
+
+async def test_mapped_source_recovery_before_cooldown_sends_no_availability_event(hass):
+    api = AsyncMock()
+    _availability_api(api, _availability_mapping("solar.power"))
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send, cooldown=300)
+    await observations.async_refresh()
+
+    source = State("sensor.source", "unavailable", {})
+    await observations._async_state_changed(
+        state_event(source, datetime.now(timezone.utc)),
+        {"sensor.source": [("device-external", "solar.power", False, None, None, False)]},
+        {},
+    )
+    assert send.await_count == 0
+    recovered = State("sensor.source", "12", {})
+    await observations._async_state_changed(
+        state_event(recovered, datetime.now(timezone.utc)),
+        {"sensor.source": [("device-external", "solar.power", False, None, None, False)]},
+        {},
+    )
+
+    send.assert_awaited_once_with({"deviceId": "device-external", "solar.power": 12})
+    await observations.async_stop()
+
+
+async def test_mapped_source_unavailable_after_cooldown_is_sent_once(hass):
+    api = AsyncMock()
+    _availability_api(api, _availability_mapping("site.power"))
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send, cooldown=0)
+    await observations.async_refresh()
+    mappings = {
+        "sensor.source": [("device-external", "site.power", False, None, None, False)]
+    }
+    unavailable = State("sensor.source", "unavailable", {})
+    await observations._async_state_changed(
+        state_event(unavailable, datetime.now(timezone.utc)), mappings, {}
+    )
+    await observations._availability_tasks["device-external|site.power"]
+
+    send.assert_awaited_once_with({
+        "site.power": {"deviceId": "device-external", "status": "unavailable"}
+    })
+    await observations._async_state_changed(
+        state_event(unavailable, datetime.now(timezone.utc)), mappings, {}
+    )
+    assert send.await_count == 1
+    await observations.async_stop()
+
+
+async def test_mapped_attribute_recovery_sends_available_after_unavailable(hass):
+    api = AsyncMock()
+    _availability_api(
+        api, _availability_mapping("heatPump.tankTemperature", "climate.tank", "current_temperature")
+    )
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send, cooldown=0)
+    await observations.async_refresh()
+    mappings = {
+        "climate.tank": [(
+            "device-external",
+            "heatPump.tankTemperature",
+            False,
+            "current_temperature",
+            None,
+            False,
+        )]
+    }
+    unavailable = State("climate.tank", "unavailable", {"current_temperature": "unknown"})
+    await observations._async_state_changed(
+        state_event(unavailable, datetime.now(timezone.utc)), mappings, {}
+    )
+    await observations._availability_tasks["device-external|heatPump.tankTemperature"]
+
+    available = State("climate.tank", "heat", {"current_temperature": []})
+    await observations._async_state_changed(
+        state_event(available, datetime.now(timezone.utc)), mappings, {}
+    )
+    assert [call.args[0] for call in send.await_args_list] == [
+        {
+            "heatPump.tankTemperature": {
+                "deviceId": "device-external", "status": "unavailable"
+            }
+        },
+        {
+            "heatPump.tankTemperature": {
+                "deviceId": "device-external", "status": "available"
+            }
+        },
+    ]
+    await observations.async_stop()
+
+
+async def test_valid_observation_recovers_without_separate_available_event(hass):
+    api = AsyncMock()
+    _availability_api(api, _availability_mapping("battery.soc"))
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send, cooldown=0)
+    await observations.async_refresh()
+    mappings = {
+        "sensor.source": [(
+            "device-external", "battery.soc", False, None, None, False
+        )]
+    }
+    await observations._async_state_changed(
+        state_event(State("sensor.source", "unavailable", {}), datetime.now(timezone.utc)),
+        mappings,
+        {},
+    )
+    await observations._availability_tasks["device-external|battery.soc"]
+    await observations._async_state_changed(
+        state_event(State("sensor.source", "57", {}), datetime.now(timezone.utc)),
+        mappings,
+        {},
+    )
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"battery.soc": {"deviceId": "device-external", "status": "unavailable"}},
+        {"deviceId": "device-external", "battery.soc": 57},
+    ]
+    assert observations._availability == {}
+    await observations.async_stop()
+
+
+async def test_unavailable_sent_state_survives_restart(hass):
+    api = AsyncMock()
+    _availability_api(api, _availability_mapping("solar.power"))
+    store = MemoryStore()
+    first_send = AsyncMock(return_value=True)
+    first = publisher(hass, api, first_send, store, cooldown=0)
+    await first.async_refresh()
+    mappings = {
+        "sensor.source": [(
+            "device-external", "solar.power", False, None, None, False
+        )]
+    }
+    await first._async_state_changed(
+        state_event(State("sensor.source", "unavailable", {}), datetime.now(timezone.utc)),
+        mappings,
+        {},
+    )
+    await first._availability_tasks["device-external|solar.power"]
+    await first.async_stop()
+
+    second_send = AsyncMock(return_value=True)
+    second = publisher(hass, api, second_send, store, cooldown=0)
+    await second.async_refresh()
+    assert second._availability == {
+        "device-external|solar.power": {"source": "sensor.source"}
+    }
+    await second._async_state_changed(
+        state_event(State("sensor.source", "9", {}), datetime.now(timezone.utc)),
+        mappings,
+        {},
+    )
+    second_send.assert_awaited_once_with({"deviceId": "device-external", "solar.power": 9})
+    assert "availability" not in store.data
+    await second.async_stop()

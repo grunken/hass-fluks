@@ -142,12 +142,6 @@ async def _mapping_proposals(
     candidate_by_source: dict[tuple[str, str | None], dict[str, Any]] = {}
     for concept in concept_names:
         candidates = suggestion_candidates(prepared, concept)
-        _LOGGER.debug(
-            "fluks Mapping suggestion candidates after compatibility filtering "
-            "for %s: %s",
-            concept,
-            candidates,
-        )
         for candidate in candidates:
             entity_id = candidate.get("entityId")
             if not isinstance(entity_id, str) or not entity_id:
@@ -173,18 +167,10 @@ async def _mapping_proposals(
                 candidate_groups,
             )
         except FluksApiError as err:
-            _LOGGER.debug(
-                "fluks Mapping suggestions batch has no validated result: %s",
-                err.code or type(err).__name__,
-            )
+            _LOGGER.debug("Mapping suggestions unavailable: %s", err.code or type(err).__name__)
 
     for concept in concept_names:
         result = suggestions.get(concept)
-        _LOGGER.debug(
-            "fluks Mapping suggestion result after validation for %s: %s",
-            concept,
-            result,
-        )
         if not isinstance(result, dict):
             continue
         entity_id = result.get("entityId")
@@ -203,12 +189,6 @@ async def _mapping_proposals(
         prepared=prepared,
         selected_sources=selected_sources,
     )
-    for concept in prepared.definitions:
-        _LOGGER.debug(
-            "fluks Mapping suggestion final proposal for %s: %s",
-            concept,
-            proposals.get(concept),
-        )
     return proposals
 
 
@@ -704,6 +684,7 @@ def _present_entities(hass: HomeAssistant, registry) -> list[dict[str, Any]]:
         vol.Required("type"): COMMAND_DEVICE_DETAIL,
         **BASE_SCHEMA,
         vol.Required("device_id"): str,
+        vol.Optional("suggestions", default=False): bool,
     }
 )
 @websocket_api.require_admin
@@ -763,7 +744,7 @@ async def websocket_device_detail(hass, connection, msg):
                     for name, mapping in existing.items()
                 },
             )
-            if ha_device_id
+            if msg.get("suggestions") and ha_device_id
             else {}
         )
         translations = await _panel_translations(hass)
@@ -841,41 +822,23 @@ async def websocket_add_review(hass, connection, msg):
         if msg["device_type"] == "solar":
             properties.update(_forecast_solar_prefill(hass))
         translations = await _panel_translations(hass)
-        control_suggestions: dict[str, dict[str, dict[str, Any]]] = {}
-        action_candidates = await _control_action_candidates(hass, msg["ha_device_id"])
-        if action_candidates:
-            for control in controls:
-                behaviors = _control_behaviors(control)
-                if not behaviors:
-                    continue
-                try:
-                    control_suggestions[control["concept"]] = await _output_suggestions(
-                        api,
-                        entry.data[CONF_SITE_ID],
-                        msg["device_type"],
-                        control["concept"],
-                        behaviors,
-                        action_candidates,
-                    )
-                except FluksApiError as err:
-                    _LOGGER.debug(
-                        "fluks Add review output suggestion unavailable for %s: %s",
-                        control["concept"],
-                        err.code or type(err).__name__,
-                    )
         connection.send_result(
             msg["id"],
             {
                 "concepts": _present_concepts(concepts, translations),
                 "controls": _present_concepts(controls, translations),
-                "control_suggestions": control_suggestions,
-                "proposals": await _mapping_proposals(
-                    hass,
-                    api,
-                    entry.data[CONF_SITE_ID],
-                    msg["device_type"],
-                    concepts,
-                    msg["ha_device_id"],
+                "control_suggestions": {},
+                "proposals": (
+                    await _mapping_proposals(
+                        hass,
+                        api,
+                        entry.data[CONF_SITE_ID],
+                        msg["device_type"],
+                        concepts,
+                        msg["ha_device_id"],
+                    )
+                    if concepts
+                    else {}
                 ),
                 "properties": properties,
             },

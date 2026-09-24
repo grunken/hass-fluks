@@ -17,6 +17,7 @@ class FluksControlEditorPanel extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._view = { name: "home" };
+    this._viewToken = 0;
     this._pendingControl = undefined;
     this._spaceHeaterValidationError = false;
     this._mappingSuggestionsLoading = false;
@@ -25,9 +26,8 @@ class FluksControlEditorPanel extends HTMLElement {
     this._clearedInputConcepts = new Set();
     this._proposalDraftConcepts = new Set();
     this._popstate = () => {
-      this._view = history.state?.fluksView ?? { name: "home" };
-      this._detail = this._draft = undefined;
-      this._loadView();
+      const token = this._beginView(history.state?.fluksView ?? { name: "home" });
+      this._loadView(token);
     };
   }
 
@@ -48,7 +48,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._outputSuggestions.clear();
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
-      this._view = { name: "home" };
+      this._beginView({ name: "home" });
     }
     if (this.isConnected) this._loadContext();
   }
@@ -92,34 +92,80 @@ class FluksControlEditorPanel extends HTMLElement {
     if (!customElements.get(CONTROL_ACTION_EDITOR_TAG)) customElements.define(CONTROL_ACTION_EDITOR_TAG, FluksControlActionEditor);
   }
   _go(view, replace = false) {
-    this._view = view; this._detail = this._draft = undefined;
+    const token = this._beginView(view);
     const state = { ...(history.state || {}), fluksView: view };
     (replace ? history.replaceState : history.pushState).call(history, state, "");
-    this._loadView();
+    this._loadView(token);
   }
-  async _loadView() {
-    if (!this._context) return;
-    if (["device", "edit", "controls", "control", "site-information", "delete-device"].includes(this._view.name)) {
-      const loadingSuggestions = this._view.name === "edit";
-      if (loadingSuggestions) {
-        this._mappingSuggestionsLoading = true;
-        this._error = undefined;
-        this._mappingSuggestionsMessage();
-      }
-      try { this._detail = await this._call("fluks/config/device", { device_id: this._view.deviceId }); }
-      catch (_) { return this._message(this._error); }
-      finally {
-        if (loadingSuggestions) this._mappingSuggestionsLoading = false;
-      }
+  _beginView(view) {
+    this._viewToken += 1;
+    this._view = view;
+    this._detail = this._draft = undefined;
+    if (view.name === "edit") {
+      this._inputDraft = undefined;
+      this._inputDraftDevice = undefined;
+      this._editProperties = undefined;
+      this._clearedInputConcepts.clear();
+      this._proposalDraftConcepts.clear();
     }
-    if (this._view.name === "control") {
+    if (view.name === "control") {
+      const key = `${view.deviceId}:${view.concept}`;
+      this._outputSuggestionRequests.delete(key);
+      this._outputSuggestions.delete(key);
+    }
+    return this._viewToken;
+  }
+  _isCurrentView(token) {
+    return token === this._viewToken;
+  }
+  async _loadView(token = this._viewToken) {
+    if (!this._context || !this._isCurrentView(token)) return;
+    const view = this._view;
+    if (["device", "edit", "controls", "control", "site-information", "delete-device"].includes(view.name)) {
+      try {
+        this._detail = await this._call("fluks/config/device", {
+          device_id: view.deviceId,
+          suggestions: false,
+        });
+      } catch (_) { return this._message(this._error); }
+      if (!this._isCurrentView(token)) return;
+    }
+    if (view.name === "control") {
       try {
         await this._ensureControlActionEditor();
         this._controlCapabilities = (await this._call("fluks/config/control_capabilities")).actions;
       }
       catch (_) { return this._message(this._error); }
+      if (!this._isCurrentView(token)) return;
     }
     this._render();
+    if (view.name === "edit" && this._isCurrentView(token) && this._hasUnmappedInputConcepts(this._detail)) {
+      this._loadInputSuggestions(view.deviceId, token).catch(() => {});
+    }
+  }
+  _hasUnmappedInputConcepts(detail) {
+    const concepts = Array.isArray(detail?.concepts) ? detail.concepts : [];
+    const mappings = detail?.mappings && typeof detail.mappings === "object" ? detail.mappings : {};
+    return concepts.some((concept) => {
+      if (!concept?.concept) return false;
+      return !mappings[concept.concept]?.configuration?.entityId;
+    });
+  }
+  async _loadInputSuggestions(deviceId, token = this._viewToken) {
+    let detail;
+    try {
+      detail = await this._call("fluks/config/device", {
+        device_id: deviceId,
+        suggestions: true,
+      });
+    } catch (_) {
+      // Suggestions are advisory; keep the already-rendered manual editor usable.
+      this._error = undefined;
+      return;
+    }
+    if (!this._isCurrentView(token) || this._view.name !== "edit" || this._view.deviceId !== deviceId || !this._detail) return;
+    this._detail = { ...this._detail, proposals: detail?.proposals ?? {} };
+    this._renderEdit();
   }
   _render() {
     return ({
@@ -365,9 +411,10 @@ class FluksControlEditorPanel extends HTMLElement {
   _proposalChoice(concept, proposal) {
     const source = proposal.source ?? {};
     const entity = this._entityRecord(source.entityId);
-    if (!entity) return "";
+    const displayName = entity?.name || source.entityId;
+    if (!displayName) return "";
     const detail = [source.attribute || this._t("entity_state"), source.entityId].filter(Boolean).join(" · ");
-    return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(entity.name)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
+    return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(displayName)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
   }
   _editableDeviceProperties(properties, deviceType) {
     const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
@@ -739,7 +786,7 @@ class FluksControlEditorPanel extends HTMLElement {
     editor.outputSuggestionsLoading = false;
     if (!this._outputSuggestionRequests.has(key) && typeof this._hass?.callWS === "function") {
       editor.outputSuggestionsLoading = true;
-      this._loadOutputSuggestions(key, control, editor).catch(() => {});
+      this._loadOutputSuggestions(key, control, editor, this._viewToken).catch(() => {});
     }
     editor.addEventListener("control-saved", async (e) => {
       this._pendingControl = { key, behaviors: e.detail.behaviors };
@@ -831,19 +878,18 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     return candidates;
   }
-  async _loadOutputSuggestions(key, control, editor) {
+  async _loadOutputSuggestions(key, control, editor, token = this._viewToken) {
     this._outputSuggestionRequests.add(key);
     try {
       const descriptors = this._outputBehaviorDescriptors(editor);
       const actions = this._outputActionCandidates(editor);
-      if (!descriptors.length || !actions.length) return;
       const response = await this._call("fluks/config/control_suggestions", {
         device_id: this._detail.id,
         concept: control.concept,
         behaviors: descriptors.map((item) => item.behavior),
         actions,
       });
-      if (this._view.name !== "control" || this._view.deviceId !== this._detail.id || this._view.concept !== control.concept) return;
+      if (!this._isCurrentView(token) || this._view.name !== "control" || this._view.deviceId !== this._detail.id || this._view.concept !== control.concept) return;
       const byBehavior = Object.fromEntries(Object.entries(response.suggestions ?? {}).map(([behavior, suggestion]) => {
         const descriptor = descriptors.find((item) => item.behavior === behavior);
         return descriptor ? [behavior, { ...suggestion, behavior, label: descriptor.label, mode: descriptor.mode, valueCondition: descriptor.valueCondition }] : null;

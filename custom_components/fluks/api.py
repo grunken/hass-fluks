@@ -496,11 +496,6 @@ class FluksApiClient:
             "behaviors": behaviors,
             "actions": actions,
         }
-        _LOGGER.warning(
-            "fluks output Mapping suggestion outgoing request: POST %s payload=%s",
-            f"{self._base_url}/sites/{site_id}/mappings/suggestions/output",
-            request_body,
-        )
         result = await self._request(
             "POST",
             f"/sites/{site_id}/mappings/suggestions/output",

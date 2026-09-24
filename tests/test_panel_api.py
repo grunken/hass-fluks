@@ -609,28 +609,12 @@ async def test_add_review_uses_backend_choice_from_existing_filtered_candidates(
     assert proposal["classification"] == "suggest"
 
 
-async def test_add_review_exposes_controls_and_suggests_selected_device_actions(hass):
-    """Add review includes controls without requiring a persisted output Mapping."""
+async def test_add_review_exposes_controls_without_preloading_suggestions(hass):
+    """Add review exposes controls without preloading output suggestions."""
     entry = make_entry(hass)
     api = MagicMock(spec=FluksApiClient)
     api.suggest_mappings = AsyncMock(return_value={})
-    api.suggest_output_mapping = AsyncMock(
-        return_value={
-            "default": {
-                "configuration": {
-                    "version": 1,
-                    "actions": [{
-                        "type": "serviceCall",
-                        "service": "water_heater.turn_on",
-                        "target": {"entityId": "water_heater.tank"},
-                        "data": {},
-                    }],
-                },
-                "confidence": 0.9,
-                "explanation": "Use the tank action.",
-            }
-        }
-    )
+    api.suggest_output_mapping = AsyncMock()
     catalog = {
         "heatPump": {
             "type": "heatPump",
@@ -680,14 +664,8 @@ async def test_add_review_exposes_controls_and_suggests_selected_device_actions(
 
     result = conn.send_result.call_args.args[1]
     assert [item["concept"] for item in result["controls"]] == ["heatPump.tankTemperature"]
-    assert result["control_suggestions"]["heatPump.tankTemperature"]["default"]["confidence"] == 0.9
-    api.suggest_output_mapping.assert_awaited_once()
-    assert api.suggest_output_mapping.await_args.args[:4] == (
-        "site-a", "heatPump", "heatPump.tankTemperature", ["default"]
-    )
-    assert [item["entityId"] for item in api.suggest_output_mapping.await_args.args[4]] == [
-        "water_heater.tank"
-    ]
+    assert result["control_suggestions"] == {}
+    api.suggest_output_mapping.assert_not_awaited()
 
 
 async def test_device_detail_uses_backend_attribute_choice(hass):
@@ -783,6 +761,7 @@ async def test_device_detail_uses_backend_attribute_choice(hass):
                 "type": COMMAND_DEVICE_DETAIL,
                 "entry_id": entry.entry_id,
                 "device_id": "device-a",
+                "suggestions": True,
             },
         )
         await hass.async_block_till_done()
@@ -809,6 +788,53 @@ async def test_device_detail_uses_backend_attribute_choice(hass):
         "unit": "°C",
     }
     assert proposal["classification"] == "suggest"
+
+
+async def test_device_detail_does_not_request_suggestions_without_explicit_refresh(hass):
+    """Overview/detail data loads without spending on mapping suggestions."""
+    entry = make_entry(hass)
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "device-a", "type": "battery", "properties": {}}
+    )
+    api.list_mappings = AsyncMock(return_value=[])
+    api.suggest_mappings = AsyncMock(return_value={})
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._catalog",
+            AsyncMock(
+                return_value={
+                    "battery": {
+                        "type": "battery",
+                        "concepts": [{
+                            "concept": "battery.energy",
+                            "datatype": "number",
+                            "unit": "kWh",
+                            "usages": ["fact"],
+                            "source": "mapping",
+                        }],
+                    }
+                }
+            ),
+        ),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={})),
+    ):
+        websocket_device_detail(
+            hass,
+            conn,
+            {
+                "id": 65,
+                "type": COMMAND_DEVICE_DETAIL,
+                "entry_id": entry.entry_id,
+                "device_id": "device-a",
+            },
+        )
+        await hass.async_block_till_done()
+
+    api.suggest_mappings.assert_not_awaited()
+    assert conn.send_result.call_args.args[1]["proposals"] == {}
 
 
 async def test_device_save_reconciles_property_and_mapping_diffs_incrementally(hass):
@@ -1171,7 +1197,7 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
         websocket_device_detail(
             hass,
             conn,
-            {"id": 8, "type": COMMAND_DEVICE_DETAIL, "entry_id": entry.entry_id, "device_id": "device-a"},
+            {"id": 8, "type": COMMAND_DEVICE_DETAIL, "entry_id": entry.entry_id, "device_id": "device-a", "suggestions": True},
         )
         await hass.async_block_till_done()
 
@@ -1244,6 +1270,7 @@ async def test_explicitly_cleared_suggestion_stays_unmapped(hass):
                 "type": COMMAND_DEVICE_DETAIL,
                 "entry_id": entry.entry_id,
                 "device_id": "device-a",
+                "suggestions": True,
             },
         )
         await hass.async_block_till_done()

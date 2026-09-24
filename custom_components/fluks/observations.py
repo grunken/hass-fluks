@@ -7,7 +7,7 @@ import logging
 import math
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -27,6 +27,7 @@ TEMPERATURE_UNITS = {
     UnitOfTemperature.FAHRENHEIT,
     UnitOfTemperature.KELVIN,
 }
+AVAILABILITY_COOLDOWN = timedelta(minutes=5)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -102,6 +103,8 @@ class RealtimeObservationPublisher:
         site_id: str,
         entry_id: str,
         send: Callable[[dict[str, Any]], Awaitable[bool]],
+        *,
+        availability_cooldown: float = AVAILABILITY_COOLDOWN.total_seconds(),
     ) -> None:
         self._hass = hass
         self._api = api
@@ -116,6 +119,10 @@ class RealtimeObservationPublisher:
         self._lifetime: dict[str, dict[str, str | None]] = {}
         self._derived: dict[str, dict[str, str | None]] = {}
         self._derived_needs_rebaseline: set[str] = set()
+        self._availability: dict[str, dict[str, str]] = {}
+        self._availability_tasks: dict[str, asyncio.Task[None]] = {}
+        self._availability_task_sources: dict[str, str] = {}
+        self._availability_cooldown = availability_cooldown
         self._loaded = False
         self._unsubscribe: Callable[[], None] | None = None
         self._refresh_lock = asyncio.Lock()
@@ -147,12 +154,24 @@ class RealtimeObservationPublisher:
                 and isinstance(value.get("source"), str)
             }
             self._derived_needs_rebaseline = set(self._derived)
+        availability = stored.get("availability", {})
+        if isinstance(availability, dict):
+            self._availability = {
+                str(key): {
+                    "source": str(value["source"]),
+                }
+                for key, value in availability.items()
+                if isinstance(value, dict)
+                and isinstance(value.get("source"), str)
+            }
         self._loaded = True
 
     def _store_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"streams": self._lifetime}
         if self._derived:
             payload["derived"] = self._derived
+        if self._availability:
+            payload["availability"] = self._availability
         return payload
 
     @staticmethod
@@ -276,6 +295,7 @@ class RealtimeObservationPublisher:
                 list[tuple[str, str, bool, str | None, str | None, bool]],
             ] = defaultdict(list)
             configured: dict[str, set[str]] = defaultdict(set)
+            active_sources: dict[str, str] = {}
             state_sources: dict[str, tuple[str, str | None]] = {}
             baselines: list[tuple[str, str, str, str | None]] = []
             for mapping in mappings:
@@ -296,6 +316,9 @@ class RealtimeObservationPublisher:
                 concept = mapping["concept"]
                 internal_id = str(mapping["deviceId"])
                 configured[internal_id].add(concept)
+                active_sources[self._stream_key(external_id, concept)] = self._source_id(
+                    entity_id, attribute
+                )
                 if concept == "spaceHeater.state":
                     state_sources[internal_id] = (entity_id, attribute)
                 cumulative = (
@@ -315,6 +338,16 @@ class RealtimeObservationPublisher:
                 source = self._source_id(entity_id, attribute)
                 if cumulative and (stream is None or stream.get("source") != source):
                     baselines.append((entity_id, external_id, concept, attribute))
+            for key in list(self._availability_tasks):
+                if key not in active_sources:
+                    self._cancel_availability_task(key)
+                elif self._availability_task_sources.get(key) != active_sources[key]:
+                    self._cancel_availability_task(key)
+            stale_availability = set(self._availability) - set(active_sources)
+            if stale_availability:
+                for key in stale_availability:
+                    self._availability.pop(key, None)
+                await self._store.async_save(self._store_payload())
             derived_by_entity: dict[
                 str,
                 list[tuple[str, bool, bool, Decimal, str | None]],
@@ -368,6 +401,104 @@ class RealtimeObservationPublisher:
                         attribute,
                     )
 
+    @staticmethod
+    def _source_unavailable(state: State, attribute: str | None) -> bool:
+        """Return whether a mapped state/attribute cannot currently be read."""
+        if isinstance(state.state, str) and state.state.strip().lower() in INVALID_STATES:
+            return True
+        if attribute is None:
+            value = state.state
+        else:
+            if attribute not in state.attributes:
+                return True
+            value = state.attributes[attribute]
+        if value is None:
+            return True
+        return isinstance(value, str) and value.strip().lower() in INVALID_STATES
+
+    def _cancel_availability_task(self, key: str) -> None:
+        task = self._availability_tasks.pop(key, None)
+        self._availability_task_sources.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _async_schedule_unavailable(
+        self,
+        key: str,
+        device_id: str,
+        concept: str,
+        source: str,
+    ) -> None:
+        """Start one bounded cooldown for a mapped source."""
+        persisted = self._availability.get(key)
+        if persisted is not None:
+            if persisted.get("source") == source:
+                return
+            self._availability.pop(key, None)
+            await self._store.async_save(self._store_payload())
+
+        existing = self._availability_tasks.get(key)
+        if existing is not None and not existing.done():
+            if self._availability_task_sources.get(key) == source:
+                return
+            self._cancel_availability_task(key)
+
+        async def _cooldown() -> None:
+            try:
+                await asyncio.sleep(self._availability_cooldown)
+                if self._stopped:
+                    return
+                sent = await self._send(
+                    {concept: {"deviceId": device_id, "status": "unavailable"}}
+                )
+                if not sent:
+                    return
+                async with self._state_lock:
+                    self._availability[key] = {"source": source}
+                    await self._store.async_save(self._store_payload())
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001 - availability must not break publishing
+                _LOGGER.debug("Unable to publish fluks unavailable event", exc_info=True)
+            finally:
+                task = asyncio.current_task()
+                if self._availability_tasks.get(key) is task:
+                    self._availability_tasks.pop(key, None)
+                    self._availability_task_sources.pop(key, None)
+
+        task = asyncio.create_task(_cooldown(), name="fluks observation availability")
+        self._availability_tasks[key] = task
+        self._availability_task_sources[key] = source
+
+    async def _async_complete_availability(
+        self,
+        key: str,
+        device_id: str,
+        concept: str,
+        source: str,
+        normal_published: bool,
+    ) -> None:
+        """Cancel cooldowns and recover a previously announced source."""
+        self._cancel_availability_task(key)
+        persisted = self._availability.get(key)
+        if persisted is None or persisted.get("source") != source:
+            return
+        self._availability.pop(key, None)
+        await self._store.async_save(self._store_payload())
+        if normal_published:
+            return
+        try:
+            sent = await self._send(
+                {concept: {"deviceId": device_id, "status": "available"}}
+            )
+            if not sent:
+                self._availability[key] = {"source": source}
+                await self._store.async_save(self._store_payload())
+        except Exception:  # noqa: BLE001 - recovery must not break publishing
+            _LOGGER.debug("Unable to publish fluks available event", exc_info=True)
+            self._availability[key] = {"source": source}
+            await self._store.async_save(self._store_payload())
+
     async def _async_state_changed(
         self,
         event: Event,
@@ -378,7 +509,19 @@ class RealtimeObservationPublisher:
         derived: dict[str, list[tuple[str, bool, bool, Decimal, str | None]]],
     ) -> None:
         state: State | None = event.data.get("new_state")
-        if self._stopped or state is None:
+        entity_id = event.data.get("entity_id")
+        if self._stopped or not isinstance(entity_id, str):
+            return
+        if state is None:
+            for device_id, concept, _cumulative, attribute, _unit, _declares_unit in (
+                mappings.get(entity_id, [])
+            ):
+                await self._async_schedule_unavailable(
+                    self._stream_key(device_id, concept),
+                    device_id,
+                    concept,
+                    self._source_id(entity_id, attribute),
+                )
             return
         for (
             device_id,
@@ -387,10 +530,20 @@ class RealtimeObservationPublisher:
             attribute,
             temperature_unit,
             mapping_declares_unit,
-        ) in mappings.get(state.entity_id, []):
+        ) in mappings.get(entity_id, []):
+            key = self._stream_key(device_id, concept)
+            source = self._source_id(state.entity_id, attribute)
+            if self._source_unavailable(state, attribute):
+                await self._async_schedule_unavailable(
+                    key, device_id, concept, source
+                )
+                continue
             if cumulative:
-                await self._async_publish_cumulative(
+                published = await self._async_publish_cumulative(
                     state, device_id, concept, attribute
+                )
+                await self._async_complete_availability(
+                    key, device_id, concept, source, published
                 )
                 continue
             try:
@@ -403,8 +556,14 @@ class RealtimeObservationPublisher:
                     )
                 )
             except (TypeError, ValueError):
+                await self._async_complete_availability(
+                    key, device_id, concept, source, False
+                )
                 continue
-            await self._send({"deviceId": device_id, concept: value})
+            published = bool(await self._send({"deviceId": device_id, concept: value}))
+            await self._async_complete_availability(
+                key, device_id, concept, source, published
+            )
         for device_id, power, energy, rated, attribute in derived.get(
             state.entity_id, []
         ):
@@ -502,11 +661,11 @@ class RealtimeObservationPublisher:
         device_id: str,
         concept: str,
         attribute: str | None = None,
-    ) -> None:
+    ) -> bool:
         try:
             raw = self._decimal_value(state, attribute)
         except ValueError:
-            return
+            return False
         key = self._stream_key(device_id, concept)
         marker = self._reset_marker(state)
         async with self._state_lock:
@@ -542,9 +701,9 @@ class RealtimeObservationPublisher:
                     "last_reset": marker,
                 }
                 await self._store.async_save(self._store_payload())
-        await self._send(
+        return bool(await self._send(
             {"deviceId": device_id, concept: self._json_decimal(lifetime)}
-        )
+        ))
 
     @staticmethod
     def _source_id(entity_id: str, attribute: str | None) -> str:
@@ -556,6 +715,14 @@ class RealtimeObservationPublisher:
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
+        tasks = list(self._availability_tasks.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._availability_tasks.clear()
+        self._availability_task_sources.clear()
 
 
 async def async_refresh_observations(hass: HomeAssistant, entry_id: str) -> None:

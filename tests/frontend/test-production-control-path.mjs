@@ -452,6 +452,140 @@ test("mapping suggestions show loading state and prevent duplicate Add requests"
   assert.equal(panel._mappingSuggestionsLoading, false);
 });
 
+test("Edit mappings renders immediately and refreshes only missing input suggestions", async () => {
+  const panel = new Panel();
+  panel._entryId = "entry";
+  panel._context = { translations: {} };
+  panel._view = { name: "edit", deviceId: "device-1" };
+  const requests = [];
+  let resolveSuggestions;
+  const suggestions = new Promise((resolve) => { resolveSuggestions = resolve; });
+  panel._hass = {
+    callWS: async (message) => {
+      requests.push(message);
+      return requests.length === 1
+        ? { id: "device-1", concepts: [{ concept: "heatPump.energy" }], mappings: {}, proposals: {}, properties: {} }
+        : suggestions;
+    },
+    localize: () => undefined,
+  };
+  const renderedProposals = [];
+  panel._renderEdit = () => renderedProposals.push(panel._detail.proposals);
+
+  await panel._loadView();
+  assert.equal(renderedProposals.length, 1);
+  assert.deepEqual(renderedProposals[0], {});
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].suggestions, false);
+  assert.equal(requests[1].suggestions, true);
+
+  resolveSuggestions({ proposals: {
+    "heatPump.energy": { source: { entityId: "sensor.energy" }, classification: "suggest" },
+  } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(renderedProposals.at(-1), {
+    "heatPump.energy": { source: { entityId: "sensor.energy" }, classification: "suggest" },
+  });
+});
+
+test("re-entering Edit mappings requests the current device every time", async () => {
+  const panel = new Panel();
+  panel._entryId = "entry";
+  panel._context = { translations: {} };
+  panel._render = () => {};
+  const requests = [];
+  panel._hass = {
+    callWS: async (message) => {
+      requests.push(message);
+      return { id: message.device_id, concepts: [{ concept: "heatPump.energy" }], mappings: {}, proposals: {}, properties: {} };
+    },
+  };
+  const openEdit = async (deviceId) => {
+    const token = panel._beginView({ name: "edit", deviceId });
+    await panel._loadView(token);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  await openEdit("device-a");
+  panel._beginView({ name: "home" });
+  await openEdit("device-a");
+  panel._beginView({ name: "home" });
+  await openEdit("device-b");
+
+  const suggestionRequests = requests.filter((item) => item.suggestions === true);
+  assert.deepEqual(suggestionRequests.map((item) => item.device_id), ["device-a", "device-a", "device-b"]);
+});
+
+test("Edit mappings does not request suggestions when every input is already mapped", async () => {
+  const panel = new Panel();
+  panel._entryId = "entry";
+  panel._context = { translations: {} };
+  panel._render = () => {};
+  const requests = [];
+  panel._hass = {
+    callWS: async (message) => {
+      requests.push(message);
+      return {
+        id: "device-a",
+        concepts: [{ concept: "heatPump.energy" }],
+        mappings: { "heatPump.energy": { configuration: { entityId: "sensor.energy" } } },
+        proposals: {},
+        properties: {},
+      };
+    },
+  };
+  const token = panel._beginView({ name: "edit", deviceId: "device-a" });
+  await panel._loadView(token);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].suggestions, false);
+});
+
+test("re-entering Controls requests only the opened control suggestion", async () => {
+  const panel = new Panel();
+  panel._context = { translations: {}, entities: [{ entity_id: "number.control", device_id: "ha-device" }] };
+  const requests = [];
+  panel._hass = {
+    states: {}, language: "en", localize: () => undefined,
+    callWS: async (message) => {
+      requests.push(message);
+      return { suggestions: {} };
+    },
+  };
+  panel._controlCapabilities = [{
+    service: "number.set_value", name: "Set value",
+    entities: [{ entity_id: "number.control", name: "Control", fields: [] }],
+  }];
+  panel._frame = () => {
+    const editor = new Editor();
+    panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null;
+  };
+  const openControl = async (concept) => {
+    panel._beginView({ name: "control", deviceId: "device", concept });
+    panel._detail = {
+      id: "device", ha_device_id: "ha-device", type_name: "Device",
+      controls: [
+        { concept: "heatPump.tankTemperature", label: "Tank", datatype: "number", unit: "°C", mappingModes: [null] },
+        { concept: "heatPump.temperature", label: "Temperature", datatype: "number", unit: "°C", mappingModes: [null] },
+      ],
+      output_mappings: {},
+    };
+    panel._renderControl();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  await openControl("heatPump.tankTemperature");
+  panel._beginView({ name: "controls", deviceId: "device" });
+  await openControl("heatPump.tankTemperature");
+  panel._beginView({ name: "controls", deviceId: "device" });
+  await openControl("heatPump.temperature");
+
+  assert.deepEqual(
+    requests.map((item) => item.concept),
+    ["heatPump.tankTemperature", "heatPump.tankTemperature", "heatPump.temperature"],
+  );
+});
+
 test("Add review exposes controls and their advisory output suggestions", () => {
   const panel = new Panel();
   panel._context = { translations: {
@@ -528,6 +662,20 @@ test("suggested and ambiguous proposals require acceptance and remain fully over
       version: 1, entityId: "sensor.manual_power",
     });
   }
+});
+
+test("backend proposal renders when its entity is absent from local records", () => {
+  const panel = new Panel();
+  panel._context = { translations: { suggested_match: "Suggested match", use_suggestion: "Use", entity_state: "State" }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  const rendered = panel._proposalChoice("heatPump.energy", {
+    source: { entityId: "sensor.naervarme_accumulated_consumption" },
+    configuration: { version: 1, entityId: "sensor.naervarme_accumulated_consumption", unit: "kWh" },
+    classification: "suggest",
+  });
+  assert.match(rendered, /sensor\.naervarme_accumulated_consumption/);
+  assert.match(rendered, /Suggested match/);
+  assert.match(rendered, /Use/);
 });
 
 test("production action dialog selects a global Entity before compatible Action", () => {
