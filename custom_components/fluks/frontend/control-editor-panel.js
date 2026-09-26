@@ -22,6 +22,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._pendingControl = undefined;
     this._spaceHeaterValidationError = false;
     this._mappingSuggestionsLoading = false;
+    this._inputSuggestionsLoading = false;
     this._outputSuggestionRequests = new Set();
     this._outputSuggestions = new Map();
     this._clearedInputConcepts = new Set();
@@ -50,6 +51,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._pendingControl = undefined;
       this._spaceHeaterValidationError = false;
       this._mappingSuggestionsLoading = false;
+      this._inputSuggestionsLoading = false;
       this._outputSuggestionRequests.clear();
       this._outputSuggestions.clear();
       this._clearedInputConcepts.clear();
@@ -192,6 +194,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._viewToken += 1;
     this._view = view;
     this._detail = this._draft = undefined;
+    this._inputSuggestionsLoading = false;
     if (view.name === "edit") {
       this._inputDraft = undefined;
       this._inputDraftDevice = undefined;
@@ -243,6 +246,9 @@ class FluksControlEditorPanel extends HTMLElement {
     });
   }
   async _loadInputSuggestions(deviceId, token = this._viewToken) {
+    if (!this._isCurrentView(token) || this._view.name !== "edit" || this._view.deviceId !== deviceId || !this._detail) return;
+    this._inputSuggestionsLoading = true;
+    this._renderEdit();
     let detail;
     try {
       detail = await this._call("fluks/config/device", {
@@ -252,11 +258,12 @@ class FluksControlEditorPanel extends HTMLElement {
     } catch (_) {
       // Suggestions are advisory; keep the already-rendered manual editor usable.
       this._error = undefined;
-      return;
     }
-    if (!this._isCurrentView(token) || this._view.name !== "edit" || this._view.deviceId !== deviceId || !this._detail) return;
-    this._detail = { ...this._detail, proposals: detail?.proposals ?? {} };
-    this._renderEdit();
+    if (this._isCurrentView(token) && this._view.name === "edit" && this._view.deviceId === deviceId && this._detail) {
+      if (detail) this._detail = { ...this._detail, proposals: detail.proposals ?? {} };
+      this._inputSuggestionsLoading = false;
+      this._renderEdit();
+    }
   }
   _render() {
     return ({
@@ -275,8 +282,12 @@ class FluksControlEditorPanel extends HTMLElement {
     this.shadowRoot.querySelector("#back")?.addEventListener("click", () => history.back());
   }
   _message(message) { this._frame("fluks", `<section class="card"><p>${esc(message)}</p></section>`); }
+  _mappingSuggestionsLoader(inline = false) {
+    if (inline) return `<div class="mapping-loading mapping-loading-inline" role="status" aria-live="polite"><span class="loading-spinner" aria-hidden="true"></span><strong>${esc(this._t("finding_best_match"))}</strong></div>`;
+    return `<section class="card mapping-loading" role="status" aria-live="polite"><span class="loading-spinner" aria-hidden="true"></span><div><strong>${esc(this._t("finding_best_match"))}</strong><p>${esc(this._t("finding_best_match_description"))}</p></div></section>`;
+  }
   _mappingSuggestionsMessage() {
-    this._frame(this._t("edit_mappings"), `<section class="card mapping-loading" role="status" aria-live="polite"><p>${esc(this._t("loading_mapping_suggestions"))}</p></section>`, true);
+    this._frame(this._t("edit_mappings"), this._mappingSuggestionsLoader(), true);
   }
 
   _iconPath(type) {
@@ -712,7 +723,7 @@ class FluksControlEditorPanel extends HTMLElement {
       };
     }
     const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(this._detail.type, this._inputDraft, this._editProperties);
-    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div></div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError)}${this._actions("save_mapping")}`, true);
+    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div>${this._inputSuggestionsLoading ? this._mappingSuggestionsLoader(true) : ""}</div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError)}${this._actions("save_mapping")}`, true);
     this._wirePickers();
     this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => this._cancelEdit();
@@ -753,7 +764,7 @@ class FluksControlEditorPanel extends HTMLElement {
       const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(type.type, this._inputDraft, this._draft.properties);
       body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._renderAddControlSuggestions(this._draft)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError)}`;
     }
-    if (this._mappingSuggestionsLoading) body += `<section class="card mapping-loading" role="status" aria-live="polite"><p>${esc(this._t("loading_mapping_suggestions"))}</p></section>`;
+    if (this._mappingSuggestionsLoading) body += this._mappingSuggestionsLoader();
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
     this._frame(type ? `${this._t("add_device")} · ${type.name}` : this._t("add_device"), body, true);
     this.shadowRoot.querySelectorAll("[data-type]").forEach((node) => node.onclick = () => {
@@ -1071,7 +1082,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .icon{border:0;background:transparent;font-size:25px;padding:4px;width:42px;min-width:42px}.overflow{margin-left:auto;font-weight:700}.section-title,.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}.actions{justify-content:flex-end;margin:22px 0 0}
     .row{width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}
     .device-icon{display:block;object-fit:contain;flex:none}.device-icon.list{width:38px;height:38px}.device-icon.hero{width:62px;height:62px}.device-icon.header{width:50px;height:50px}.device-icon.picker{width:70px;height:70px}
-    .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800);animation:fluks-runtime-pulse 1.6s ease-in-out infinite}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}
+    .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800);animation:fluks-runtime-pulse 1.6s ease-in-out infinite}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}.mapping-loading{display:flex;align-items:center;gap:14px}.mapping-loading strong{display:block;margin-bottom:3px}.mapping-loading p{margin:0;color:var(--secondary-text-color,#aaa)}.mapping-loading-inline{margin-left:auto;padding:8px 0;flex:none}.mapping-loading-inline strong{margin:0;white-space:nowrap}.loading-spinner{width:24px;height:24px;flex:none;border:3px solid color-mix(in srgb,var(--primary-color,#03a678) 25%,transparent);border-top-color:var(--primary-color,#03a678);border-radius:50%;animation:fluks-spin .8s linear infinite}@keyframes fluks-spin{to{transform:rotate(360deg)}}
     .home-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px}.home-card{display:flex;align-items:flex-start;gap:14px;min-height:152px;margin:0;text-align:left}.home-card>ha-icon{color:var(--primary-color);font-size:30px;flex:none}.home-card h2{margin:0 0 8px}.home-card p{margin:0}.home-card-button{width:100%;cursor:pointer}.home-card-button .chevron{margin-left:auto;align-self:center}
     .device-heading{position:relative;display:flex;align-items:center;gap:18px;margin:2px 0 24px;padding-right:48px}.device-heading h1,.device-heading h2{margin:0 0 4px}.device-heading p{margin:0}.device-heading .device-name{font-size:16px;color:var(--primary-text-color)}.device-heading.compact{margin-bottom:20px}
     .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}

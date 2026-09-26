@@ -422,7 +422,9 @@ test("mapping suggestions show loading state and prevent duplicate Add requests"
     translations: {
       add_device: "Add device", choose_type: "Choose type", choose_ha_device: "Choose a Home Assistant device",
       home_assistant_device: "Home Assistant device", cancel: "Cancel", save_device: "Save device",
-      loading_mapping_suggestions: "Loading mapping suggestions…", optional: "Optional",
+      finding_best_match: "Finding the best match…",
+      finding_best_match_description: "fluks is examining the selected device's available controls.",
+      optional: "Optional",
     },
     device_types: [{ type: "battery", name: "Battery" }],
     ha_devices: [{ id: "ha-battery", name: "Battery", manufacturer: "Example", model: "One" }],
@@ -443,7 +445,9 @@ test("mapping suggestions show loading state and prevent duplicate Add requests"
 
   const first = panel._selectAddHaDevice("ha-battery");
   assert.equal(panel._mappingSuggestionsLoading, true);
-  assert.match(rendered, /Loading mapping suggestions…/);
+  assert.match(rendered, /Finding the best match…/);
+  assert.match(rendered, /fluks is examining the selected device's available controls/);
+  assert.match(rendered, /loading-spinner/);
   assert.match(rendered, /disabled[^>]*data-picker-kind="device"/);
   const second = panel._selectAddHaDevice("ha-battery");
   await Promise.resolve();
@@ -472,11 +476,16 @@ test("Edit mappings renders immediately and refreshes only missing input suggest
     localize: () => undefined,
   };
   const renderedProposals = [];
-  panel._renderEdit = () => renderedProposals.push(panel._detail.proposals);
+  const renderedLoading = [];
+  panel._renderEdit = () => {
+    renderedProposals.push(panel._detail.proposals);
+    renderedLoading.push(panel._inputSuggestionsLoading);
+  };
 
   await panel._loadView();
-  assert.equal(renderedProposals.length, 1);
+  assert.equal(renderedProposals.length, 2);
   assert.deepEqual(renderedProposals[0], {});
+  assert.deepEqual(renderedLoading, [false, true]);
   assert.equal(requests.length, 2);
   assert.equal(requests[0].suggestions, false);
   assert.equal(requests[1].suggestions, true);
@@ -485,6 +494,8 @@ test("Edit mappings renders immediately and refreshes only missing input suggest
     "heatPump.energy": { source: { entityId: "sensor.energy" }, classification: "suggest" },
   } });
   await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(panel._inputSuggestionsLoading, false);
+  assert.equal(renderedLoading.at(-1), false);
   assert.deepEqual(renderedProposals.at(-1), {
     "heatPump.energy": { source: { entityId: "sensor.energy" }, classification: "suggest" },
   });
@@ -495,6 +506,7 @@ test("re-entering Edit mappings requests the current device every time", async (
   panel._entryId = "entry";
   panel._context = { translations: {} };
   panel._render = () => {};
+  panel._renderEdit = () => {};
   const requests = [];
   panel._hass = {
     callWS: async (message) => {
