@@ -254,6 +254,8 @@ test("output suggestions scope executable actions to the selected HA device", as
     { entityId: "water_heater.naervarme_tank", service: "water_heater.turn_on" },
     { entityId: "climate.naervarme_zone_1", service: "climate.set_temperature" },
   ]);
+  assert.equal(requests[0].actions[0].sourceType, "action");
+  assert.equal(requests[0].actions[0].actionName, "Set temperature");
 });
 
 test("production Site power path forwards persisted value conditions", () => {
@@ -541,6 +543,87 @@ test("Edit mappings does not request suggestions when every input is already map
   assert.equal(requests[0].suggestions, false);
 });
 
+test("duplicate panel context loads leave the current Edit view with its suggestion rendered", async () => {
+  const panel = new Panel();
+  panel.isConnected = true;
+  panel._entryId = "entry";
+  panel._view = { name: "edit", deviceId: "device-1" };
+  const requests = [];
+  panel._hass = {
+    states: {},
+    language: "en",
+    localize: () => undefined,
+    callWS: async (message) => {
+      requests.push(message);
+      if (message.type === "fluks/config/context") return { translations: { suggested_match: "Suggested match", use_suggestion: "Use suggestion" }, entities: [] };
+      if (message.suggestions === false) return {
+        id: "device-1", type: "heatPump", label: "Heat pump", properties: {}, mappings: {},
+        concepts: [{ concept: "heatPump.energy", label: "Energy", cadence: "interval" }], proposals: {},
+      };
+      return { proposals: {
+        "heatPump.energy": {
+          source: { entityId: "sensor.heat_pump_energy" },
+          configuration: { version: 1, entityId: "sensor.heat_pump_energy" },
+          classification: "suggest",
+        },
+      } };
+    },
+  };
+  const frame = panel._frame.bind(panel);
+  panel._frame = (...args) => {
+    frame(...args);
+    panel.shadowRoot.querySelector = (selector) => selector === "#cancel" || selector === "#save" ? {} : null;
+  };
+
+  await Promise.all([panel._loadContext(), panel._loadContext()]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(requests.filter((item) => item.suggestions === true).length, 1);
+  assert.match(panel.shadowRoot.innerHTML, /sensor\.heat_pump_energy/);
+  assert.match(panel.shadowRoot.innerHTML, /Use suggestion/);
+});
+
+test("duplicate panel context loads leave the current Control view with its suggestion rendered", async () => {
+  const panel = new Panel();
+  panel.isConnected = true;
+  panel._entryId = "entry";
+  panel._view = { name: "control", deviceId: "device-1", concept: "heatPump.tankTemperature" };
+  const requests = [];
+  panel._hass = {
+    states: {}, language: "en", localize: () => undefined,
+    callWS: async (message) => {
+      requests.push(message);
+      if (message.type === "fluks/config/context") return { translations: { suggested_match: "Suggested match", use_suggestion: "Use suggestion" }, entities: [] };
+      if (message.type === "fluks/config/device") return {
+        id: "device-1", type: "heatPump", type_name: "Heat pump", ha_device_id: "ha-heat-pump",
+        controls: [{ concept: "heatPump.tankTemperature", label: "Tank temperature", datatype: "number", unit: "°C", mappingModes: [null] }],
+        output_mappings: {}, concepts: [], mappings: {}, properties: {},
+      };
+      if (message.type === "fluks/config/control_capabilities") return { actions: [{
+        service: "water_heater.set_temperature", name: "Set temperature", entities: [{
+          entity_id: "water_heater.tank", name: "Tank", device_id: "ha-heat-pump", fields: [{ id: "temperature", required: true, selector: { type: "number" } }],
+        }],
+      }] };
+      return { suggestions: { default: {
+        configuration: { version: 1, actions: [{ type: "serviceCall", service: "water_heater.set_temperature", target: { entityId: "water_heater.tank" }, data: { temperature: { kind: "requestedValue" } } }] },
+        confidence: 0.98,
+      } } };
+    },
+  };
+  let editor;
+  panel._frame = () => {
+    editor = new Editor();
+    panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null;
+  };
+
+  await Promise.all([panel._loadContext(), panel._loadContext()]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(requests.filter((item) => item.type === "fluks/config/control_suggestions").length, 1);
+  assert.match(editor.shadowRoot.innerHTML, /Suggested match/);
+  assert.match(editor.shadowRoot.innerHTML, /Use suggestion/);
+});
+
 test("re-entering Controls requests only the opened control suggestion", async () => {
   const panel = new Panel();
   panel._context = { translations: {}, entities: [{ entity_id: "number.control", device_id: "ha-device" }] };
@@ -783,6 +866,51 @@ test("production overview keeps Site separate and navigates into shared Device d
   assert.deepEqual(destination, { name: "delete-site", stage: "confirm" });
   deviceRow.onclick();
   assert.deepEqual(destination, { name: "device", deviceId: "battery-1" });
+});
+
+test("homepage renders configured devices and live runtime status", () => {
+  const panel = new Panel();
+  panel._context = {
+    translations: {
+      site: "Site", devices: "Devices", add_device: "Add device", site_actions: "Site actions",
+      delete_site: "Delete site", connection: "Connection", connected_to_fluks: "Connected to fluks",
+      reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
+      configured_devices: "{count} configured", configuration: "Configuration",
+      configuration_description: "Manage devices and mappings",
+    },
+    site: { id: "site-device", name: "Hjem" },
+    devices: [
+      { id: "heat-1", type: "heatPump", type_name: "Heat pump", label: "Heat pump · Nærvarme", metadata: "Panasonic" },
+      { id: "solar-1", type: "solar", type_name: "Solar", label: "Solar · Roof", metadata: "GoodWe" },
+    ],
+  };
+  panel._runtimeStatus = { state: "connected", disconnected_at: null };
+  let rendered;
+  const statusNode = { innerHTML: "" };
+  const siteMenu = { onclick: undefined };
+  const siteActions = { hidden: true, onkeydown: undefined, querySelector: () => ({ focus() {} }) };
+  const nodes = new Map([
+    ["#runtime-status", statusNode], ["#site-menu", siteMenu], ["#site-actions", siteActions],
+  ]);
+  panel._frame = (title, body) => { rendered = { title, body }; };
+  panel.shadowRoot.querySelector = (selector) => nodes.get(selector);
+  panel.shadowRoot.querySelectorAll = () => [];
+  panel._renderHome();
+
+  assert.equal(rendered.title, "Hjem");
+  assert.match(rendered.body, /Connected to fluks/);
+  assert.match(rendered.body, /2 configured/);
+  assert.match(rendered.body, /Heat pump · Nærvarme/);
+  assert.match(rendered.body, /Solar · Roof/);
+  assert.match(rendered.body, /data-device="heat-1"/);
+  assert.match(rendered.body, /fluks-device-icons\/heat_pump\.png/);
+  assert.match(rendered.body, /home-configuration/);
+
+  panel._applyRuntimeStatus({ state: "reconnecting", disconnected_at: Date.now() - 61000 });
+  assert.match(statusNode.innerHTML, /Reconnecting · 01:01/);
+  panel._applyRuntimeStatus({ state: "connected", disconnected_at: null });
+  assert.match(statusNode.innerHTML, /Connected to fluks/);
+  assert.doesNotMatch(statusNode.innerHTML, /Reconnecting/);
 });
 
 test("Site detail reuses shared Mapping and Controls views from catalog data", () => {

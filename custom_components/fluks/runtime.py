@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -40,6 +41,7 @@ class FluksRuntimeWebSocket:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         reconnect_delays: tuple[float, ...] = RECONNECT_DELAYS,
         message_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._session = session
         self._integration_key = integration_key
@@ -47,14 +49,49 @@ class FluksRuntimeWebSocket:
         self._sleep = sleep
         self._reconnect_delays = reconnect_delays
         self._message_handler = message_handler
+        self._now_ms = now_ms or (lambda: int(time.time() * 1000))
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
         self._socket: ClientWebSocketResponse | None = None
+        self._status = "reconnecting"
+        self._disconnected_at: int | None = None
+        self._status_listeners: set[Callable[[dict[str, Any]], None]] = set()
 
     @property
     def url(self) -> str:
         """Return the credential-free runtime URL."""
         return self._url
+
+    @property
+    def status(self) -> dict[str, Any]:
+        """Return the current connection status for the local panel."""
+        return {
+            "state": self._status,
+            "disconnected_at": self._disconnected_at,
+        }
+
+    def add_status_listener(
+        self, listener: Callable[[dict[str, Any]], None]
+    ) -> Callable[[], None]:
+        """Subscribe to connection status changes and return an unsubscribe callback."""
+        self._status_listeners.add(listener)
+
+        def unsubscribe() -> None:
+            self._status_listeners.discard(listener)
+
+        return unsubscribe
+
+    def _set_status(self, state: str, disconnected_at: int | None = None) -> None:
+        if self._status == state and self._disconnected_at == disconnected_at:
+            return
+        self._status = state
+        self._disconnected_at = disconnected_at
+        snapshot = self.status
+        for listener in tuple(self._status_listeners):
+            try:
+                listener(snapshot)
+            except Exception:  # noqa: BLE001 - panel subscribers must not stop runtime
+                _LOGGER.debug("Unable to notify fluks runtime status listener", exc_info=True)
 
     def start(self, create_task: Callable[[Awaitable[None]], asyncio.Task[None]]) -> None:
         """Start the connection loop once."""
@@ -65,6 +102,10 @@ class FluksRuntimeWebSocket:
     async def async_stop(self) -> None:
         """Close the socket and permanently stop this manager."""
         self._stopping = True
+        self._set_status(
+            "disconnected",
+            self._now_ms() if self._socket else self._disconnected_at,
+        )
         socket = self._socket
         if socket is not None and not socket.closed:
             await socket.close()
@@ -83,6 +124,7 @@ class FluksRuntimeWebSocket:
         try:
             await socket.send_json(payload)
         except (ClientError, OSError, RuntimeError):
+            self._set_status("reconnecting", self._now_ms())
             return False
         return True
 
@@ -98,6 +140,7 @@ class FluksRuntimeWebSocket:
                 )
                 self._socket = socket
                 attempt = 0
+                self._set_status("connected")
                 await self._receive(socket)
             except asyncio.CancelledError:
                 raise
@@ -108,11 +151,21 @@ class FluksRuntimeWebSocket:
                     "Unexpected fluks runtime WebSocket transport failure; reconnecting"
                 )
             finally:
+                was_connected = self._socket is not None
                 socket = self._socket
                 self._socket = None
                 if socket is not None and not socket.closed:
                     with contextlib.suppress(Exception):
                         await socket.close()
+                if self._stopping:
+                    self._set_status("disconnected", self._disconnected_at)
+                elif was_connected:
+                    self._set_status(
+                        "reconnecting",
+                        self._disconnected_at
+                        if self._disconnected_at is not None
+                        else self._now_ms(),
+                    )
 
             if self._stopping:
                 break

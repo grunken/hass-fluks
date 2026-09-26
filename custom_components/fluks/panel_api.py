@@ -35,6 +35,7 @@ from .const import (
     CONF_INTEGRATION_INTERNAL_ID,
     CONF_INTEGRATION_KEY,
     CONF_SITE_ID,
+    DATA_RUNTIME,
     DOMAIN,
 )
 from .control_capabilities import (
@@ -62,6 +63,7 @@ from .output_mapping import OutputMappingValidationError, validate_output_config
 _LOGGER = logging.getLogger(__name__)
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
+COMMAND_RUNTIME_STATUS = f"{DOMAIN}/config/runtime_status"
 COMMAND_DEVICE_DETAIL = f"{DOMAIN}/config/device"
 COMMAND_ADD_REVIEW = f"{DOMAIN}/config/add_review"
 COMMAND_ADD_SAVE = f"{DOMAIN}/config/add_save"
@@ -104,6 +106,30 @@ def _api(hass: HomeAssistant, entry: ConfigEntry) -> FluksApiClient:
         async_get_clientsession(hass),
         integration_key=entry.data[CONF_INTEGRATION_KEY],
     )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): COMMAND_RUNTIME_STATUS, **BASE_SCHEMA}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_runtime_status(hass, connection, msg):
+    """Subscribe a panel connection to the entry's runtime status."""
+    entry = None
+    try:
+        entry = _entry(hass, msg["entry_id"])
+        runtime = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {}).get(entry.entry_id)
+        if runtime is None:
+            raise PanelCommandError("not_found")
+
+        status = runtime.status
+        connection.subscriptions[msg["id"]] = runtime.add_status_listener(
+            lambda status: connection.send_event(msg["id"], status)
+        )
+        connection.send_result(msg["id"])
+        connection.send_event(msg["id"], status)
+    except PanelCommandError as err:
+        _send_error(hass, entry, connection, msg["id"], err)
 
 
 async def _catalog(api: FluksApiClient) -> dict[str, dict[str, Any]]:
@@ -1289,6 +1315,11 @@ async def websocket_control_save(hass, connection, msg):
 async def websocket_control_suggestions(hass, connection, msg):
     """Return advisory output configurations for one existing control draft."""
     entry = None
+    log_context = {
+        "device_id": msg.get("device_id"),
+        "concept": msg.get("concept"),
+        "entry_id": msg.get("entry_id"),
+    }
     try:
         entry = _entry(hass, msg["entry_id"])
         api = _api(hass, entry)
@@ -1309,6 +1340,11 @@ async def websocket_control_suggestions(hass, connection, msg):
         if definition is None or not all(
             isinstance(item, str) and item for item in msg["behaviors"]
         ) or not all(isinstance(item, dict) for item in msg["actions"]):
+            _LOGGER.warning(
+                "[fluks mapping suggestions] stage=backend_request_rejected "
+                "reason=invalid_control_request context=%s",
+                log_context,
+            )
             raise PanelCommandError("invalid_mapping")
         suggestions = await _output_suggestions(
             api,
@@ -1320,6 +1356,12 @@ async def websocket_control_suggestions(hass, connection, msg):
         )
         connection.send_result(msg["id"], {"suggestions": suggestions})
     except (PanelCommandError, FluksApiError) as err:
+        _LOGGER.warning(
+            "[fluks mapping suggestions] stage=backend_flow_error "
+            "context=%s error=%s",
+            log_context,
+            getattr(err, "code", str(err)),
+        )
         _send_error(hass, entry, connection, msg["id"], err)
 
 
@@ -1414,6 +1456,7 @@ async def websocket_site_delete(hass, connection, msg):
 
 COMMANDS = (
     websocket_context,
+    websocket_runtime_status,
     websocket_device_detail,
     websocket_add_review,
     websocket_add_save,

@@ -11,12 +11,14 @@ from custom_components.fluks.const import (
     CONF_DEVICE_CONTEXTS,
     CONF_INTEGRATION_KEY,
     DOMAIN,
+    DATA_RUNTIME,
 )
 from custom_components.fluks.device import stable_device_id
 from custom_components.fluks.panel_api import (
     COMMAND_ADD_REVIEW,
     COMMAND_ADD_SAVE,
     COMMAND_CONTEXT,
+    COMMAND_RUNTIME_STATUS,
     COMMAND_CONTROL_CAPABILITIES,
     COMMAND_CONTROL_SAVE,
     COMMAND_CONTROL_SUGGESTIONS,
@@ -34,6 +36,7 @@ from custom_components.fluks.panel_api import (
     websocket_add_review,
     websocket_add_save,
     websocket_context,
+    websocket_runtime_status,
     websocket_control_capabilities,
     websocket_control_save,
     websocket_control_suggestions,
@@ -101,7 +104,7 @@ def test_registers_only_finite_product_commands(hass):
         "custom_components.fluks.panel_api.websocket_api.async_register_command"
     ) as register:
         async_register_panel_commands(hass)
-    assert register.call_count == len(COMMANDS) == 10
+    assert register.call_count == len(COMMANDS) == 11
 
 
 async def test_control_capabilities_command_is_admin_and_never_returns_credentials(hass):
@@ -229,6 +232,31 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
     serialized = repr(sent)
     assert "integration_key" not in serialized
     assert KEY not in serialized
+
+
+async def test_runtime_status_subscription_sends_snapshot_and_transitions(hass):
+    entry = make_entry(hass)
+    conn = connection()
+    conn.subscriptions = {}
+    listeners = []
+    runtime = SimpleNamespace(
+        status={"state": "reconnecting", "disconnected_at": 1234},
+        add_status_listener=lambda listener: listeners.append(listener) or (lambda: listeners.remove(listener)),
+    )
+    hass.data.setdefault(DOMAIN, {})[DATA_RUNTIME] = {entry.entry_id: runtime}
+
+    websocket_runtime_status(hass, conn, {
+        "id": 41,
+        "type": COMMAND_RUNTIME_STATUS,
+        "entry_id": entry.entry_id,
+    })
+    await hass.async_block_till_done()
+
+    conn.send_result.assert_called_once_with(41)
+    conn.send_event.assert_called_once_with(41, {"state": "reconnecting", "disconnected_at": 1234})
+    assert len(listeners) == 1
+    listeners[0]({"state": "connected", "disconnected_at": None})
+    assert conn.send_event.call_args_list[-1].args == (41, {"state": "connected", "disconnected_at": None})
 
 
 async def test_wrong_valid_user_delete_is_error_and_keeps_local_context(hass):

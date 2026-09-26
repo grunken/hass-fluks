@@ -105,6 +105,32 @@ async def test_unexpected_disconnect_reconnects_without_duplicate_socket():
     assert len(session.calls) == 2
 
 
+async def test_runtime_status_notifies_disconnect_and_reconnect_with_timestamp():
+    first = FakeSocket()
+    second = FakeSocket(hold=True)
+    session = FakeSession([first, second])
+    now = iter((1000, 2000))
+    runtime = FluksRuntimeWebSocket(
+        session,
+        KEY,
+        API_BASE_URL,
+        reconnect_delays=(0,),
+        now_ms=lambda: next(now),
+    )
+    statuses = []
+    runtime.add_status_listener(statuses.append)
+    runtime.start(asyncio.create_task)
+    await _wait_for(lambda: len(session.calls) == 2)
+
+    assert statuses == [
+        {"state": "connected", "disconnected_at": None},
+        {"state": "reconnecting", "disconnected_at": 1000},
+        {"state": "connected", "disconnected_at": None},
+    ]
+    assert runtime.status == {"state": "connected", "disconnected_at": None}
+    await runtime.async_stop()
+
+
 async def test_temporary_unavailability_reconnects_in_background():
     socket = FakeSocket(hold=True)
     session = FakeSession([ClientConnectionError(), socket])

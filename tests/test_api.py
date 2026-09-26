@@ -347,11 +347,18 @@ async def test_output_mapping_suggestion_uses_labels_and_validates_configuration
         "attribute": None,
         "name": "Battery power",
         "originalName": None,
-        "sourceType": "state",
         "domain": "number",
         "service": "number.set_value",
         "datatype": "unknown",
-        "fields": {"value": {"type": "number"}},
+        "fields": {
+            "value": {"type": "number"},
+            "mode": {"type": "state"},
+        },
+        "sourceType": "action",
+        "metadata": "Battery · ha",
+        "actionName": "Set value",
+        "description": "Set the battery power.",
+        "target": {"domains": ["number"]},
     }]
     configuration = {
         "version": 1,
@@ -389,7 +396,19 @@ async def test_output_mapping_suggestion_uses_labels_and_validates_configuration
         "deviceType": "battery",
         "concept": "battery.power",
         "behaviors": ["charge", "hold"],
-        "actions": actions,
+        "actions": [{
+            "entityId": "number.battery_power",
+            "attribute": None,
+            "name": "Battery power",
+            "originalName": None,
+            "domain": "number",
+            "service": "number.set_value",
+            "datatype": "unknown",
+            "fields": {
+                "value": {"type": "number"},
+                "mode": {"type": "string"},
+            },
+        }],
     }
     assert request[2]["headers"] == {"Authorization": "Bearer integration-key"}
 

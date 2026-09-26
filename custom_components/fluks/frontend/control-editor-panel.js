@@ -18,6 +18,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._view = { name: "home" };
     this._viewToken = 0;
+    this._contextLoadToken = 0;
     this._pendingControl = undefined;
     this._spaceHeaterValidationError = false;
     this._mappingSuggestionsLoading = false;
@@ -25,6 +26,10 @@ class FluksControlEditorPanel extends HTMLElement {
     this._outputSuggestions = new Map();
     this._clearedInputConcepts = new Set();
     this._proposalDraftConcepts = new Set();
+    this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
+    this._runtimeStatusUnsubscribe = undefined;
+    this._runtimeStatusTimer = undefined;
+    this._runtimeStatusSubscriptionToken = 0;
     this._popstate = () => {
       const token = this._beginView(history.state?.fluksView ?? { name: "home" });
       this._loadView(token);
@@ -39,6 +44,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._route = value;
     const entryId = new URLSearchParams(location.search).get("config_entry") ?? undefined;
     if (entryId !== this._entryId) {
+      this._contextLoadToken += 1;
       this._entryId = entryId;
       this._context = this._detail = this._draft = undefined;
       this._pendingControl = undefined;
@@ -48,6 +54,8 @@ class FluksControlEditorPanel extends HTMLElement {
       this._outputSuggestions.clear();
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
+      this._unsubscribeRuntimeStatus();
+      this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
       this._beginView({ name: "home" });
     }
     if (this.isConnected) this._loadContext();
@@ -55,7 +63,10 @@ class FluksControlEditorPanel extends HTMLElement {
   set panel(value) { this._panel = value; }
   set narrow(value) { this._narrow = value; }
   connectedCallback() { addEventListener("popstate", this._popstate); this._loadContext(); }
-  disconnectedCallback() { removeEventListener("popstate", this._popstate); }
+  disconnectedCallback() {
+    removeEventListener("popstate", this._popstate);
+    this._unsubscribeRuntimeStatus();
+  }
 
   _t(key, replacements = {}) {
     let translated = this._context?.translations?.[key];
@@ -81,11 +92,91 @@ class FluksControlEditorPanel extends HTMLElement {
   async _loadContext() {
     if (!this.shadowRoot || !this._hass) return;
     if (!this._entryId) return this._message(this._t("context_missing"));
+    const loadToken = ++this._contextLoadToken;
     this._message(this._t("loading"));
     try {
-      this._context = await this._call("fluks/config/context");
+      const context = await this._call("fluks/config/context");
+      if (loadToken !== this._contextLoadToken) return;
+      this._context = context;
+      this._subscribeRuntimeStatus();
+      if (loadToken !== this._contextLoadToken) return;
       await this._loadView();
-    } catch (_) { this._message(this._error); }
+    } catch (_) {
+      if (loadToken === this._contextLoadToken) this._message(this._error);
+    }
+  }
+  _unsubscribeRuntimeStatus() {
+    this._runtimeStatusSubscriptionToken += 1;
+    this._runtimeStatusUnsubscribe?.();
+    this._runtimeStatusUnsubscribe = undefined;
+    if (this._runtimeStatusTimer !== undefined) {
+      clearInterval(this._runtimeStatusTimer);
+      this._runtimeStatusTimer = undefined;
+    }
+  }
+  async _subscribeRuntimeStatus() {
+    this._unsubscribeRuntimeStatus();
+    if (!this._hass?.connection?.subscribeMessage || !this._entryId) return;
+    const entryId = this._entryId;
+    const token = this._runtimeStatusSubscriptionToken;
+    try {
+      const unsubscribe = await this._hass.connection.subscribeMessage(
+        (status) => this._applyRuntimeStatus(status),
+        { type: "fluks/config/runtime_status", entry_id: entryId },
+      );
+      if (token !== this._runtimeStatusSubscriptionToken || entryId !== this._entryId || !this.isConnected) {
+        unsubscribe?.();
+        return;
+      }
+      this._runtimeStatusUnsubscribe = unsubscribe;
+    } catch (_) {
+      // Runtime status is advisory; the rest of the panel remains usable.
+    }
+  }
+  _applyRuntimeStatus(status) {
+    if (!status || typeof status.state !== "string") return;
+    this._runtimeStatus = {
+      state: status.state,
+      disconnected_at: Number.isFinite(Number(status.disconnected_at)) ? Number(status.disconnected_at) : null,
+    };
+    if (this._runtimeStatus.state === "reconnecting" && this._runtimeStatus.disconnected_at !== null) {
+      if (this._runtimeStatusTimer === undefined) {
+        this._runtimeStatusTimer = setInterval(() => this._updateRuntimeStatus(), 1000);
+      }
+    } else if (this._runtimeStatusTimer !== undefined) {
+      clearInterval(this._runtimeStatusTimer);
+      this._runtimeStatusTimer = undefined;
+    }
+    this._updateRuntimeStatus();
+  }
+  _runtimeElapsed() {
+    const disconnectedAt = this._runtimeStatus.disconnected_at;
+    if (disconnectedAt === null) return "";
+    let seconds = Math.max(0, Math.floor((Date.now() - disconnectedAt) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    seconds %= 60;
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      return `${String(hours).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    }
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+  _runtimeStatusMarkup() {
+    const state = this._runtimeStatus.state;
+    const label = state === "connected"
+      ? this._t("connected_to_fluks")
+      : state === "reconnecting"
+        ? this._t("reconnecting")
+        : this._t("disconnected");
+    const elapsed = state === "reconnecting" ? this._runtimeElapsed() : "";
+    const suffix = elapsed ? ` · ${esc(elapsed)}` : "";
+    return `<span class="runtime-dot ${esc(state)}" aria-hidden="true"></span><span>${esc(label)}${suffix}</span>`;
+  }
+  _updateRuntimeStatus() {
+    for (const selector of ["#runtime-status", "#runtime-status-card"]) {
+      const node = this.shadowRoot?.querySelector(selector);
+      if (node) node.innerHTML = this._runtimeStatusMarkup();
+    }
   }
   async _ensureControlActionEditor() {
     const { FluksControlActionEditor } = await loadControlActionEditor();
@@ -200,18 +291,31 @@ class FluksControlEditorPanel extends HTMLElement {
   }
 
   _renderHome() {
-    const devices = this._context.devices.map((d) => `<button class="row device-row" data-device="${esc(d.id)}">
-      ${this._typeIcon(d.type)}<span class="row-copy"><strong>${esc(d.label)}</strong><span>${esc(d.metadata || d.name || d.type_name)}</span></span><span class="chevron">›</span></button>`).join("");
-    this._frame("fluks", `<section><div class="section-title"><h2>${esc(this._t("devices"))}</h2>
-      <button class="primary" id="add">＋ ${esc(this._t("add_device"))}</button></div>
+    const devices = (this._context.devices || []).map((d) => `<button class="row device-row" data-device="${esc(d.id)}">
+      ${this._typeIcon(d.type)}<span class="row-copy"><strong>${esc(d.label)}</strong><span>${esc(d.metadata || d.type_name || d.name)}</span></span><span class="chevron">›</span></button>`).join("");
+    const site = this._context.site || {};
+    this._frame(site.name || this._t("site"), `<div class="home-status-line" id="runtime-status" role="status" aria-live="polite">${this._runtimeStatusMarkup()}</div>
+      <div class="home-shortcuts">
+        <section class="card home-card connection-card"><ha-icon icon="mdi:lan-connect"></ha-icon><div><h2>${esc(this._t("connection"))}</h2><div class="home-card-status" id="runtime-status-card">${this._runtimeStatusMarkup()}</div><p>${esc(this._t("connection_description"))}</p></div></section>
+        <button class="card home-card home-card-button" id="home-devices-card" type="button"><ha-icon icon="mdi:devices"></ha-icon><div><h2>${esc(this._t("devices"))}</h2><p>${esc(this._t("configured_devices", { count: (this._context.devices || []).length }))}</p></div><span class="chevron">›</span></button>
+        <button class="card home-card home-card-button" id="home-configuration" type="button"><ha-icon icon="mdi:file-document-edit-outline"></ha-icon><div><h2>${esc(this._t("configuration"))}</h2><p>${esc(this._t("configuration_description"))}</p></div><span class="chevron">›</span></button>
+      </div>
+      <section id="configured-devices"><div class="section-title"><h2>${esc(this._t("devices"))}</h2><button class="primary" id="add">＋ ${esc(this._t("add_device"))}</button></div>
       <div class="card list">${devices || `<p>${esc(this._t("no_devices"))}</p>`}</div></section>
       <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><button class="site-link" id="site-detail">${this._typeIcon("site")}
-      <span class="row-copy"><strong>${esc(this._context.site.name)}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>
+      <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>
       <div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div></div></section>`);
-    this.shadowRoot.querySelector("#add").onclick = () => this._go({ name: "add" });
+    const add = this.shadowRoot.querySelector("#add");
+    if (add) add.onclick = () => this._go({ name: "add" });
     this._wireMenu("site-menu", "site-actions");
-    this.shadowRoot.querySelector("#delete-site").onclick = () => this._go({ name: "delete-site", stage: "confirm" });
-    this.shadowRoot.querySelector("#site-detail").onclick = () => this._go({ name: "device", deviceId: this._context.site.id });
+    const deleteSite = this.shadowRoot.querySelector("#delete-site");
+    if (deleteSite) deleteSite.onclick = () => this._go({ name: "delete-site", stage: "confirm" });
+    const siteDetail = this.shadowRoot.querySelector("#site-detail");
+    if (siteDetail) siteDetail.onclick = () => this._go({ name: "device", deviceId: site.id });
+    const configuration = this.shadowRoot.querySelector("#home-configuration");
+    if (configuration) configuration.onclick = () => this._go({ name: "device", deviceId: site.id });
+    const devicesCard = this.shadowRoot.querySelector("#home-devices-card");
+    if (devicesCard) devicesCard.onclick = () => this.shadowRoot.querySelector("#configured-devices")?.scrollIntoView({ behavior: "smooth" });
     this.shadowRoot.querySelectorAll("[data-device]").forEach((n) => n.onclick = () => this._go({ name: "device", deviceId: n.dataset.device }));
   }
   _renderDevice() {
@@ -731,8 +835,16 @@ class FluksControlEditorPanel extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-control]").forEach((n) => n.onclick = () => this._go({ name: "control", deviceId: this._detail.id, concept: n.dataset.control }));
   }
   _renderControl() {
+    const enteredKey = `${this._detail?.id ?? this._view.deviceId}:${this._view.concept}`;
     const control = this._detail.controls.find((c) => c.concept === this._view.concept);
-    if (!control) return this._message(this._t("context_missing"));
+    if (!control) {
+      console.warn("[fluks mapping suggestions] stage=control_entry_skipped", {
+        key: enteredKey,
+        reason: "control_not_found",
+        viewToken: this._viewToken,
+      });
+      return this._message(this._t("context_missing"));
+    }
     this._frame(`${this._detail.type_name} · ${this._conceptLabel(control)}`, `<p>${esc(this._t("control_persistence_intro"))}</p><${CONTROL_ACTION_EDITOR_TAG}></${CONTROL_ACTION_EDITOR_TAG}>`, true);
     const editor = this.shadowRoot.querySelector(CONTROL_ACTION_EDITOR_TAG);
     const key = `${this._detail.id}:${control.concept}`;
@@ -784,7 +896,9 @@ class FluksControlEditorPanel extends HTMLElement {
     editor.behaviors = this._pendingControl?.key === key ? this._pendingControl.behaviors : persisted;
     editor.outputSuggestions = this._outputSuggestions.get(key) ?? {};
     editor.outputSuggestionsLoading = false;
-    if (!this._outputSuggestionRequests.has(key) && typeof this._hass?.callWS === "function") {
+    const requestInFlight = this._outputSuggestionRequests.has(key);
+    const canCallWebSocket = typeof this._hass?.callWS === "function";
+    if (!requestInFlight && canCallWebSocket) {
       editor.outputSuggestionsLoading = true;
       this._loadOutputSuggestions(key, control, editor, this._viewToken).catch(() => {});
     }
@@ -834,7 +948,7 @@ class FluksControlEditorPanel extends HTMLElement {
         if (selectedDevice && editor._entityDeviceId(entity) !== selectedDevice) continue;
         const fields = Object.fromEntries((entity.fields ?? []).map((field) => {
           const selector = field.selector ?? {};
-          const type = selector.type === "number" ? "number" : selector.type === "boolean" ? "boolean" : "string";
+          const type = ["number", "boolean", "select", "state", "text"].includes(selector.type) ? selector.type : "string";
           const constraints = field.constraints ?? {};
           return [field.id, {
             type,
@@ -851,12 +965,16 @@ class FluksControlEditorPanel extends HTMLElement {
           entityId: entity.entity_id,
           attribute: null,
           name: entity.name ?? null,
-          originalName: null,
-          sourceType: "state",
+          originalName: entity.original_name ?? null,
+          sourceType: "action",
+          metadata: entity.metadata ?? null,
           availableAttributes: Array.isArray(context.attributes) ? context.attributes.filter((item) => typeof item === "string") : [],
           attributeMetadata: [],
           domain: entity.entity_id.split(".", 1)[0],
           service: capability.service,
+          actionName: capability.name ?? null,
+          description: capability.description ?? null,
+          target: capability.target ?? null,
           datatype: "unknown",
           deviceClass: typeof (attributes.device_class ?? context.device_class) === "string" ? (attributes.device_class ?? context.device_class) : null,
           state: null,
@@ -889,7 +1007,16 @@ class FluksControlEditorPanel extends HTMLElement {
         behaviors: descriptors.map((item) => item.behavior),
         actions,
       });
-      if (!this._isCurrentView(token) || this._view.name !== "control" || this._view.deviceId !== this._detail.id || this._view.concept !== control.concept) return;
+      const staleReason = !this._isCurrentView(token)
+        ? "view_token_changed"
+        : this._view.name !== "control"
+          ? "view_is_not_control"
+          : this._view.deviceId !== this._detail.id
+            ? "device_changed"
+            : this._view.concept !== control.concept
+              ? "concept_changed"
+              : null;
+      if (staleReason) return;
       const byBehavior = Object.fromEntries(Object.entries(response.suggestions ?? {}).map(([behavior, suggestion]) => {
         const descriptor = descriptors.find((item) => item.behavior === behavior);
         return descriptor ? [behavior, { ...suggestion, behavior, label: descriptor.label, mode: descriptor.mode, valueCondition: descriptor.valueCondition }] : null;
@@ -897,6 +1024,13 @@ class FluksControlEditorPanel extends HTMLElement {
       this._outputSuggestions.set(key, byBehavior);
       editor.outputSuggestions = byBehavior;
     } catch (_) {
+      console.warn("[fluks mapping suggestions] stage=suggestion_flow_error", {
+        key,
+        deviceId: this._detail?.id,
+        concept: control.concept,
+        error: String(_),
+        viewToken: token,
+      });
       // Suggestions are advisory; preserve the normal manual editor on failure.
     } finally {
       editor.outputSuggestionsLoading = false;
@@ -937,6 +1071,8 @@ class FluksControlEditorPanel extends HTMLElement {
     .icon{border:0;background:transparent;font-size:25px;padding:4px;width:42px;min-width:42px}.overflow{margin-left:auto;font-weight:700}.section-title,.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}.actions{justify-content:flex-end;margin:22px 0 0}
     .row{width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}
     .device-icon{display:block;object-fit:contain;flex:none}.device-icon.list{width:38px;height:38px}.device-icon.hero{width:62px;height:62px}.device-icon.header{width:50px;height:50px}.device-icon.picker{width:70px;height:70px}
+    .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800);animation:fluks-runtime-pulse 1.6s ease-in-out infinite}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}
+    .home-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px}.home-card{display:flex;align-items:flex-start;gap:14px;min-height:152px;margin:0;text-align:left}.home-card>ha-icon{color:var(--primary-color);font-size:30px;flex:none}.home-card h2{margin:0 0 8px}.home-card p{margin:0}.home-card-button{width:100%;cursor:pointer}.home-card-button .chevron{margin-left:auto;align-self:center}
     .device-heading{position:relative;display:flex;align-items:center;gap:18px;margin:2px 0 24px;padding-right:48px}.device-heading h1,.device-heading h2{margin:0 0 4px}.device-heading p{margin:0}.device-heading .device-name{font-size:16px;color:var(--primary-text-color)}.device-heading.compact{margin-bottom:20px}
     .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
@@ -947,7 +1083,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}
     dialog{width:min(620px,calc(100vw - 32px));max-height:min(720px,calc(100vh - 32px));padding:0;border:1px solid var(--divider-color);border-radius:14px;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 14px 45px rgba(0,0,0,.38)}dialog::backdrop{background:rgba(0,0,0,.58)}.dialog-heading{display:flex;justify-content:space-between;align-items:center;padding:18px 18px 8px}.dialog-heading h2{margin:0}.search{padding:8px 16px;margin:0}.picker-results{max-height:min(530px,65vh);overflow:auto;border-top:1px solid var(--divider-color)}.picker-row{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;background:transparent;padding:8px 15px;overflow:hidden}.picker-row.selected{outline:2px solid var(--primary-color);outline-offset:-2px}.picker-row .trailing{flex:0 1 150px;min-width:0;max-width:28%;margin-left:auto;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}.empty-results{padding:22px}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
     .error{background:var(--error-color);color:#fff;padding:12px;margin-bottom:16px;border-radius:7px}
-    @media(max-width:700px){main{padding:16px 12px 36px}.fields,.fields.two,.fields.three{grid-template-columns:1fr}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.device-icon.hero{width:52px;height:52px}.section-title{align-items:flex-start}.actions{position:sticky;z-index:4;bottom:0;background:var(--primary-background-color);padding:10px 0}.row{padding:12px}.card{padding:14px}.list{padding:0}.picker-results{max-height:60vh}.picker-row .trailing{flex-basis:96px;max-width:24%}.input-conversions li{grid-template-columns:30px minmax(0,1fr)}.input-conversions .row-actions{grid-column:2}}
+    @media(max-width:700px){main{padding:16px 12px 36px}.fields,.fields.two,.fields.three{grid-template-columns:1fr}.home-shortcuts{grid-template-columns:1fr}.home-card{min-height:0}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.device-icon.hero{width:52px;height:52px}.section-title{align-items:flex-start}.actions{position:sticky;z-index:4;bottom:0;background:var(--primary-background-color);padding:10px 0}.row{padding:12px}.card{padding:14px}.list{padding:0}.picker-results{max-height:60vh}.picker-row .trailing{flex-basis:96px;max-width:24%}.input-conversions li{grid-template-columns:30px minmax(0,1fr)}.input-conversions .row-actions{grid-column:2}}
     @media(max-width:390px){.type-grid{grid-template-columns:1fr 1fr}.type-option{min-height:108px}.device-icon.picker{width:58px;height:58px}.section-title{flex-wrap:wrap}}
   `; }
 }

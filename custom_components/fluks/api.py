@@ -17,6 +17,40 @@ _LOGGER = logging.getLogger(__name__)
 
 INTEGRATION_KEY_PATTERN = re.compile(r"^fluks_[A-Za-z0-9_-]{43}$")
 _UNSET = object()
+_OUTPUT_SUGGESTION_ACTION_FIELDS = frozenset(
+    {
+        "entityId",
+        "attribute",
+        "name",
+        "originalName",
+        "sourceType",
+        "availableAttributes",
+        "attributeMetadata",
+        "domain",
+        "service",
+        "datatype",
+        "deviceClass",
+        "state",
+        "currentValue",
+        "integration",
+        "platform",
+        "stateClass",
+        "attributes",
+        "relevantAttributes",
+        "options",
+        "unit",
+        "min",
+        "max",
+        "step",
+        "supportedFeatures",
+        "fields",
+    }
+)
+_OUTPUT_SUGGESTION_SOURCE_TYPES = frozenset({"state", "attribute"})
+_OUTPUT_SUGGESTION_FIELD_FIELDS = frozenset(
+    {"type", "options", "unit", "min", "max", "step"}
+)
+_OUTPUT_SUGGESTION_FIELD_TYPES = frozenset({"string", "number", "boolean"})
 
 
 class FluksApiError(Exception):
@@ -490,11 +524,43 @@ class FluksApiClient:
         actions: list[dict[str, Any]],
     ) -> dict[str, dict[str, Any]]:
         """Ask the backend for advisory output configurations by local behavior."""
+        backend_actions: list[dict[str, Any]] = []
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            backend_action = {
+                key: value
+                for key, value in action.items()
+                if key in _OUTPUT_SUGGESTION_ACTION_FIELDS
+                and (
+                    key != "sourceType"
+                    or value in _OUTPUT_SUGGESTION_SOURCE_TYPES
+                )
+            }
+            fields = backend_action.get("fields")
+            if isinstance(fields, dict):
+                backend_action["fields"] = {
+                    field_id: {
+                        **{
+                            key: value
+                            for key, value in field.items()
+                            if key in _OUTPUT_SUGGESTION_FIELD_FIELDS
+                        },
+                        "type": (
+                            field.get("type")
+                            if field.get("type") in _OUTPUT_SUGGESTION_FIELD_TYPES
+                            else "string"
+                        ),
+                    }
+                    for field_id, field in fields.items()
+                    if isinstance(field_id, str) and isinstance(field, dict)
+                }
+            backend_actions.append(backend_action)
         request_body = {
             "deviceType": device_type,
             "concept": concept,
             "behaviors": behaviors,
-            "actions": actions,
+            "actions": backend_actions,
         }
         result = await self._request(
             "POST",
