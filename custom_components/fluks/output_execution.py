@@ -29,6 +29,7 @@ _TEMPERATURE_CONTROLS = {
 }
 _ACTION_ATTEMPTS = 3
 _ACTION_RETRY_DELAY = 1.0
+_TEMPERATURE_VERIFICATION_TOLERANCE = Decimal("0.5")
 
 
 def _canonical_value(value: Any, datatype: str) -> Any:
@@ -397,7 +398,7 @@ class RuntimeOutputExecutor:
                 await self._hass.services.async_call(
                     domain,
                     service,
-                    data,
+                    dict(data),
                     blocking=True,
                     target=target,
                 )
@@ -461,9 +462,31 @@ class RuntimeOutputExecutor:
             else:
                 return None
         return all(
-            self._same_value(expected, actual)
-            for expected, actual in zip(data.values(), observed)
+            self._same_action_value(action, field, expected, actual)
+            for (field, expected), actual in zip(data.items(), observed)
         )
+
+    @classmethod
+    def _same_action_value(
+        cls, action: dict[str, Any], field: str, expected: Any, actual: Any
+    ) -> bool:
+        """Compare an action value with the native value reported by Home Assistant."""
+        if cls._same_value(expected, actual):
+            return True
+        if (
+            action.get("service") in {
+                "climate.set_temperature",
+                "water_heater.set_temperature",
+            }
+            and field == "temperature"
+        ):
+            expected_number = cls._numeric(expected)
+            actual_number = cls._numeric(actual)
+            if expected_number is not None and actual_number is not None:
+                return abs(
+                    Decimal(str(expected_number)) - Decimal(str(actual_number))
+                ) <= _TEMPERATURE_VERIFICATION_TOLERANCE
+        return False
 
     def _can_verify_action(
         self,
