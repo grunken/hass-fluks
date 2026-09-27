@@ -5,6 +5,7 @@
   "config_flow": true,
   "dependencies": ["frontend", "websocket_api"],
   "documentation": "https://github.com/grunken/hass-fluks",
+  "issue_tracker": "https://github.com/grunken/hass-fluks/issues",
   "requirements": [],
   "codeowners": []
 }
