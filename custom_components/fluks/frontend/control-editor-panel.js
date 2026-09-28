@@ -8,6 +8,12 @@ const loadControlActionEditor = () => controlActionEditorModule ??= import(`./co
 
 const TAGLINE = "Your Energy. Decides together.";
 const DEVICE_ICON_BASE = "/fluks-device-icons";
+const BATTERY_POWER_CONCEPT = "battery.power";
+const BATTERY_SOC_CONCEPT = "battery.soc";
+const SOLAR_POWER_CONCEPT = "solar.power";
+const SITE_POWER_CONCEPT = "site.power";
+const SITE_IMPORT_ENERGY_CONCEPT = "site.importEnergy";
+const SITE_EXPORT_ENERGY_CONCEPT = "site.exportEnergy";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const esc = (value) => String(value ?? "").replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -27,6 +33,9 @@ class FluksControlEditorPanel extends HTMLElement {
     this._outputSuggestions = new Map();
     this._clearedInputConcepts = new Set();
     this._proposalDraftConcepts = new Set();
+    this._acceptedDraftConcepts = new Set();
+    this._powerSignSamples = new Map();
+    this._powerSignResolved = new Set();
     this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
     this._runtimeStatusUnsubscribe = undefined;
     this._runtimeStatusTimer = undefined;
@@ -39,6 +48,7 @@ class FluksControlEditorPanel extends HTMLElement {
 
   set hass(value) {
     this._hass = value;
+    this._observePowerSigns();
     if (this.isConnected && this._entryId && !this._context) this._loadContext();
   }
   set route(value) {
@@ -56,6 +66,9 @@ class FluksControlEditorPanel extends HTMLElement {
       this._outputSuggestions.clear();
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
+      this._acceptedDraftConcepts.clear();
+      this._powerSignSamples.clear();
+      this._powerSignResolved.clear();
       this._unsubscribeRuntimeStatus();
       this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
       this._beginView({ name: "home" });
@@ -195,12 +208,15 @@ class FluksControlEditorPanel extends HTMLElement {
     this._view = view;
     this._detail = this._draft = undefined;
     this._inputSuggestionsLoading = false;
+    this._powerSignSamples.clear();
+    this._powerSignResolved.clear();
     if (view.name === "edit") {
       this._inputDraft = undefined;
       this._inputDraftDevice = undefined;
       this._editProperties = undefined;
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
+      this._acceptedDraftConcepts.clear();
     }
     if (view.name === "control") {
       const key = `${view.deviceId}:${view.concept}`;
@@ -233,6 +249,7 @@ class FluksControlEditorPanel extends HTMLElement {
       if (!this._isCurrentView(token)) return;
     }
     this._render();
+    if (view.name === "edit") this._observePowerSigns(true);
     if (view.name === "edit" && this._isCurrentView(token) && this._hasUnmappedInputConcepts(this._detail)) {
       this._loadInputSuggestions(view.deviceId, token).catch(() => {});
     }
@@ -261,6 +278,7 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     if (this._isCurrentView(token) && this._view.name === "edit" && this._view.deviceId === deviceId && this._detail) {
       if (detail) this._detail = { ...this._detail, proposals: detail.proposals ?? {} };
+      this._observePowerSigns(true);
       this._inputSuggestionsLoading = false;
       this._renderEdit();
     }
@@ -416,6 +434,157 @@ class FluksControlEditorPanel extends HTMLElement {
       : String(raw);
     return [value, state?.attributes.unit_of_measurement].filter(Boolean).join(" ");
   }
+  _powerSignConfiguration(concept) {
+    const detail = this._view.name === "add" ? this._draft : this._detail;
+    if (!detail) return undefined;
+    const draft = this._inputDraft?.[concept];
+    if (draft) {
+      if (!draft.entityId) return undefined;
+      return {
+        configuration: draft,
+        accepted: !this._proposalDraftConcepts.has(concept) || this._acceptedDraftConcepts.has(concept),
+      };
+    }
+    const persisted = detail.mappings?.[concept]?.configuration;
+    if (persisted?.entityId) return { configuration: persisted, accepted: true };
+    const proposal = detail.proposals?.[concept];
+    if (!proposal?.configuration?.entityId) return undefined;
+    return { configuration: proposal.configuration, accepted: false };
+  }
+  _acceptedPowerEvidenceConfiguration(concept) {
+    const mapping = this._powerSignConfiguration(concept);
+    return mapping?.accepted ? mapping.configuration : undefined;
+  }
+  _powerSourceValue(configuration) {
+    const entityId = configuration?.entityId;
+    const state = entityId ? this._hass?.states?.[entityId] : undefined;
+    if (!state) return undefined;
+    const value = configuration.attribute
+      ? state.attributes?.[configuration.attribute]
+      : state.state;
+    // Home Assistant represents unavailable sources with values such as
+    // null, "unknown", and "unavailable". Do not coerce those (or other
+    // non-values such as false and "") to zero: a zero-like fallback must
+    // never count as observed power/evidence for sign detection.
+    if (value === null || value === undefined || typeof value === "boolean"
+      || (typeof value === "string" && value.trim() === "")) return undefined;
+    if (typeof value !== "number" && typeof value !== "string") return undefined;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+  _powerSignResolution(configuration) {
+    const transforms = Array.isArray(configuration?.transforms)
+      ? configuration.transforms
+      : [];
+    if (transforms.some((transform) => transform?.type === "invert")) return "opposite";
+    // The backend input schema has no sign-convention metadata field. A valid
+    // no-op scale is the persisted marker for a verified native orientation.
+    if (transforms.some((transform) => transform?.type === "scale" && Number(transform.factor) === 1)) {
+      return "fluks";
+    }
+    return undefined;
+  }
+  _powerSampleKey(concept, configuration) {
+    return [
+      concept,
+      this._view.name,
+      this._view.deviceId || this._view.haDeviceId || "",
+      configuration.entityId,
+      configuration.attribute || "",
+    ].join("|");
+  }
+  _observePowerSigns(prime = false) {
+    if (!this._hass || !["add", "edit"].includes(this._view.name)) return;
+    const observations = [];
+    const batteryPower = this._powerSignConfiguration(BATTERY_POWER_CONCEPT);
+    const batterySoc = this._powerSignConfiguration(BATTERY_SOC_CONCEPT);
+    if (batteryPower?.accepted && batterySoc?.accepted) {
+      observations.push({
+        concept: BATTERY_POWER_CONCEPT,
+        power: batteryPower,
+        soc: batterySoc,
+      });
+    }
+    const solarPower = this._powerSignConfiguration(SOLAR_POWER_CONCEPT);
+    if (solarPower?.accepted) {
+      observations.push({ concept: SOLAR_POWER_CONCEPT, power: solarPower });
+    }
+    const sitePower = this._powerSignConfiguration(SITE_POWER_CONCEPT);
+    const siteImportEnergy = this._acceptedPowerEvidenceConfiguration(SITE_IMPORT_ENERGY_CONCEPT);
+    const siteExportEnergy = this._acceptedPowerEvidenceConfiguration(SITE_EXPORT_ENERGY_CONCEPT);
+    if (sitePower?.accepted && (siteImportEnergy || siteExportEnergy)) {
+      observations.push({
+        concept: SITE_POWER_CONCEPT,
+        power: sitePower,
+        importEnergy: siteImportEnergy,
+        exportEnergy: siteExportEnergy,
+      });
+    }
+    for (const observation of observations) {
+      const { concept, power, soc, importEnergy, exportEnergy } = observation;
+      const powerKey = this._powerSampleKey(concept, power.configuration);
+      if (this._powerSignResolved.has(powerKey)) continue;
+      const powerValue = this._powerSourceValue(power.configuration);
+      if (powerValue === undefined || powerValue === 0) continue;
+      if (this._powerSignResolution(power.configuration)) continue;
+      let resolution;
+      if (concept === SOLAR_POWER_CONCEPT) {
+        resolution = powerValue > 0 ? "opposite" : "fluks";
+      } else if (concept === SITE_POWER_CONCEPT) {
+        const importValue = importEnergy ? this._powerSourceValue(importEnergy) : undefined;
+        const exportValue = exportEnergy ? this._powerSourceValue(exportEnergy) : undefined;
+        const importKey = importEnergy ? this._powerSampleKey(SITE_IMPORT_ENERGY_CONCEPT, importEnergy) : undefined;
+        const exportKey = exportEnergy ? this._powerSampleKey(SITE_EXPORT_ENERGY_CONCEPT, exportEnergy) : undefined;
+        const previousImport = importKey ? this._powerSignSamples.get(importKey) : undefined;
+        const previousExport = exportKey ? this._powerSignSamples.get(exportKey) : undefined;
+        if (importValue !== undefined && importKey) this._powerSignSamples.set(importKey, importValue);
+        if (exportValue !== undefined && exportKey) this._powerSignSamples.set(exportKey, exportValue);
+        if (prime) continue;
+        const importing = importValue !== undefined && previousImport !== undefined && importValue > previousImport;
+        const exporting = exportValue !== undefined && previousExport !== undefined && exportValue > previousExport;
+        if (importing === exporting) continue;
+        const fluksSign = importing ? 1 : -1;
+        resolution = Math.sign(powerValue) === fluksSign ? "fluks" : "opposite";
+      } else {
+        const socValue = this._powerSourceValue(soc.configuration);
+        if (socValue === undefined) continue;
+        const key = `${powerKey}|${soc.configuration.entityId}|${soc.configuration.attribute || ""}`;
+        const previous = this._powerSignSamples.get(key);
+        this._powerSignSamples.set(key, socValue);
+        if (prime || previous === undefined) continue;
+        const socDelta = socValue - previous;
+        if (socDelta === 0) continue;
+        resolution = Math.sign(socDelta) === Math.sign(powerValue) ? "fluks" : "opposite";
+      }
+      const configuration = clone(power.configuration);
+      const transforms = Array.isArray(configuration.transforms)
+        ? [...configuration.transforms]
+        : [];
+      if (resolution === "opposite") {
+        if (!transforms.some((transform) => transform?.type === "invert")) {
+          transforms.push({ type: "invert" });
+        }
+      } else if (!transforms.some((transform) => transform?.type === "scale" && Number(transform.factor) === 1)) {
+        transforms.push({ type: "scale", factor: 1 });
+      }
+      configuration.transforms = transforms;
+      const detail = this._view.name === "add" ? this._draft : this._detail;
+      const proposals = detail.proposals || {};
+      detail.proposals = {
+        ...proposals,
+        [concept]: {
+          ...proposals[concept],
+          configuration,
+        },
+      };
+      this._powerSignResolved.add(powerKey);
+      if (this._inputDraft && power.accepted) {
+        this._inputDraft[concept] = clone(configuration);
+      }
+      if (this._view.name === "edit") this._renderEdit();
+      else this._renderAdd();
+    }
+  }
   _allEntities() {
     const registryIds = new Set(this._context.entities.map((item) => item.entity_id));
     return [
@@ -499,10 +668,13 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _inputConversions(concept, configuration) {
     const transforms = configuration.transforms ?? [];
-    const rows = transforms.map((transform, index) => {
+    const visible = transforms.map((transform, index) => ({ transform, index }))
+      .filter(({ transform }) => !(concept === BATTERY_POWER_CONCEPT
+        && transform?.type === "scale" && Number(transform.factor) === 1));
+    const rows = visible.map(({ transform, index }, visibleIndex) => {
       const detail = transform.type === "scale" ? ` × ${transform.factor}` : transform.type === "offset" ? ` ${transform.amount}` : transform.type === "valueMap" ? ` · ${Object.keys(transform.values ?? {}).length}` : "";
-      return `<li><span class="order">${index + 1}</span><span class="conversion-copy"><strong>${esc(this._t(transform.type === "valueMap" ? "value_map" : transform.type))}</strong><small>${esc(detail.trim())}</small></span><span class="row-actions"><button type="button" data-input-transform="up" data-input-concept="${esc(concept)}" data-index="${index}" ${index === 0 ? "disabled" : ""}>↑ ${esc(this._t("up"))}</button><button type="button" data-input-transform="down" data-input-concept="${esc(concept)}" data-index="${index}" ${index === transforms.length - 1 ? "disabled" : ""}>↓ ${esc(this._t("down"))}</button>${transform.type === "valueMap" ? "" : `<button type="button" data-input-transform="edit" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("edit"))}</button>`}<button type="button" data-input-transform="remove" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("remove"))}</button></span></li>`;
-    }).join("");
+      return `<li><span class="order">${visibleIndex + 1}</span><span class="conversion-copy"><strong>${esc(this._t(transform.type === "valueMap" ? "value_map" : transform.type))}</strong><small>${esc(detail.trim())}</small></span><span class="row-actions"><button type="button" data-input-transform="up" data-input-concept="${esc(concept)}" data-index="${index}" ${visibleIndex === 0 ? "disabled" : ""}>↑ ${esc(this._t("up"))}</button><button type="button" data-input-transform="down" data-input-concept="${esc(concept)}" data-index="${index}" ${visibleIndex === visible.length - 1 ? "disabled" : ""}>↓ ${esc(this._t("down"))}</button>${transform.type === "valueMap" ? "" : `<button type="button" data-input-transform="edit" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("edit"))}</button>`}<button type="button" data-input-transform="remove" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("remove"))}</button></span></li>`;
+      }).join("");
     return `<div class="input-conversions"><strong>${esc(this._t("conversions"))}</strong>${rows ? `<ol>${rows}</ol>` : `<small>${esc(this._t("no_transforms"))}</small>`}<button type="button" class="add-conversion" data-input-transform="add" data-input-concept="${esc(concept)}">＋ ${esc(this._t("add_conversion"))}</button></div>`;
   }
   _mappingFields(detail, editableConversions = false) {
@@ -595,7 +767,9 @@ class FluksControlEditorPanel extends HTMLElement {
         this._captureInputProperties();
         this._inputDraft[concept] = clone(proposal.configuration);
         this._proposalDraftConcepts.add(concept);
+        this._acceptedDraftConcepts.add(concept);
         this._clearedInputConcepts.delete(concept);
+        this._observePowerSigns(true);
         this._renderInputDraft();
       };
     });
@@ -608,7 +782,9 @@ class FluksControlEditorPanel extends HTMLElement {
       this._inputDraft[concept] = { version: 1, entityId };
       if (attribute) this._inputDraft[concept].attribute = attribute;
       this._proposalDraftConcepts.delete(concept);
+      this._acceptedDraftConcepts.delete(concept);
       if (entityId) this._clearedInputConcepts.delete(concept); else this._clearedInputConcepts.add(concept);
+      this._observePowerSigns(true);
       this._renderInputDraft();
       return;
     }
@@ -616,6 +792,8 @@ class FluksControlEditorPanel extends HTMLElement {
     if (attribute) this._inputDraft[concept].attribute = attribute;
     else delete this._inputDraft[concept].attribute;
     if (entityId) this._clearedInputConcepts.delete(concept); else this._clearedInputConcepts.add(concept);
+    if (entityId && this._proposalDraftConcepts.has(concept)) this._acceptedDraftConcepts.add(concept);
+    this._observePowerSigns(true);
     this._renderInputDraft();
   }
   _cancelEdit() {
@@ -624,6 +802,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._editProperties = undefined;
     this._clearedInputConcepts.clear();
     this._proposalDraftConcepts.clear();
+    this._acceptedDraftConcepts.clear();
     this._spaceHeaterValidationError = false;
     history.back();
   }
@@ -707,6 +886,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._spaceHeaterValidationError = false;
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
+      this._acceptedDraftConcepts.clear();
       this._inputDraft = Object.fromEntries(this._detail.concepts.map((concept) => {
         const existing = this._detail.mappings[concept.concept]?.configuration;
         const proposal = this._detail.proposals?.[concept.concept];
@@ -744,6 +924,7 @@ class FluksControlEditorPanel extends HTMLElement {
         this._editProperties = undefined;
         this._clearedInputConcepts.clear();
         this._proposalDraftConcepts.clear();
+        this._acceptedDraftConcepts.clear();
         this._spaceHeaterValidationError = false;
         history.back();
       }
@@ -775,6 +956,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._inputDraftDevice = undefined;
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
+      this._acceptedDraftConcepts.clear();
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
       this._renderAdd();
     });
@@ -824,6 +1006,7 @@ class FluksControlEditorPanel extends HTMLElement {
       this._inputDraftDevice = `add:${this._view.deviceType}:${haDeviceId}`;
       this._clearedInputConcepts.clear();
       this._proposalDraftConcepts.clear();
+      this._acceptedDraftConcepts.clear();
       this._inputDraft = Object.fromEntries(draft.concepts.map((concept) => {
         const proposal = draft.proposals?.[concept.concept];
         if (proposal?.classification === "auto" && proposal.configuration) {
@@ -833,6 +1016,7 @@ class FluksControlEditorPanel extends HTMLElement {
           ? proposal.configuration
           : { version: 1, entityId: "" })];
       }));
+      this._observePowerSigns(true);
       history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
     } catch (_) { /* The final render below exposes the existing error state. */ }
     finally {
