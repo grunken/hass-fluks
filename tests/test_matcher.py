@@ -884,6 +884,33 @@ def test_selected_device_relationship_is_a_hard_boundary(hass):
     )
 
 
+def test_additional_device_context_is_included_as_related_candidates(hass):
+    concepts = [_concept("site.power", "W")]
+    candidates = [
+        _candidate("sensor.site_power", device_id="selected"),
+        _candidate("sensor.inverter_power", device_id="inverter"),
+    ]
+
+    with patch(
+        "custom_components.fluks.matcher.collect_candidates",
+        return_value=candidates,
+    ):
+        prepared = prepare_matches(
+            hass,
+            concepts,
+            "selected",
+            additional_device_ids=["inverter"],
+        )
+
+    suggestions = suggestion_candidates(prepared, "site.power")
+    assert {item["deviceId"] for item in suggestions} == {"selected", "inverter"}
+    related = next(
+        item for item in prepared.ranked["site.power"]
+        if item.candidate.device_id == "inverter"
+    )
+    assert any(item["code"] == "related_device" for item in related.evidence)
+
+
 def test_unverified_signed_orientation_is_suggested_not_auto_selected(hass):
     proposal = _match(
         hass,

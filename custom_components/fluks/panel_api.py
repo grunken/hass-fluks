@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -152,12 +153,17 @@ async def _mapping_proposals(
     site_id: str,
     device_type: str,
     concepts: list[dict[str, Any]],
-    ha_device_id: str,
+    ha_device_id: str | None,
     existing_configurations: dict[str, dict[str, Any]] | None = None,
+    additional_ha_device_ids: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Replace only the matcher's final semantic choice with backend selection."""
     prepared = prepare_matches(
-        hass, concepts, ha_device_id, existing_configurations
+        hass,
+        concepts,
+        ha_device_id,
+        existing_configurations,
+        additional_device_ids=additional_ha_device_ids,
     )
     # The batch contract groups sources by owning device.  Keep the candidate
     # collection/filtering above unchanged and submit the union of those
@@ -178,13 +184,16 @@ async def _mapping_proposals(
 
     selected_sources: dict[str, dict[str, str]] = {}
     suggestions: dict[str, dict[str, Any]] = {}
-    if concept_names and candidate_by_source:
-        candidate_groups = [
-            {
-                "deviceId": ha_device_id,
-                "candidates": list(candidate_by_source.values()),
-            }
-        ]
+    candidate_groups_by_device: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidate_by_source.values():
+        device_id = candidate.get("deviceId")
+        if isinstance(device_id, str) and device_id:
+            candidate_groups_by_device.setdefault(device_id, []).append(candidate)
+    candidate_groups = [
+        {"deviceId": device_id, "candidates": candidates}
+        for device_id, candidates in sorted(candidate_groups_by_device.items())
+    ]
+    if concept_names and candidate_groups:
         try:
             suggestions = await api.suggest_mappings(
                 site_id,
@@ -437,13 +446,190 @@ async def _panel_translations(hass: HomeAssistant) -> dict[str, str]:
     )
 
 
+def _configuration_status(
+    catalog_item: dict[str, Any],
+    mappings: list[dict[str, Any]],
+    properties: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize the existing input and output work for an overview row."""
+    concepts = _mappable_concepts(catalog_item)
+    input_concepts = {
+        str(item.get("concept"))
+        for item in mappings
+        if isinstance(item, dict)
+        if item.get("direction") == "input"
+        and isinstance(item.get("concept"), str)
+        and isinstance(item.get("configuration"), dict)
+        and isinstance(item["configuration"].get("entityId"), str)
+        and item["configuration"].get("entityId")
+    }
+    if catalog_item.get("type") == "heatPump":
+        available = set(input_concepts)
+        changed = True
+        while changed:
+            changed = False
+            for derived, requirements in (
+                ("heatPump.energy", {"heatPump.bufferEnergy", "heatPump.tankEnergy"}),
+                ("heatPump.energy", {"heatPump.power"}),
+                ("heatPump.power", {"heatPump.energy"}),
+                ("heatPump.bufferEnergy", {"heatPump.energy", "heatPump.tankEnergy"}),
+                ("heatPump.tankEnergy", {"heatPump.energy", "heatPump.bufferEnergy"}),
+            ):
+                if requirements <= available and derived not in available:
+                    available.add(derived)
+                    changed = True
+        missing_mappings = []
+        if not {"heatPump.power", "heatPump.energy"} & available:
+            missing_mappings.append("heatPump.power")
+        if not {
+            "heatPump.temperature",
+            "heatPump.bufferTemperature",
+            "heatPump.tankTemperature",
+        } & available:
+            missing_mappings.append("heatPump.temperature")
+    elif catalog_item.get("type") == "battery":
+        available = set(input_concepts)
+        changed = True
+        while changed:
+            changed = False
+            for derived, requirements in (
+                ("battery.energy", {"battery.power"}),
+                ("battery.power", {"battery.energy"}),
+                ("battery.energy", {"battery.chargeEnergy", "battery.dischargeEnergy"}),
+                ("battery.chargeEnergy", {"battery.energy"}),
+                ("battery.dischargeEnergy", {"battery.energy"}),
+            ):
+                if requirements <= available and derived not in available:
+                    available.add(derived)
+                    changed = True
+        missing_mappings = []
+        if "battery.soc" not in available:
+            missing_mappings.append("battery.soc")
+        if not {"battery.power", "battery.energy"} & available:
+            missing_mappings.append("battery.power")
+    elif catalog_item.get("type") == "solar":
+        available = set(input_concepts)
+        if "solar.power" in available:
+            available.add("solar.energy")
+        if "solar.energy" in available:
+            available.add("solar.power")
+        missing_mappings = [] if {"solar.power", "solar.energy"} & available else ["solar.power"]
+    elif catalog_item.get("type") == "electricVehicle":
+        available = set(input_concepts)
+        changed = True
+        while changed:
+            changed = False
+            for derived, requirements in (
+                ("electricVehicle.energy", {"electricVehicle.power"}),
+                ("electricVehicle.power", {"electricVehicle.energy"}),
+                ("electricVehicle.energy", {"electricVehicle.chargeEnergy", "electricVehicle.dischargeEnergy"}),
+                ("electricVehicle.chargeEnergy", {"electricVehicle.energy"}),
+                ("electricVehicle.dischargeEnergy", {"electricVehicle.energy"}),
+            ):
+                if requirements <= available and derived not in available:
+                    available.add(derived)
+                    changed = True
+        missing_mappings = []
+        if "electricVehicle.soc" not in available:
+            missing_mappings.append("electricVehicle.soc")
+        if "electricVehicle.connected" not in available:
+            missing_mappings.append("electricVehicle.connected")
+        if not {"electricVehicle.power", "electricVehicle.energy"} & available:
+            missing_mappings.append("electricVehicle.power")
+    elif catalog_item.get("type") == "spaceHeater":
+        has_temperature = "spaceHeater.temperature" in input_concepts
+        has_direct_consumption = bool(
+            {"spaceHeater.power", "spaceHeater.energy"} & input_concepts
+        )
+        rated_power = (
+            properties.get("ratedPowerW") if isinstance(properties, dict) else None
+        )
+        try:
+            has_rated_power = (
+                rated_power is not None
+                and Decimal(str(rated_power)).is_finite()
+                and Decimal(str(rated_power)) >= 0
+            )
+        except (InvalidOperation, ValueError):
+            has_rated_power = False
+        has_state_consumption = "spaceHeater.state" in input_concepts and has_rated_power
+        missing_mappings = []
+        if not has_temperature:
+            missing_mappings.append("spaceHeater.temperature")
+        if not (has_direct_consumption or has_state_consumption):
+            missing_mappings.append("spaceHeater.power")
+    elif catalog_item.get("type") == "waterHeater":
+        available = set(input_concepts)
+        if "waterHeater.power" in available:
+            available.add("waterHeater.energy")
+        if "waterHeater.energy" in available:
+            available.add("waterHeater.power")
+        missing_mappings = []
+        if "waterHeater.temperature" not in available:
+            missing_mappings.append("waterHeater.temperature")
+        if not {"waterHeater.power", "waterHeater.energy"} & available:
+            missing_mappings.append("waterHeater.power")
+    else:
+        missing_mappings = [
+            str(item["concept"])
+            for item in concepts
+            if str(item["concept"]) not in input_concepts
+        ]
+    controls = _control_concepts(catalog_item)
+    configured_controls = {
+        str(item.get("concept"))
+        for item in mappings
+        if isinstance(item, dict)
+        if item.get("direction") == "output"
+        and isinstance(item.get("concept"), str)
+        and isinstance(item.get("configuration"), dict)
+        and isinstance(item["configuration"].get("actions"), list)
+        and item["configuration"]["actions"]
+    }
+    missing_controls = [
+        str(item["concept"])
+        for item in controls
+        if str(item["concept"]) not in configured_controls
+    ]
+    mappings_complete = not missing_mappings
+    controls_complete = not missing_controls
+    if catalog_item.get("type") == "battery":
+        battery_power_configured = "battery.power" in configured_controls
+        controls_complete = mappings_complete and battery_power_configured
+        missing_controls = [] if controls_complete else ["battery.power"]
+    elif catalog_item.get("type") == "electricVehicle":
+        ev_power_configured = "electricVehicle.power" in configured_controls
+        controls_complete = mappings_complete and ev_power_configured
+        missing_controls = [] if controls_complete else ["electricVehicle.power"]
+    elif catalog_item.get("type") == "spaceHeater":
+        temperature_control_configured = "spaceHeater.temperature" in configured_controls
+        controls_complete = mappings_complete and temperature_control_configured
+        missing_controls = [] if controls_complete else ["spaceHeater.temperature"]
+    elif catalog_item.get("type") == "waterHeater":
+        temperature_control_configured = "waterHeater.temperature" in configured_controls
+        controls_complete = mappings_complete and temperature_control_configured
+        missing_controls = [] if controls_complete else ["waterHeater.temperature"]
+    return {
+        "complete": mappings_complete and controls_complete,
+        "mappings_complete": mappings_complete,
+        "controls_complete": controls_complete,
+        "missing_mappings": len(missing_mappings),
+        "missing_controls": len(missing_controls),
+        "control_count": len(controls),
+    }
+
+
 def _present_device(
-    device: dict[str, Any], translations: dict[str, str], *, name: str | None = None
-) -> dict[str, str]:
+    device: dict[str, Any],
+    translations: dict[str, str],
+    *,
+    name: str | None = None,
+    configuration_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Present one canonical Device without exposing backend-only fields."""
     identity = name if name is not None else device_identity(device) or ""
     type_name = device_type_name(device, translations)
-    return {
+    result: dict[str, Any] = {
         "id": str(device["id"]),
         "type": str(device["type"]),
         "type_name": type_name,
@@ -455,11 +641,16 @@ def _present_device(
             if (device.get("properties") or {}).get(key)
         ),
     }
+    if configuration_status is not None:
+        result["configuration_status"] = configuration_status
+    return result
 
 
 async def _present_devices(
-    hass: HomeAssistant, devices: list[dict[str, Any]]
-) -> list[dict[str, str]]:
+    hass: HomeAssistant,
+    devices: list[dict[str, Any]],
+    configuration_statuses: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     translations = await _panel_translations(hass)
     physical = [item for item in devices if item.get("type") != SITE_DEVICE_TYPE]
     physical.sort(
@@ -469,7 +660,11 @@ async def _present_devices(
         )
     )
     return [
-        _present_device(item, translations)
+        _present_device(
+            item,
+            translations,
+            configuration_status=(configuration_statuses or {}).get(str(item["id"])),
+        )
         for item in physical
         if isinstance(item.get("id"), str) and isinstance(item.get("type"), str)
     ]
@@ -486,6 +681,23 @@ def _ha_context(entry: ConfigEntry, internal_id: str) -> str | None:
         value = legacy.get(CONF_HA_DEVICE_ID)
         return value if isinstance(value, str) else None
     return None
+
+
+def _site_mapping_candidate_device_ids(
+    entry: ConfigEntry, devices: list[dict[str, Any]]
+) -> list[str]:
+    """Return HA devices already selected for Solar/Battery Site context."""
+    result = []
+    for device in devices:
+        if device.get("type") not in {"solar", "battery"}:
+            continue
+        device_id = device.get("id")
+        if not isinstance(device_id, str):
+            continue
+        ha_device_id = _ha_context(entry, device_id)
+        if ha_device_id and ha_device_id not in result:
+            result.append(ha_device_id)
+    return result
 
 
 def _cleared_mapping_concepts(entry: ConfigEntry, internal_id: str) -> set[str]:
@@ -635,6 +847,21 @@ async def websocket_context(hass, connection, msg):
         entry = _entry(hass, msg["entry_id"])
         api = _api(hass, entry)
         devices, catalog = await api.list_devices(entry.data[CONF_SITE_ID]), await _catalog(api)
+        mappings = await api.list_mappings(entry.data[CONF_SITE_ID])
+        mappings_by_device: dict[str, list[dict[str, Any]]] = {}
+        for mapping in mappings:
+            device_id = mapping.get("deviceId")
+            if isinstance(device_id, str):
+                mappings_by_device.setdefault(device_id, []).append(mapping)
+        configuration_statuses = {
+            str(device["id"]): _configuration_status(
+                catalog[str(device["type"])],
+                mappings_by_device.get(str(device["id"]), []),
+                device.get("properties"),
+            )
+            for device in devices
+            if isinstance(device.get("id"), str) and str(device.get("type")) in catalog
+        }
         translations = await _panel_translations(hass)
         site_device = next(
             item
@@ -670,8 +897,9 @@ async def websocket_context(hass, connection, msg):
                     site_device,
                     translations,
                     name=entry.title.strip() or "Site",
+                    configuration_status=configuration_statuses.get(str(site_device["id"])),
                 ),
-                "devices": await _present_devices(hass, devices),
+                "devices": await _present_devices(hass, devices, configuration_statuses),
                 "device_types": sorted(types, key=lambda item: item["name"].casefold()),
                 "ha_devices": sorted(ha_devices, key=lambda item: item["name"].casefold()),
                 "entities": _present_entities(hass, entity_registry),
@@ -751,6 +979,11 @@ async def websocket_device_detail(hass, connection, msg):
                 output_mappings.setdefault(str(item["concept"]), []).append(item)
         concepts = _mappable_concepts(catalog[device_type])
         ha_device_id = _ha_context(entry, device_id)
+        additional_ha_device_ids: list[str] = []
+        if msg.get("suggestions") and device_type == SITE_DEVICE_TYPE:
+            additional_ha_device_ids = _site_mapping_candidate_device_ids(
+                entry, await api.list_devices(site_id)
+            )
         cleared = _cleared_mapping_concepts(entry, device_id)
         missing = [
             item
@@ -769,8 +1002,9 @@ async def websocket_device_detail(hass, connection, msg):
                     name: dict(mapping.get("configuration") or {})
                     for name, mapping in existing.items()
                 },
+                additional_ha_device_ids=additional_ha_device_ids,
             )
-            if msg.get("suggestions") and ha_device_id
+            if msg.get("suggestions") and (ha_device_id or additional_ha_device_ids)
             else {}
         )
         translations = await _panel_translations(hass)
@@ -798,6 +1032,9 @@ async def websocket_device_detail(hass, connection, msg):
                     else {}
                 ),
                 "ha_device_id": ha_device_id,
+                "configuration_status": _configuration_status(
+                    catalog[device_type], mappings, properties
+                ),
                 "concepts": _present_concepts(concepts, translations),
                 "controls": _present_concepts(_control_concepts(catalog[device_type]), translations),
                 "mappings": {

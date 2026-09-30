@@ -349,6 +349,7 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   panel._view = { name: "add", deviceType: "battery" };
   const review = {
     concepts: [{ concept: "battery.power", label: "Power", cadence: "realtime" }],
+    controls: [{ concept: "battery.power", label: "Power" }],
     proposals: { "battery.power": {
       concept: "battery.power",
       source: { entityId: "sensor.battery_power" },
@@ -362,7 +363,8 @@ test("production Add Device edits and persists suggested Input Mapping conversio
     properties: { displayName: "GoodWe battery", vendor: "GoodWe", model: "GW10K" },
   };
   const calls = [];
-  panel._go = () => {};
+  let destination;
+  panel._go = (view) => { destination = view; };
   panel._call = async (type, data) => {
     calls.push({ type, data });
     if (type === "fluks/config/add_review") return review;
@@ -397,6 +399,7 @@ test("production Add Device edits and persists suggested Input Mapping conversio
     unit: "W",
     transforms: [{ type: "invert" }, { type: "scale", factor: 0.5 }],
   });
+  assert.deepEqual(destination, { name: "device", deviceId: "device-created" });
 
   const reopened = new Panel();
   reopened._context = panel._context; reopened._hass = panel._hass;
@@ -413,6 +416,354 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   assert.deepEqual(reopened._inputDraft["battery.power"], persisted);
   assert.match(rendered, /Invert sign/);
   assert.match(rendered, /Scale/);
+});
+
+test("battery power suggestions resolve sign from SOC direction and stop rechecking", () => {
+  const createPanel = (power, soc) => {
+    const panel = new Panel();
+    panel._view = { name: "edit", deviceId: "battery-device" };
+    panel._detail = {
+      mappings: {},
+      proposals: {
+        "battery.soc": { configuration: { version: 1, entityId: "sensor.soc" } },
+        "battery.power": { configuration: { version: 1, entityId: "sensor.power" } },
+      },
+    };
+    panel._inputDraft = {
+      "battery.soc": { version: 1, entityId: "sensor.soc" },
+      "battery.power": { version: 1, entityId: "sensor.power" },
+    };
+    panel._hass = {
+      states: {
+        "sensor.power": { state: String(power), attributes: {} },
+        "sensor.soc": { state: String(soc), attributes: {} },
+      },
+    };
+    panel._observePowerSigns(true);
+    let renders = 0;
+    panel._renderEdit = () => { renders += 1; };
+    return {
+      panel,
+      setState: (nextPower, nextSoc) => {
+        panel.hass = {
+          states: {
+            "sensor.power": { state: String(nextPower), attributes: {} },
+            "sensor.soc": { state: String(nextSoc), attributes: {} },
+          },
+        };
+      },
+      get renders() { return renders; },
+    };
+  };
+
+  for (const [power, initialSoc, nextSoc, expected] of [
+    [100, 50, 51, [{ type: "scale", factor: 1 }]],
+    [100, 50, 49, [{ type: "invert" }]],
+    [-100, 50, 49, [{ type: "scale", factor: 1 }]],
+    [-100, 50, 51, [{ type: "invert" }]],
+  ]) {
+    const sample = createPanel(power, initialSoc);
+    sample.setState(power, nextSoc);
+    assert.deepEqual(sample.panel._detail.proposals["battery.power"].configuration.transforms, expected);
+    assert.equal(sample.renders, 1);
+    sample.setState(power, nextSoc + (nextSoc > initialSoc ? 1 : -1));
+    assert.deepEqual(sample.panel._detail.proposals["battery.power"].configuration.transforms, expected);
+    assert.equal(sample.renders, 1);
+  }
+});
+
+test("solar power suggestions resolve sign from production direction and stop rechecking", () => {
+  const createPanel = (power) => {
+    const panel = new Panel();
+    panel._view = { name: "edit", deviceId: "solar-device" };
+    panel._detail = {
+      mappings: {},
+      proposals: {
+        "solar.power": { configuration: { version: 1, entityId: "sensor.solar_power" } },
+      },
+    };
+    panel._inputDraft = { "solar.power": { version: 1, entityId: "sensor.solar_power" } };
+    panel._hass = {
+      states: { "sensor.solar_power": { state: String(power), attributes: {} } },
+    };
+    let renders = 0;
+    panel._renderEdit = () => { renders += 1; };
+    panel._observePowerSigns(true);
+    return {
+      panel,
+      setState: (value) => {
+        panel.hass = {
+          states: { "sensor.solar_power": { state: String(value), attributes: {} } },
+        };
+      },
+      get renders() { return renders; },
+    };
+  };
+
+  for (const [power, expected] of [
+    [100, [{ type: "invert" }]],
+    [-100, [{ type: "scale", factor: 1 }]],
+  ]) {
+    const sample = createPanel(power);
+    assert.deepEqual(sample.panel._detail.proposals["solar.power"].configuration.transforms, expected);
+    assert.equal(sample.renders, 1);
+    sample.setState(-power);
+    assert.deepEqual(sample.panel._detail.proposals["solar.power"].configuration.transforms, expected);
+    assert.equal(sample.renders, 1);
+  }
+
+  const zero = createPanel(0);
+  assert.equal(zero.panel._detail.proposals["solar.power"].configuration.transforms, undefined);
+  zero.setState(100);
+  assert.deepEqual(zero.panel._detail.proposals["solar.power"].configuration.transforms, [{ type: "invert" }]);
+});
+
+test("site power suggestions resolve sign from accepted import and export energy mappings", () => {
+  const createPanel = (power, imported, exported, accepted = true) => {
+    const panel = new Panel();
+    panel._view = { name: "edit", deviceId: "site-device" };
+    panel._detail = {
+      mappings: accepted ? {
+        "site.importEnergy": { configuration: { version: 1, entityId: "sensor.import_energy" } },
+        "site.exportEnergy": { configuration: { version: 1, entityId: "sensor.export_energy" } },
+      } : {},
+      proposals: {
+        "site.power": { configuration: { version: 1, entityId: "sensor.site_power" } },
+        "site.importEnergy": { configuration: { version: 1, entityId: "sensor.import_energy" } },
+        "site.exportEnergy": { configuration: { version: 1, entityId: "sensor.export_energy" } },
+      },
+    };
+    panel._inputDraft = { "site.power": { version: 1, entityId: "sensor.site_power" } };
+    panel._hass = {
+      states: {
+        "sensor.site_power": { state: String(power), attributes: {} },
+        "sensor.import_energy": { state: String(imported), attributes: {} },
+        "sensor.export_energy": { state: String(exported), attributes: {} },
+      },
+    };
+    let renders = 0;
+    panel._renderEdit = () => { renders += 1; };
+    panel._observePowerSigns(true);
+    return {
+      panel,
+      setState: (nextPower, nextImported, nextExported) => {
+        panel.hass = {
+          states: {
+            "sensor.site_power": { state: String(nextPower), attributes: {} },
+            "sensor.import_energy": { state: String(nextImported), attributes: {} },
+            "sensor.export_energy": { state: String(nextExported), attributes: {} },
+          },
+        };
+      },
+      get renders() { return renders; },
+    };
+  };
+
+  for (const [power, imported, exported, nextImported, nextExported, expected] of [
+    [100, 10, 20, 11, 20, [{ type: "scale", factor: 1 }]],
+    [-100, 10, 20, 11, 20, [{ type: "invert" }]],
+    [-100, 10, 20, 10, 21, [{ type: "scale", factor: 1 }]],
+    [100, 10, 20, 10, 21, [{ type: "invert" }]],
+  ]) {
+    const sample = createPanel(power, imported, exported);
+    sample.setState(power, nextImported, nextExported);
+    assert.deepEqual(sample.panel._detail.proposals["site.power"].configuration.transforms, expected);
+    assert.equal(sample.renders, 1);
+    sample.setState(-power, nextImported + 1, nextExported + 1);
+    assert.deepEqual(sample.panel._detail.proposals["site.power"].configuration.transforms, expected);
+    assert.equal(sample.renders, 1);
+  }
+
+  const ambiguous = createPanel(100, 10, 20);
+  ambiguous.setState(100, 11, 21);
+  assert.equal(ambiguous.panel._detail.proposals["site.power"].configuration.transforms, undefined);
+  assert.equal(ambiguous.renders, 0);
+  ambiguous.setState(100, 12, 21);
+  assert.deepEqual(ambiguous.panel._detail.proposals["site.power"].configuration.transforms, [{ type: "scale", factor: 1 }]);
+
+  const proposalsOnly = createPanel(100, 10, 20, false);
+  proposalsOnly.setState(100, 11, 20);
+  assert.equal(proposalsOnly.panel._detail.proposals["site.power"].configuration.transforms, undefined);
+});
+
+test("power sign detection ignores proposal-only power mappings", () => {
+  const cases = [
+    {
+      concept: "battery.power",
+      mappings: {},
+      proposals: {
+        "battery.power": { configuration: { version: 1, entityId: "sensor.power" } },
+        "battery.soc": { configuration: { version: 1, entityId: "sensor.soc" } },
+      },
+      inputDraft: {
+        "battery.power": { version: 1, entityId: "" },
+        "battery.soc": { version: 1, entityId: "" },
+      },
+      states: {
+        "sensor.power": { state: "100", attributes: {} },
+        "sensor.soc": { state: "50", attributes: {} },
+      },
+      nextStates: {
+        "sensor.power": { state: "100", attributes: {} },
+        "sensor.soc": { state: "51", attributes: {} },
+      },
+    },
+    {
+      concept: "solar.power",
+      mappings: {},
+      proposals: { "solar.power": { configuration: { version: 1, entityId: "sensor.power" } } },
+      inputDraft: { "solar.power": { version: 1, entityId: "" } },
+      states: { "sensor.power": { state: "100", attributes: {} } },
+      nextStates: { "sensor.power": { state: "-100", attributes: {} } },
+    },
+    {
+      concept: "site.power",
+      mappings: {
+        "site.importEnergy": { configuration: { version: 1, entityId: "sensor.import" } },
+      },
+      proposals: { "site.power": { configuration: { version: 1, entityId: "sensor.power" } } },
+      inputDraft: { "site.power": { version: 1, entityId: "" } },
+      states: {
+        "sensor.power": { state: "100", attributes: {} },
+        "sensor.import": { state: "10", attributes: {} },
+      },
+      nextStates: {
+        "sensor.power": { state: "100", attributes: {} },
+        "sensor.import": { state: "11", attributes: {} },
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const panel = new Panel();
+    panel._view = { name: "edit", deviceId: `${item.concept}-device` };
+    panel._detail = { mappings: item.mappings, proposals: item.proposals };
+    panel._inputDraft = item.inputDraft;
+    panel._hass = { states: item.states };
+    panel._observePowerSigns(true);
+    panel.hass = { states: item.nextStates };
+    assert.equal(item.proposals[item.concept].configuration.transforms, undefined, item.concept);
+  }
+});
+
+test("power sign detection waits for usable observed values", () => {
+  const cases = [
+    {
+      concept: "battery.power",
+      mappings: {},
+      proposals: {
+        "battery.power": { configuration: { version: 1, entityId: "sensor.power" } },
+        "battery.soc": { configuration: { version: 1, entityId: "sensor.soc" } },
+      },
+      inputDraft: {
+        "battery.power": { version: 1, entityId: "sensor.power" },
+        "battery.soc": { version: 1, entityId: "sensor.soc" },
+      },
+      proposalDraftConcepts: ["battery.power", "battery.soc"],
+      acceptedDraftConcepts: ["battery.power", "battery.soc"],
+      states: {
+        "sensor.power": { state: null, attributes: {} },
+        "sensor.soc": { state: 50, attributes: {} },
+      },
+      nextStates: {
+        "sensor.power": { state: 100, attributes: {} },
+        "sensor.soc": { state: 51, attributes: {} },
+      },
+    },
+    {
+      concept: "solar.power",
+      mappings: {},
+      proposals: { "solar.power": { configuration: { version: 1, entityId: "sensor.power" } } },
+      inputDraft: { "solar.power": { version: 1, entityId: "sensor.power" } },
+      proposalDraftConcepts: ["solar.power"],
+      acceptedDraftConcepts: ["solar.power"],
+      states: { "sensor.power": { state: "unavailable", attributes: {} } },
+      nextStates: { "sensor.power": { state: -100, attributes: {} } },
+    },
+    {
+      concept: "site.power",
+      mappings: {
+        "site.importEnergy": { configuration: { version: 1, entityId: "sensor.import" } },
+      },
+      proposals: { "site.power": { configuration: { version: 1, entityId: "sensor.power" } } },
+      inputDraft: { "site.power": { version: 1, entityId: "sensor.power" } },
+      proposalDraftConcepts: ["site.power"],
+      acceptedDraftConcepts: ["site.power"],
+      states: {
+        "sensor.power": { state: 100, attributes: {} },
+        "sensor.import": { state: null, attributes: {} },
+      },
+      nextStates: {
+        "sensor.power": { state: 100, attributes: {} },
+        "sensor.import": { state: 11, attributes: {} },
+      },
+    },
+  ];
+
+  for (const item of cases) {
+    const panel = new Panel();
+    panel._view = { name: "edit", deviceId: `${item.concept}-device` };
+    panel._detail = { mappings: item.mappings, proposals: item.proposals };
+    panel._inputDraft = item.inputDraft;
+    for (const concept of item.proposalDraftConcepts) panel._proposalDraftConcepts.add(concept);
+    for (const concept of item.acceptedDraftConcepts) panel._acceptedDraftConcepts.add(concept);
+    panel._renderEdit = () => {};
+    panel._hass = { states: item.states };
+    panel._observePowerSigns(true);
+    assert.equal(panel._detail.proposals[item.concept].configuration.transforms, undefined, `${item.concept} initial`);
+    panel.hass = { states: item.nextStates };
+    if (item.concept === "solar.power") {
+      assert.deepEqual(panel._detail.proposals[item.concept].configuration.transforms, [{ type: "scale", factor: 1 }]);
+    } else {
+      assert.equal(panel._detail.proposals[item.concept].configuration.transforms, undefined, `${item.concept} evidence only`);
+    }
+  }
+});
+
+test("resolved power signs are not evaluated again without a draft mapping", () => {
+  const cases = [
+    {
+      concept: "battery.power",
+      mappings: {
+        "battery.power": { configuration: { version: 1, entityId: "sensor.power" } },
+        "battery.soc": { configuration: { version: 1, entityId: "sensor.soc" } },
+      },
+      initial: { "sensor.power": "100", "sensor.soc": "50" },
+      resolved: { "sensor.power": "100", "sensor.soc": "51" },
+      changed: { "sensor.power": "-100", "sensor.soc": "50" },
+    },
+    {
+      concept: "solar.power",
+      mappings: { "solar.power": { configuration: { version: 1, entityId: "sensor.power" } } },
+      initial: { "sensor.power": "100" },
+      resolved: { "sensor.power": "100" },
+      changed: { "sensor.power": "-100" },
+    },
+    {
+      concept: "site.power",
+      mappings: {
+        "site.power": { configuration: { version: 1, entityId: "sensor.power" } },
+        "site.importEnergy": { configuration: { version: 1, entityId: "sensor.import" } },
+      },
+      initial: { "sensor.power": "100", "sensor.import": "10" },
+      resolved: { "sensor.power": "100", "sensor.import": "11" },
+      changed: { "sensor.power": "-100", "sensor.import": "12" },
+    },
+  ];
+
+  for (const item of cases) {
+    const panel = new Panel();
+    panel._view = { name: "edit", deviceId: `${item.concept}-device` };
+    panel._detail = { mappings: item.mappings, proposals: {} };
+    panel._hass = { states: Object.fromEntries(Object.entries(item.initial).map(([entityId, state]) => [entityId, { state, attributes: {} }])) };
+    let renders = 0;
+    panel._renderEdit = () => { renders += 1; };
+    panel._observePowerSigns(true);
+    panel.hass = { states: Object.fromEntries(Object.entries(item.resolved).map(([entityId, state]) => [entityId, { state, attributes: {} }])) };
+    assert.equal(renders, 1, item.concept);
+    panel.hass = { states: Object.fromEntries(Object.entries(item.changed).map(([entityId, state]) => [entityId, { state, attributes: {} }])) };
+    assert.equal(renders, 1, item.concept);
+  }
 });
 
 test("mapping suggestions show loading state and prevent duplicate Add requests", async () => {
@@ -925,6 +1276,246 @@ test("homepage renders configured devices and live runtime status", () => {
   assert.doesNotMatch(statusNode.innerHTML, /Reconnecting/);
 });
 
+test("overview rows show compact complete and incomplete configuration indicators", () => {
+  const panel = new Panel();
+  panel._context = {
+    translations: {
+      site: "Site", devices: "Devices", add_device: "Add device", site_actions: "Site actions",
+      delete_site: "Delete site", connection: "Connection", connected_to_fluks: "Connected to fluks",
+      reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
+      configured_devices: "{count} configured", configuration: "Configuration", configuration_description: "Manage configuration",
+      configuration_complete: "Configured", configuration_needs_attention: "Needs attention",
+    },
+    site: { id: "site-device", name: "Home", configuration_status: { complete: false } },
+    devices: [
+      { id: "complete", type: "solar", label: "Solar", configuration_status: { complete: true } },
+      { id: "incomplete", type: "battery", label: "Battery", configuration_status: { complete: false } },
+    ],
+  };
+  panel._runtimeStatus = { state: "connected", disconnected_at: null };
+  panel._frame = (_title, body) => { panel.rendered = body; };
+  panel.shadowRoot.querySelector = (selector) => selector === "#site-menu"
+    ? { onclick: undefined }
+    : selector === "#site-actions"
+      ? { hidden: true, querySelector: () => ({}) }
+      : null;
+  panel.shadowRoot.querySelectorAll = () => [];
+
+  panel._renderHome();
+
+  assert.equal((panel.rendered.match(/configuration-indicator complete/g) || []).length, 1);
+  assert.equal((panel.rendered.match(/configuration-indicator incomplete/g) || []).length, 2);
+  assert.equal((panel.rendered.match(/configuration-dot incomplete/g) || []).length, 2);
+  assert.doesNotMatch(panel.rendered, /configuration-dot complete/);
+  assert.match(panel.rendered, /id="home-configuration"[\s\S]*?configuration-dot incomplete/);
+  assert.match(panel.rendered, /id="site-detail"[\s\S]*?configuration-indicator incomplete/);
+  assert.match(panel.rendered, /aria-label="Needs attention"/);
+
+  panel._context.site.configuration_status = { complete: true };
+  panel._context.devices.forEach((device) => { device.configuration_status = { complete: true }; });
+  panel._renderHome();
+  assert.equal((panel.rendered.match(/configuration-dot complete/g) || []).length, 2);
+  assert.equal((panel.rendered.match(/configuration-indicator complete/g) || []).length, 3);
+  assert.doesNotMatch(panel.rendered, /configuration-dot incomplete/);
+});
+
+test("incomplete device detail makes Controls the next action", () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    measurements_energy: "Measurements & energy", measurements_count: "measurements", energy_count: "energy mappings",
+    controls: "Controls", available: "available", mappings_need_configuration: "Complete mappings",
+    controls_need_configuration: "Configure controls next", configuration_needs_attention: "Needs attention",
+    device_information: "Device information", optional: "Optional", device_actions: "Actions", delete_device: "Delete device",
+  } };
+  panel._detail = {
+    id: "battery-1", type: "battery", type_name: "Battery", name: "Battery", label: "Battery",
+    properties: {}, mappings: {}, concepts: [{ concept: "battery.power", cadence: "realtime" }],
+    controls: [{ concept: "battery.power", label: "Power" }], output_mappings: {},
+  };
+  panel._frame = (_title, body) => { panel.rendered = body; };
+  panel._wireMenu = () => {};
+  panel.shadowRoot.querySelector = () => ({});
+
+  panel._renderDevice();
+
+  assert.match(panel.rendered, /Configure controls next/);
+  assert.match(panel.rendered, /configuration-indicator incomplete/);
+  assert.match(panel.rendered, /Complete mappings/);
+});
+
+test("battery status accepts derived measurement paths and requires the control chain", () => {
+  const panel = new Panel();
+  const detail = {
+    type: "battery",
+    concepts: [
+      { concept: "battery.soc" }, { concept: "battery.power" }, { concept: "battery.energy" },
+      { concept: "battery.chargeEnergy" }, { concept: "battery.dischargeEnergy" },
+    ],
+    controls: [{ concept: "battery.power" }],
+    mappings: {
+      "battery.soc": { configuration: { entityId: "sensor.soc" } },
+      "battery.chargeEnergy": { configuration: { entityId: "sensor.charge" } },
+      "battery.dischargeEnergy": { configuration: { entityId: "sensor.discharge" } },
+    },
+    output_mappings: {
+      "battery.power": [{ configuration: { actions: [{ type: "serviceCall" }] } }],
+    },
+  };
+  panel._detail = detail;
+
+  let status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, true);
+  assert.equal(status.complete, true);
+
+  detail.output_mappings = {};
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, false);
+  assert.equal(status.complete, false);
+});
+
+test("solar status accepts either production power or energy", () => {
+  const panel = new Panel();
+  const detail = {
+    type: "solar",
+    concepts: [{ concept: "solar.power" }, { concept: "solar.energy" }],
+    controls: [],
+    mappings: { "solar.energy": { configuration: { entityId: "sensor.solar_energy" } } },
+    output_mappings: {},
+  };
+
+  let status = panel._configurationStatus(detail);
+  assert.equal(status.complete, true);
+  assert.equal(status.controls_complete, true);
+
+  detail.mappings = {};
+  status = panel._configurationStatus(detail);
+  assert.equal(status.complete, false);
+  assert.equal(status.mappings_complete, false);
+  assert.equal(status.controls_complete, true);
+});
+
+test("electric vehicle status requires soc, connection, facts, and power control", () => {
+  const panel = new Panel();
+  const detail = {
+    type: "electricVehicle",
+    concepts: [
+      { concept: "electricVehicle.soc" }, { concept: "electricVehicle.connected" },
+      { concept: "electricVehicle.power" }, { concept: "electricVehicle.energy" },
+      { concept: "electricVehicle.chargeEnergy" }, { concept: "electricVehicle.dischargeEnergy" },
+    ],
+    controls: [{ concept: "electricVehicle.power" }],
+    mappings: {
+      "electricVehicle.soc": { configuration: { entityId: "sensor.ev_soc" } },
+      "electricVehicle.connected": { configuration: { entityId: "binary_sensor.ev_connected" } },
+      "electricVehicle.chargeEnergy": { configuration: { entityId: "sensor.ev_charge" } },
+      "electricVehicle.dischargeEnergy": { configuration: { entityId: "sensor.ev_discharge" } },
+    },
+    output_mappings: {
+      "electricVehicle.power": [{ configuration: { actions: [{ type: "serviceCall" }] } }],
+    },
+  };
+
+  let status = panel._configurationStatus(detail);
+  assert.equal(status.complete, true);
+  assert.equal(status.controls_complete, true);
+
+  delete detail.mappings["electricVehicle.connected"];
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, false);
+  assert.equal(status.controls_complete, false);
+
+  detail.mappings["electricVehicle.connected"] = { configuration: { entityId: "binary_sensor.ev_connected" } };
+  detail.output_mappings = {};
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, false);
+});
+
+test("space heater status accepts rated power consumption derivation and requires temperature control", () => {
+  const panel = new Panel();
+  const detail = {
+    type: "spaceHeater",
+    properties: { ratedPowerW: 1800 },
+    concepts: [
+      { concept: "spaceHeater.temperature" }, { concept: "spaceHeater.power" },
+      { concept: "spaceHeater.energy" }, { concept: "spaceHeater.state" },
+    ],
+    controls: [{ concept: "spaceHeater.temperature" }],
+    mappings: {
+      "spaceHeater.temperature": { configuration: { entityId: "sensor.temperature" } },
+      "spaceHeater.state": { configuration: { entityId: "sensor.state" } },
+    },
+    output_mappings: {
+      "spaceHeater.temperature": [{ configuration: { actions: [{ type: "serviceCall" }] } }],
+    },
+  };
+
+  let status = panel._configurationStatus(detail);
+  assert.equal(status.complete, true);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, true);
+
+  delete detail.properties.ratedPowerW;
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, false);
+  assert.equal(status.controls_complete, false);
+
+  detail.properties.ratedPowerW = 1800;
+  detail.mappings["spaceHeater.energy"] = { configuration: { entityId: "sensor.energy" } };
+  status = panel._configurationStatus(detail);
+  assert.equal(status.complete, true);
+
+  detail.output_mappings = {};
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, false);
+});
+
+test("water heater status accepts power or energy derivation and requires temperature control", () => {
+  const panel = new Panel();
+  const detail = {
+    type: "waterHeater",
+    properties: {},
+    concepts: [
+      { concept: "waterHeater.temperature" }, { concept: "waterHeater.power" },
+      { concept: "waterHeater.energy" }, { concept: "waterHeater.state" },
+    ],
+    controls: [{ concept: "waterHeater.temperature" }],
+    mappings: {
+      "waterHeater.temperature": { configuration: { entityId: "sensor.temperature" } },
+      "waterHeater.energy": { configuration: { entityId: "sensor.energy" } },
+      "waterHeater.state": { configuration: { entityId: "sensor.state" } },
+    },
+    output_mappings: {
+      "waterHeater.temperature": [{ configuration: { actions: [{ type: "serviceCall" }] } }],
+    },
+  };
+
+  let status = panel._configurationStatus(detail);
+  assert.equal(status.complete, true);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, true);
+
+  delete detail.mappings["waterHeater.temperature"];
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, false);
+  assert.equal(status.controls_complete, false);
+
+  detail.mappings["waterHeater.temperature"] = { configuration: { entityId: "sensor.temperature" } };
+  delete detail.mappings["waterHeater.energy"];
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, false);
+  assert.equal(status.controls_complete, false);
+
+  detail.mappings["waterHeater.power"] = { configuration: { entityId: "sensor.power" } };
+  detail.output_mappings = {};
+  status = panel._configurationStatus(detail);
+  assert.equal(status.mappings_complete, true);
+  assert.equal(status.controls_complete, false);
+});
+
 test("Site detail reuses shared Mapping and Controls views from catalog data", () => {
   const panel = new Panel();
   panel._context = { translations: {
@@ -944,7 +1535,7 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
     ],
     controls: [{ concept: "site.power", label: "Power", datatype: "number", unit: "W" }],
     mappings: { "site.power": { concept: "site.power", configuration: { entityId: "sensor.grid_power" } } },
-    output_mappings: { "site.power": [{ concept: "site.power", mode: null, configuration: { version: 1, actions: [] } }] },
+    output_mappings: { "site.power": [{ concept: "site.power", mode: null, configuration: { version: 1, actions: [{ type: "serviceCall", service: "switch.turn_on", target: { entityId: "switch.grid" }, data: {} }] } }] },
   };
   let rendered; const destinations = []; const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
   panel._frame = (title, body) => { rendered = { title, body }; };
