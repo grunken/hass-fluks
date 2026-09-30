@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -302,13 +303,18 @@ def _attribute_unit(hass: HomeAssistant, state: State, attribute: str) -> str | 
 
 
 def collect_candidates(
-    hass: HomeAssistant, selected_device_id: str
+    hass: HomeAssistant, selected_device_id: str | Collection[str] | None
 ) -> list[EntityCandidate]:
     """Collect scalar sources owned by the explicitly selected HA Device."""
+    selected_device_ids = (
+        {selected_device_id}
+        if isinstance(selected_device_id, str)
+        else set(selected_device_id or ())
+    )
     registry = er.async_get(hass)
     candidates: list[EntityCandidate] = []
     for entry in registry.entities.values():
-        if entry.disabled or entry.device_id != selected_device_id:
+        if entry.disabled or entry.device_id not in selected_device_ids:
             continue
         state: State | None = hass.states.get(entry.entity_id)
         attributes = state.attributes if state is not None else {}
@@ -525,9 +531,13 @@ def _configuration_for_candidate(
 def _evaluate_candidate(
     concept: dict[str, Any],
     candidate: EntityCandidate,
-    selected_device_id: str,
+    selected_device_id: str | None,
+    candidate_device_ids: set[str] | None = None,
 ) -> tuple[ScoredCandidate | None, str | None, tuple[dict[str, Any], ...]]:
-    if candidate.device_id != selected_device_id:
+    allowed_device_ids = candidate_device_ids or (
+        {selected_device_id} if selected_device_id is not None else set()
+    )
+    if candidate.device_id not in allowed_device_ids:
         return None, "outside_selected_device", ()
     if candidate.domain in IRRELEVANT_STATE_DOMAINS:
         return None, "irrelevant_domain", ()
@@ -554,7 +564,10 @@ def _evaluate_candidate(
         }:
             evidence.append(_evidence("source_type", "native_string_entity", 2))
 
-    evidence.append(_evidence("relationship", "selected_device", 4))
+    if candidate.device_id == selected_device_id:
+        evidence.append(_evidence("relationship", "selected_device", 4))
+    else:
+        evidence.append(_evidence("relationship", "related_device", 2))
 
     canonical_device = str(concept.get("concept", "")).split(".", 1)[0]
     domain_overlap = sorted(
@@ -798,11 +811,19 @@ def _configured_source_key(configuration: dict[str, Any]) -> str | None:
 def prepare_matches(
     hass: HomeAssistant,
     concepts: list[dict[str, Any]],
-    selected_device_id: str,
+    selected_device_id: str | None,
     existing_configurations: dict[str, dict[str, Any]] | None = None,
+    additional_device_ids: Collection[str] | None = None,
 ) -> PreparedMatches:
     """Collect and filter candidates exactly as the existing matcher does."""
-    candidates = collect_candidates(hass, selected_device_id)
+    candidate_device_ids = {
+        device_id
+        for device_id in (additional_device_ids or ())
+        if isinstance(device_id, str) and device_id
+    }
+    if selected_device_id:
+        candidate_device_ids.add(selected_device_id)
+    candidates = collect_candidates(hass, candidate_device_ids)
     definitions = {
         str(concept["concept"]): concept
         for concept in concepts
@@ -837,7 +858,7 @@ def prepare_matches(
                     )
                 continue
             result, rejection, rejection_evidence = _evaluate_candidate(
-                concept, candidate, selected_device_id
+                concept, candidate, selected_device_id, candidate_device_ids
             )
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 diagnostics.append(
@@ -902,6 +923,7 @@ def suggestion_candidates(
         payload = {
             "entityId": candidate.entity_id,
             "attribute": candidate.attribute,
+            "deviceId": candidate.device_id,
             "name": candidate.friendly_name,
             "originalName": candidate.original_name,
             "sourceType": "attribute" if candidate.attribute is not None else "state",
@@ -921,15 +943,20 @@ def suggestion_candidates(
 def match_entities(
     hass: HomeAssistant,
     concepts: list[dict[str, Any]],
-    selected_device_id: str,
+    selected_device_id: str | None,
     existing_configurations: dict[str, dict[str, Any]] | None = None,
     *,
     prepared: PreparedMatches | None = None,
     selected_sources: dict[str, dict[str, str]] | None = None,
+    additional_device_ids: Collection[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return one evidence-bearing proposal for every fact concept."""
     matches = prepared or prepare_matches(
-        hass, concepts, selected_device_id, existing_configurations
+        hass,
+        concepts,
+        selected_device_id,
+        existing_configurations,
+        additional_device_ids,
     )
     definitions = matches.definitions
     ranked = matches.ranked

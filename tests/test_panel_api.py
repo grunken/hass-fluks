@@ -32,6 +32,7 @@ from custom_components.fluks.panel_api import (
     _has_local_context,
     _mappable_concepts,
     _migrate_legacy_mappings,
+    _configuration_status,
     async_register_panel_commands,
     websocket_add_review,
     websocket_add_save,
@@ -175,6 +176,388 @@ def test_catalog_source_semantics_and_local_duplicate_context_are_reused(hass):
     assert not _has_local_context(entry, "ha-a", "solar")
 
 
+def test_configuration_status_requires_mappings_and_nonempty_control_actions():
+    catalog_item = {
+        "concepts": [
+            {"concept": "site.power", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "site.importEnergy", "usages": ["fact"], "source": "mapping"},
+        ]
+    }
+    incomplete = _configuration_status(catalog_item, [
+        {
+            "concept": "site.power",
+            "direction": "input",
+            "configuration": {"entityId": "sensor.site_power"},
+        },
+        {
+            "concept": "site.power",
+            "direction": "output",
+            "configuration": {"actions": []},
+        },
+    ])
+    assert incomplete == {
+        "complete": False,
+        "mappings_complete": False,
+        "controls_complete": False,
+        "missing_mappings": 1,
+        "missing_controls": 1,
+        "control_count": 1,
+    }
+
+    complete = _configuration_status(catalog_item, [
+        {
+            "concept": "site.power",
+            "direction": "input",
+            "configuration": {"entityId": "sensor.site_power"},
+        },
+        {
+            "concept": "site.importEnergy",
+            "direction": "input",
+            "configuration": {"entityId": "sensor.import"},
+        },
+        {
+            "concept": "site.power",
+            "direction": "output",
+            "configuration": {"actions": [{"type": "serviceCall"}]},
+        },
+    ])
+    assert complete["complete"] is True
+
+
+def test_heat_pump_configuration_status_accepts_existing_derivations():
+    catalog_item = {
+        "type": "heatPump",
+        "concepts": [
+            {"concept": "heatPump.power", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "heatPump.energy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "heatPump.bufferEnergy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "heatPump.tankEnergy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "heatPump.temperature", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "heatPump.tankTemperature", "usages": ["fact"], "source": "mapping"},
+            {"concept": "heatPump.state", "usages": ["fact"], "source": "mapping"},
+        ],
+    }
+    output_mappings = [
+        {
+            "concept": concept,
+            "direction": "output",
+            "configuration": {"actions": [{"type": "serviceCall"}]},
+        }
+        for concept in ("heatPump.power", "heatPump.temperature")
+    ]
+
+    power_and_buffer_temperature = _configuration_status(
+        catalog_item,
+        [
+            {"concept": "heatPump.power", "direction": "input", "configuration": {"entityId": "sensor.power"}},
+            {"concept": "heatPump.temperature", "direction": "input", "configuration": {"entityId": "sensor.temperature"}},
+            *output_mappings,
+        ],
+    )
+    assert power_and_buffer_temperature["complete"] is True
+
+    energy_and_tank_temperature = _configuration_status(
+        catalog_item,
+        [
+            {"concept": "heatPump.energy", "direction": "input", "configuration": {"entityId": "sensor.energy"}},
+            {"concept": "heatPump.tankTemperature", "direction": "input", "configuration": {"entityId": "sensor.tank_temperature"}},
+            *output_mappings,
+        ],
+    )
+    assert energy_and_tank_temperature["complete"] is True
+
+    buffer_and_tank_energy = _configuration_status(
+        catalog_item,
+        [
+            {"concept": "heatPump.bufferEnergy", "direction": "input", "configuration": {"entityId": "sensor.buffer_energy"}},
+            {"concept": "heatPump.tankEnergy", "direction": "input", "configuration": {"entityId": "sensor.tank_energy"}},
+            {"concept": "heatPump.tankTemperature", "direction": "input", "configuration": {"entityId": "sensor.tank_temperature"}},
+            *output_mappings,
+        ],
+    )
+    assert buffer_and_tank_energy["complete"] is True
+
+    missing_temperature = _configuration_status(
+        catalog_item,
+        [
+            {"concept": "heatPump.power", "direction": "input", "configuration": {"entityId": "sensor.power"}},
+            *output_mappings,
+        ],
+    )
+    assert missing_temperature["complete"] is False
+    assert missing_temperature["mappings_complete"] is False
+
+
+def test_battery_configuration_status_requires_a_complete_fact_control_chain():
+    catalog_item = {
+        "type": "battery",
+        "concepts": [
+            {"concept": "battery.soc", "usages": ["fact"], "source": "mapping"},
+            {"concept": "battery.power", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "battery.energy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "battery.chargeEnergy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "battery.dischargeEnergy", "usages": ["fact"], "source": "mapping"},
+        ],
+    }
+    control = {
+        "concept": "battery.power",
+        "direction": "output",
+        "mode": "charge",
+        "configuration": {"actions": [{"type": "serviceCall"}]},
+    }
+
+    def status(*concepts, with_control=True):
+        mappings = [
+            {
+                "concept": concept,
+                "direction": "input",
+                "configuration": {"entityId": f"sensor.{concept.rsplit('.', 1)[-1]}"},
+            }
+            for concept in concepts
+        ]
+        return _configuration_status(catalog_item, mappings + ([control] if with_control else []))
+
+    for facts in (
+        ("battery.soc", "battery.power"),
+        ("battery.soc", "battery.energy"),
+        ("battery.soc", "battery.chargeEnergy", "battery.dischargeEnergy"),
+    ):
+        result = status(*facts)
+        assert result["mappings_complete"] is True
+        assert result["controls_complete"] is True
+        assert result["complete"] is True
+
+    no_control = status("battery.soc", "battery.power", with_control=False)
+    assert no_control["mappings_complete"] is True
+    assert no_control["controls_complete"] is False
+    assert no_control["complete"] is False
+
+    missing_facts = status("battery.soc")
+    assert missing_facts["mappings_complete"] is False
+    assert missing_facts["controls_complete"] is False
+    assert missing_facts["complete"] is False
+
+    control_without_soc = status("battery.power")
+    assert control_without_soc["mappings_complete"] is False
+    assert control_without_soc["controls_complete"] is False
+
+
+def test_solar_configuration_status_accepts_power_or_energy_derivation():
+    catalog_item = {
+        "type": "solar",
+        "concepts": [
+            {"concept": "solar.power", "usages": ["fact"], "source": "mapping"},
+            {"concept": "solar.energy", "usages": ["fact"], "source": "mapping"},
+        ],
+    }
+
+    def status(*concepts):
+        return _configuration_status(
+            catalog_item,
+            [
+                {
+                    "concept": concept,
+                    "direction": "input",
+                    "configuration": {"entityId": f"sensor.{concept.rsplit('.', 1)[-1]}"},
+                }
+                for concept in concepts
+            ],
+        )
+
+    for facts in (("solar.power",), ("solar.energy",), ("solar.power", "solar.energy")):
+        result = status(*facts)
+        assert result["complete"] is True
+        assert result["mappings_complete"] is True
+        assert result["controls_complete"] is True
+
+    neither = status()
+    assert neither["complete"] is False
+    assert neither["mappings_complete"] is False
+    assert neither["controls_complete"] is True
+
+
+def test_electric_vehicle_configuration_status_requires_fact_and_control_chain():
+    catalog_item = {
+        "type": "electricVehicle",
+        "concepts": [
+            {"concept": "electricVehicle.soc", "usages": ["fact"], "source": "mapping"},
+            {"concept": "electricVehicle.connected", "usages": ["fact"], "source": "mapping"},
+            {"concept": "electricVehicle.power", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "electricVehicle.energy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "electricVehicle.chargeEnergy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "electricVehicle.dischargeEnergy", "usages": ["fact"], "source": "mapping"},
+        ],
+    }
+    control = {
+        "concept": "electricVehicle.power",
+        "direction": "output",
+        "mode": "charge",
+        "configuration": {"actions": [{"type": "serviceCall"}]},
+    }
+
+    def status(*concepts, with_control=True):
+        mappings = [
+            {
+                "concept": concept,
+                "direction": "input",
+                "configuration": {"entityId": f"sensor.{concept.rsplit('.', 1)[-1]}"},
+            }
+            for concept in concepts
+        ]
+        return _configuration_status(catalog_item, mappings + ([control] if with_control else []))
+
+    for facts in (
+        ("electricVehicle.soc", "electricVehicle.connected", "electricVehicle.power"),
+        ("electricVehicle.soc", "electricVehicle.connected", "electricVehicle.energy"),
+        (
+            "electricVehicle.soc",
+            "electricVehicle.connected",
+            "electricVehicle.chargeEnergy",
+            "electricVehicle.dischargeEnergy",
+        ),
+    ):
+        result = status(*facts)
+        assert result["mappings_complete"] is True
+        assert result["controls_complete"] is True
+        assert result["complete"] is True
+
+    for missing in ("electricVehicle.soc", "electricVehicle.connected"):
+        facts = {
+            "electricVehicle.soc",
+            "electricVehicle.connected",
+            "electricVehicle.power",
+        }
+        facts.remove(missing)
+        result = status(*facts)
+        assert result["mappings_complete"] is False
+        assert result["controls_complete"] is False
+
+    no_power_path = status("electricVehicle.soc", "electricVehicle.connected")
+    assert no_power_path["mappings_complete"] is False
+    assert no_power_path["controls_complete"] is False
+
+    no_control = status(
+        "electricVehicle.soc",
+        "electricVehicle.connected",
+        "electricVehicle.power",
+        with_control=False,
+    )
+    assert no_control["mappings_complete"] is True
+    assert no_control["controls_complete"] is False
+
+
+def test_space_heater_configuration_status_accepts_rated_power_derivation():
+    catalog_item = {
+        "type": "spaceHeater",
+        "concepts": [
+            {"concept": "spaceHeater.temperature", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "spaceHeater.power", "usages": ["fact"], "source": "mapping"},
+            {"concept": "spaceHeater.energy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "spaceHeater.state", "usages": ["fact"], "source": "mapping"},
+        ],
+    }
+    control = {
+        "concept": "spaceHeater.temperature",
+        "direction": "output",
+        "configuration": {"actions": [{"type": "serviceCall"}]},
+    }
+
+    def status(*concepts, properties=None, with_control=True):
+        mappings = [
+            {
+                "concept": concept,
+                "direction": "input",
+                "configuration": {"entityId": f"sensor.{concept.rsplit('.', 1)[-1]}"},
+            }
+            for concept in concepts
+        ]
+        return _configuration_status(
+            catalog_item,
+            mappings + ([control] if with_control else []),
+            properties,
+        )
+
+    for facts, properties in (
+        (("spaceHeater.temperature", "spaceHeater.power"), None),
+        (("spaceHeater.temperature", "spaceHeater.energy"), None),
+        (("spaceHeater.temperature", "spaceHeater.state"), {"ratedPowerW": 1800}),
+    ):
+        result = status(*facts, properties=properties)
+        assert result["mappings_complete"] is True
+        assert result["controls_complete"] is True
+        assert result["complete"] is True
+
+    for facts, properties in (
+        (("spaceHeater.temperature", "spaceHeater.state"), None),
+        (("spaceHeater.temperature",), {"ratedPowerW": 1800}),
+        (("spaceHeater.state",), {"ratedPowerW": 1800}),
+        (("spaceHeater.temperature",), None),
+    ):
+        result = status(*facts, properties=properties)
+        assert result["mappings_complete"] is False
+        assert result["controls_complete"] is False
+        assert result["complete"] is False
+
+    no_control = status("spaceHeater.temperature", "spaceHeater.power", with_control=False)
+    assert no_control["mappings_complete"] is True
+    assert no_control["controls_complete"] is False
+    assert no_control["complete"] is False
+
+
+def test_water_heater_configuration_status_accepts_power_energy_derivation():
+    catalog_item = {
+        "type": "waterHeater",
+        "concepts": [
+            {"concept": "waterHeater.temperature", "usages": ["fact", "control"], "source": "mapping"},
+            {"concept": "waterHeater.power", "usages": ["fact"], "source": "mapping"},
+            {"concept": "waterHeater.energy", "usages": ["fact"], "source": "mapping"},
+            {"concept": "waterHeater.state", "usages": ["fact"], "source": "mapping"},
+        ],
+    }
+    control = {
+        "concept": "waterHeater.temperature",
+        "direction": "output",
+        "configuration": {"actions": [{"type": "serviceCall"}]},
+    }
+
+    def status(*concepts, with_control=True):
+        mappings = [
+            {
+                "concept": concept,
+                "direction": "input",
+                "configuration": {"entityId": f"sensor.{concept.rsplit('.', 1)[-1]}"},
+            }
+            for concept in concepts
+        ]
+        return _configuration_status(catalog_item, mappings + ([control] if with_control else []))
+
+    for facts in (
+        ("waterHeater.temperature", "waterHeater.power"),
+        ("waterHeater.temperature", "waterHeater.energy"),
+        ("waterHeater.temperature", "waterHeater.power", "waterHeater.energy"),
+    ):
+        result = status(*facts)
+        assert result["mappings_complete"] is True
+        assert result["controls_complete"] is True
+        assert result["complete"] is True
+
+    for facts in (
+        ("waterHeater.temperature",),
+        ("waterHeater.power",),
+        ("waterHeater.energy",),
+        ("waterHeater.temperature", "waterHeater.state"),
+    ):
+        result = status(*facts)
+        assert result["mappings_complete"] is False
+        assert result["controls_complete"] is False
+        assert result["complete"] is False
+
+    no_control = status("waterHeater.temperature", "waterHeater.power", with_control=False)
+    assert no_control["mappings_complete"] is True
+    assert no_control["controls_complete"] is False
+    assert no_control["complete"] is False
+
+
 async def test_context_contains_required_site_device_separate_from_devices(hass):
     """The one canonical Device list produces both overview sections."""
     first = make_entry(hass, title="Home", suffix="a")
@@ -183,6 +566,7 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
     api.list_devices = AsyncMock(
         return_value=[{"id": "site-device", "type": "site", "properties": {}}]
     )
+    api.list_mappings = AsyncMock(return_value=[])
     catalog = {
         "battery": {"type": "battery", "concepts": []},
         "spaceHeater": {"type": "spaceHeater", "concepts": []},
@@ -222,6 +606,14 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
         "name": item["site"]["name"],
         "label": f'Site · {item["site"]["name"]}',
         "metadata": "",
+        "configuration_status": {
+            "complete": True,
+            "mappings_complete": True,
+            "controls_complete": True,
+            "missing_mappings": 0,
+            "missing_controls": 0,
+            "control_count": 0,
+        },
     } for item in sent)
     assert all(item["devices"] == [] for item in sent)
     assert all(item["device_types"] == [
@@ -1501,6 +1893,78 @@ async def test_site_detail_uses_catalog_and_existing_mapping_directions(hass):
     assert result["proposals"] == {}
     api.get_device.assert_awaited_once_with("site-a", "site-device")
     api.list_mappings.assert_awaited_once_with("site-a", device_id="site-device")
+
+
+async def test_site_suggestions_include_configured_solar_and_battery_context(hass):
+    """Site suggestions may inspect selected inverter devices without auto-mapping them."""
+    entry = make_entry(hass)
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            CONF_DEVICE_CONTEXTS: {
+                "solar-device": {"ha_device_id": "ha-solar", "type": "solar"},
+                "battery-device": {"ha_device_id": "ha-battery", "type": "battery"},
+            }
+        },
+    )
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(
+        return_value={"id": "site-device", "type": "site", "properties": {}}
+    )
+    api.list_devices = AsyncMock(return_value=[
+        {"id": "site-device", "type": "site", "properties": {}},
+        {"id": "solar-device", "type": "solar", "properties": {}},
+        {"id": "battery-device", "type": "battery", "properties": {}},
+    ])
+    api.list_mappings = AsyncMock(return_value=[])
+    api.suggest_mappings = AsyncMock(return_value={})
+    concepts = [
+        {"concept": name, "usages": ["fact"], "source": "mapping"}
+        for name in ("site.power", "site.importEnergy", "site.exportEnergy")
+    ]
+    catalog = {"site": {"type": "site", "concepts": concepts}}
+    prepared = SimpleNamespace(
+        definitions={item["concept"]: item for item in concepts}, ranked={}
+    )
+    candidate_for = lambda concept, device_id: {
+        "entityId": f"sensor.{device_id.replace('ha-', '')}_{concept.rsplit('.', 1)[-1]}",
+        "deviceId": device_id,
+        "sourceType": "state",
+    }
+    conn = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={})),
+        patch("custom_components.fluks.panel_api.prepare_matches", return_value=prepared) as prepare,
+        patch(
+            "custom_components.fluks.panel_api.suggestion_candidates",
+            side_effect=lambda _prepared, concept: [
+                candidate_for(concept, "ha-solar"),
+                candidate_for(concept, "ha-battery"),
+            ],
+        ),
+        patch("custom_components.fluks.panel_api.match_entities", return_value={}),
+    ):
+        websocket_device_detail(
+            hass,
+            conn,
+            {
+                "id": 82,
+                "type": COMMAND_DEVICE_DETAIL,
+                "entry_id": entry.entry_id,
+                "device_id": "site-device",
+                "suggestions": True,
+            },
+        )
+        await hass.async_block_till_done()
+
+    prepare.assert_called_once()
+    assert prepare.call_args.kwargs["additional_device_ids"] == ["ha-solar", "ha-battery"]
+    groups = api.suggest_mappings.await_args.args[3]
+    assert {group["deviceId"] for group in groups} == {"ha-solar", "ha-battery"}
+    assert conn.send_result.call_args.args[1]["proposals"] == {}
 
 
 async def test_site_input_mapping_uses_shared_incremental_device_save(hass):

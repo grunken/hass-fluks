@@ -318,21 +318,180 @@ class FluksControlEditorPanel extends HTMLElement {
   _metadata(properties = {}) {
     return [properties.vendor, properties.model].filter(Boolean).join(" · ");
   }
+  _configurationStatus(detail) {
+    if (detail?.configuration_status) return detail.configuration_status;
+    const mappings = detail?.mappings ?? {};
+    const concepts = Array.isArray(detail?.concepts) ? detail.concepts : [];
+    const mapped = new Set(Object.entries(mappings)
+      .filter(([, mapping]) => mapping?.configuration?.entityId || mapping?.entityId)
+      .map(([concept]) => concept));
+    let missingMappings;
+    if (detail?.type === "heatPump") {
+      const available = new Set(mapped);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [derived, requirements] of [
+          ["heatPump.energy", ["heatPump.bufferEnergy", "heatPump.tankEnergy"]],
+          ["heatPump.energy", ["heatPump.power"]],
+          ["heatPump.power", ["heatPump.energy"]],
+          ["heatPump.bufferEnergy", ["heatPump.energy", "heatPump.tankEnergy"]],
+          ["heatPump.tankEnergy", ["heatPump.energy", "heatPump.bufferEnergy"]],
+        ]) {
+          if (requirements.every((concept) => available.has(concept)) && !available.has(derived)) {
+            available.add(derived);
+            changed = true;
+          }
+        }
+      }
+      missingMappings = [];
+      if (!available.has("heatPump.power") && !available.has("heatPump.energy")) {
+        missingMappings.push("heatPump.power");
+      }
+      if (!["heatPump.temperature", "heatPump.bufferTemperature", "heatPump.tankTemperature"]
+        .some((concept) => available.has(concept))) {
+        missingMappings.push("heatPump.temperature");
+      }
+    } else if (detail?.type === "battery") {
+      const available = new Set(mapped);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [derived, requirements] of [
+          ["battery.energy", ["battery.power"]],
+          ["battery.power", ["battery.energy"]],
+          ["battery.energy", ["battery.chargeEnergy", "battery.dischargeEnergy"]],
+          ["battery.chargeEnergy", ["battery.energy"]],
+          ["battery.dischargeEnergy", ["battery.energy"]],
+        ]) {
+          if (requirements.every((concept) => available.has(concept)) && !available.has(derived)) {
+            available.add(derived);
+            changed = true;
+          }
+        }
+      }
+      missingMappings = [];
+      if (!available.has("battery.soc")) missingMappings.push("battery.soc");
+      if (!available.has("battery.power") && !available.has("battery.energy")) {
+        missingMappings.push("battery.power");
+      }
+    } else if (detail?.type === "solar") {
+      const available = new Set(mapped);
+      if (available.has("solar.power")) available.add("solar.energy");
+      if (available.has("solar.energy")) available.add("solar.power");
+      missingMappings = available.has("solar.power") || available.has("solar.energy")
+        ? [] : ["solar.power"];
+    } else if (detail?.type === "electricVehicle") {
+      const available = new Set(mapped);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [derived, requirements] of [
+          ["electricVehicle.energy", ["electricVehicle.power"]],
+          ["electricVehicle.power", ["electricVehicle.energy"]],
+          ["electricVehicle.energy", ["electricVehicle.chargeEnergy", "electricVehicle.dischargeEnergy"]],
+          ["electricVehicle.chargeEnergy", ["electricVehicle.energy"]],
+          ["electricVehicle.dischargeEnergy", ["electricVehicle.energy"]],
+        ]) {
+          if (requirements.every((concept) => available.has(concept)) && !available.has(derived)) {
+            available.add(derived);
+            changed = true;
+          }
+        }
+      }
+      missingMappings = [];
+      if (!available.has("electricVehicle.soc")) missingMappings.push("electricVehicle.soc");
+      if (!available.has("electricVehicle.connected")) missingMappings.push("electricVehicle.connected");
+      if (!available.has("electricVehicle.power") && !available.has("electricVehicle.energy")) {
+        missingMappings.push("electricVehicle.power");
+      }
+    } else if (detail?.type === "spaceHeater") {
+      const hasTemperature = mapped.has("spaceHeater.temperature");
+      const hasDirectConsumption = mapped.has("spaceHeater.power") || mapped.has("spaceHeater.energy");
+      const ratedPower = detail?.properties?.ratedPowerW;
+      const hasRatedPower = ratedPower !== null && ratedPower !== undefined
+        && String(ratedPower).trim() !== ""
+        && Number.isFinite(Number(ratedPower)) && Number(ratedPower) >= 0;
+      const hasStateConsumption = mapped.has("spaceHeater.state") && hasRatedPower;
+      missingMappings = [];
+      if (!hasTemperature) missingMappings.push("spaceHeater.temperature");
+      if (!hasDirectConsumption && !hasStateConsumption) missingMappings.push("spaceHeater.power");
+    } else if (detail?.type === "waterHeater") {
+      const available = new Set(mapped);
+      if (available.has("waterHeater.power")) available.add("waterHeater.energy");
+      if (available.has("waterHeater.energy")) available.add("waterHeater.power");
+      missingMappings = [];
+      if (!available.has("waterHeater.temperature")) missingMappings.push("waterHeater.temperature");
+      if (!available.has("waterHeater.power") && !available.has("waterHeater.energy")) {
+        missingMappings.push("waterHeater.power");
+      }
+    } else {
+      missingMappings = concepts.filter((concept) => !mapped.has(concept.concept));
+    }
+    const controls = Array.isArray(detail?.controls) ? detail.controls : [];
+    const outputMappings = detail?.output_mappings ?? {};
+    let missingControls = controls.filter((control) => !(outputMappings[control.concept] ?? [])
+      .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length));
+    let controlsComplete = missingControls.length === 0;
+    if (detail?.type === "battery") {
+      const usableBatteryControl = (outputMappings["battery.power"] ?? [])
+        .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length);
+      controlsComplete = missingMappings.length === 0 && usableBatteryControl;
+      if (!controlsComplete) missingControls = ["battery.power"];
+    } else if (detail?.type === "electricVehicle") {
+      const usableEvControl = (outputMappings["electricVehicle.power"] ?? [])
+        .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length);
+      controlsComplete = missingMappings.length === 0 && usableEvControl;
+      if (!controlsComplete) missingControls = ["electricVehicle.power"];
+    } else if (detail?.type === "spaceHeater") {
+      const usableTemperatureControl = (outputMappings["spaceHeater.temperature"] ?? [])
+        .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length);
+      controlsComplete = missingMappings.length === 0 && usableTemperatureControl;
+      if (!controlsComplete) missingControls = ["spaceHeater.temperature"];
+    } else if (detail?.type === "waterHeater") {
+      const usableTemperatureControl = (outputMappings["waterHeater.temperature"] ?? [])
+        .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length);
+      controlsComplete = missingMappings.length === 0 && usableTemperatureControl;
+      if (!controlsComplete) missingControls = ["waterHeater.temperature"];
+    }
+    return {
+      complete: missingMappings.length === 0 && controlsComplete,
+      mappings_complete: missingMappings.length === 0,
+      controls_complete: controlsComplete,
+      missing_mappings: missingMappings.length,
+      missing_controls: missingControls.length,
+      control_count: controls.length,
+    };
+  }
+  _configurationIndicator(status) {
+    if (!status) return "";
+    const complete = status.complete !== false;
+    const label = this._t(complete ? "configuration_complete" : "configuration_needs_attention");
+    return `<span class="configuration-indicator ${complete ? "complete" : "incomplete"}" role="img" aria-label="${esc(label)}" title="${esc(label)}"></span>`;
+  }
+  _configurationDot(status) {
+    if (!status) return "";
+    const complete = status.complete !== false;
+    const label = this._t(complete ? "configuration_complete" : "configuration_needs_attention");
+    return `<span class="runtime-dot configuration-dot ${complete ? "complete" : "incomplete"}" role="img" aria-label="${esc(label)}" title="${esc(label)}"></span>`;
+  }
 
   _renderHome() {
-    const devices = (this._context.devices || []).map((d) => `<button class="row device-row" data-device="${esc(d.id)}">
-      ${this._typeIcon(d.type)}<span class="row-copy"><strong>${esc(d.label)}</strong><span>${esc(d.metadata || d.type_name || d.name)}</span></span><span class="chevron">›</span></button>`).join("");
+    const contextDevices = this._context.devices || [];
+    const devices = contextDevices.map((d) => `<button class="row device-row" data-device="${esc(d.id)}">
+      ${this._typeIcon(d.type)}<span class="row-copy"><strong>${esc(d.label)}</strong><span>${esc(d.metadata || d.type_name || d.name)}</span></span>${this._configurationIndicator(d.configuration_status)}<span class="chevron">›</span></button>`).join("");
     const site = this._context.site || {};
+    const devicesStatus = { complete: !contextDevices.some((device) => device.configuration_status?.complete === false) };
     this._frame(site.name || this._t("site"), `<div class="home-status-line" id="runtime-status" role="status" aria-live="polite">${this._runtimeStatusMarkup()}</div>
       <div class="home-shortcuts">
         <section class="card home-card connection-card"><ha-icon icon="mdi:lan-connect"></ha-icon><div><h2>${esc(this._t("connection"))}</h2><div class="home-card-status" id="runtime-status-card">${this._runtimeStatusMarkup()}</div><p>${esc(this._t("connection_description"))}</p></div></section>
-        <button class="card home-card home-card-button" id="home-devices-card" type="button"><ha-icon icon="mdi:devices"></ha-icon><div><h2>${esc(this._t("devices"))}</h2><p>${esc(this._t("configured_devices", { count: (this._context.devices || []).length }))}</p></div><span class="chevron">›</span></button>
-        <button class="card home-card home-card-button" id="home-configuration" type="button"><ha-icon icon="mdi:file-document-edit-outline"></ha-icon><div><h2>${esc(this._t("configuration"))}</h2><p>${esc(this._t("configuration_description"))}</p></div><span class="chevron">›</span></button>
+        <button class="card home-card home-card-button" id="home-devices-card" type="button"><ha-icon icon="mdi:devices"></ha-icon><div><h2>${esc(this._t("devices"))}</h2><p class="configuration-count">${this._configurationDot(devicesStatus)}<span>${esc(this._t("configured_devices", { count: contextDevices.length }))}</span></p></div><span class="chevron">›</span></button>
+        <button class="card home-card home-card-button" id="home-configuration" type="button"><ha-icon icon="mdi:file-document-edit-outline"></ha-icon><div><h2>${esc(this._t("configuration"))}</h2><p class="configuration-count">${this._configurationDot(site.configuration_status)}<span>${esc(this._t("configuration_description"))}</span></p></div><span class="chevron">›</span></button>
       </div>
       <section id="configured-devices"><div class="section-title"><h2>${esc(this._t("devices"))}</h2><button class="primary" id="add">＋ ${esc(this._t("add_device"))}</button></div>
       <div class="card list">${devices || `<p>${esc(this._t("no_devices"))}</p>`}</div></section>
       <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><button class="site-link" id="site-detail">${this._typeIcon("site")}
-      <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>
+      <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>${this._configurationIndicator(site.configuration_status)}
       <div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div></div></section>`);
     const add = this.shadowRoot.querySelector("#add");
     if (add) add.onclick = () => this._go({ name: "add" });
@@ -349,17 +508,22 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _renderDevice() {
     const site = this._detail.type === "site";
+    const status = this._configurationStatus(this._detail);
     const configured = Object.values(this._detail.mappings);
     const measurementCount = configured.filter((m) => this._detail.concepts.find((c) => c.concept === m.concept)?.cadence !== "interval").length;
     const energyCount = configured.filter((m) => this._detail.concepts.find((c) => c.concept === m.concept)?.cadence === "interval").length;
     const metadata = this._metadata(this._detail.properties);
+    const mappingSummary = `${measurementCount} ${this._t("measurements_count")} · ${energyCount} ${this._t("energy_count")}${status.mappings_complete ? "" : ` · ${this._t("mappings_need_configuration")}`}`;
+    const controlsSummary = status.controls_complete
+      ? `${this._detail.controls.length} ${this._t("available")}`
+      : this._t("controls_need_configuration");
     this._frame("", `<div class="device-heading">${this._typeIcon(this._detail.type, "hero")}<div>
       <h1>${esc(this._detail.type_name)}</h1><p class="device-name">${esc(this._detail.name || this._detail.type_name)}</p>${metadata ? `<p>${esc(metadata)}</p>` : ""}</div>
       <button class="icon overflow" id="device-menu" aria-label="${esc(this._t("device_actions"))}" aria-haspopup="menu">⋮</button>
       <div class="context-menu device-menu" id="device-actions-menu" role="menu" hidden><button class="menu-danger" id="delete" role="menuitem">${esc(this._t(site ? "delete_site" : "delete_device"))}</button></div></div>
       <div class="card list overview-list">
-      <button class="row" id="edit"><ha-icon icon="mdi:chart-line"></ha-icon><span class="row-copy"><strong>${esc(this._t("measurements_energy"))}</strong><span>${measurementCount} ${esc(this._t("measurements_count"))} · ${energyCount} ${esc(this._t("energy_count"))}</span></span><span class="chevron">›</span></button>
-      <button class="row" id="controls"><ha-icon icon="mdi:tune-variant"></ha-icon><span class="row-copy"><strong>${esc(this._t("controls"))}</strong><span>${this._detail.controls.length} ${esc(this._t("available"))}</span></span><span class="chevron">›</span></button>
+      <button class="row ${status.mappings_complete ? "" : "needs-attention"}" id="edit"><ha-icon icon="mdi:chart-line"></ha-icon><span class="row-copy"><strong>${esc(this._t("measurements_energy"))}</strong><span>${esc(mappingSummary)}</span></span>${this._configurationIndicator({ complete: status.mappings_complete })}<span class="chevron">›</span></button>
+      <button class="row ${status.controls_complete ? "" : "needs-attention"}" id="controls"><ha-icon icon="mdi:tune-variant"></ha-icon><span class="row-copy"><strong>${esc(this._t("controls"))}</strong><span>${esc(controlsSummary)}</span></span>${this._configurationIndicator({ complete: status.controls_complete })}<span class="chevron">›</span></button>
       <button class="row" id="information"><ha-icon icon="mdi:information-outline"></ha-icon><span class="row-copy"><strong>${esc(this._t(site ? "site_information" : "device_information"))}</strong><span>${esc(site ? this._detail.name : metadata || this._t("optional"))}</span></span><span class="chevron">›</span></button></div>`, true);
     this._wireMenu("device-menu", "device-actions-menu");
     this.shadowRoot.querySelector("#edit").onclick = () => this._go({ name: "edit", deviceId: this._detail.id });
@@ -973,8 +1137,11 @@ class FluksControlEditorPanel extends HTMLElement {
           return;
         }
         this._spaceHeaterValidationError = false;
-        await this._call("fluks/config/add_save", { device_type: this._view.deviceType, ha_device_id: this._view.haDeviceId, ...form });
-        this._context = await this._call("fluks/config/context"); this._go({ name: "home" });
+        const result = await this._call("fluks/config/add_save", { device_type: this._view.deviceType, ha_device_id: this._view.haDeviceId, ...form });
+        this._context = await this._call("fluks/config/context");
+        this._go(result?.device_id && this._draft.controls?.length
+          ? { name: "device", deviceId: result.device_id }
+          : { name: "home" });
       } catch (_) { this._renderAdd(); }
     };
   }
@@ -990,7 +1157,7 @@ class FluksControlEditorPanel extends HTMLElement {
         .filter(Boolean);
       return `<div class="row"><span class="row-copy"><strong>${esc(this._conceptLabel(control))}</strong><small>${esc(matches.length ? `${this._t("suggested_match")}: ${matches.join(", ")}` : this._t("not_configured"))}</small></span></div>`;
     }).join("");
-    return `<section><h2>${esc(this._t("controls"))}</h2><div class="card list">${rows}</div></section>`;
+    return `<section><h2>${esc(this._t("controls"))}</h2><p class="control-guidance">${esc(this._t("control_configuration_guidance"))}</p><div class="card list">${rows}</div></section>`;
   }
   async _selectAddHaDevice(haDeviceId) {
     if (!haDeviceId || !this._view.deviceType || this._mappingSuggestionsLoading) return;
@@ -1025,7 +1192,24 @@ class FluksControlEditorPanel extends HTMLElement {
     }
   }
   _renderControls() {
-    const rows = this._detail.controls.map((c) => `<button class="row" data-control="${esc(c.concept)}"><span class="row-copy"><strong>${esc(this._conceptLabel(c))}</strong><small>${esc(this._detail.output_mappings[c.concept] ? this._t("configured") : this._t("not_configured"))}</small></span><span>›</span></button>`).join("");
+    const status = this._configurationStatus(this._detail);
+    const rows = this._detail.controls.map((c) => {
+      let configured = (this._detail.output_mappings?.[c.concept] ?? [])
+        .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length);
+      if (this._detail.type === "battery" && c.concept === "battery.power") {
+        configured = status.controls_complete;
+      }
+      if (this._detail.type === "electricVehicle" && c.concept === "electricVehicle.power") {
+        configured = status.controls_complete;
+      }
+      if (this._detail.type === "spaceHeater" && c.concept === "spaceHeater.temperature") {
+        configured = status.controls_complete;
+      }
+      if (this._detail.type === "waterHeater" && c.concept === "waterHeater.temperature") {
+        configured = status.controls_complete;
+      }
+      return `<button class="row ${configured ? "" : "needs-attention"}" data-control="${esc(c.concept)}"><span class="row-copy"><strong>${esc(this._conceptLabel(c))}</strong><small>${esc(configured ? this._t("configured") : this._t("controls_need_configuration"))}</small></span>${this._configurationIndicator({ complete: configured })}<span>›</span></button>`;
+    }).join("");
     this._frame(`${this._detail.type_name} · ${this._t("controls")}`, `<div class="card list">${rows || `<p>${esc(this._t("not_configured"))}</p>`}</div>`, true);
     this.shadowRoot.querySelectorAll("[data-control]").forEach((n) => n.onclick = () => this._go({ name: "control", deviceId: this._detail.id, concept: n.dataset.control }));
   }
@@ -1264,16 +1448,16 @@ class FluksControlEditorPanel extends HTMLElement {
     button{font:inherit;border:1px solid var(--divider-color);background:var(--secondary-background-color);color:var(--primary-text-color);border-radius:9px;padding:9px 14px;min-height:42px;cursor:pointer}button:hover{filter:brightness(1.06)}button:focus-visible,input:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}button:disabled{opacity:.5;cursor:not-allowed}
     .primary{background:var(--primary-color);color:var(--text-primary-color,#fff);border-color:var(--primary-color)}.danger{background:var(--error-color);border-color:var(--error-color);color:#fff}.danger-zone{border-color:var(--error-color)}.menu-danger{color:var(--error-color);background:transparent;border:0;width:100%;text-align:left}
     .icon{border:0;background:transparent;font-size:25px;padding:4px;width:42px;min-width:42px}.overflow{margin-left:auto;font-weight:700}.section-title,.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}.actions{justify-content:flex-end;margin:22px 0 0}
-    .row{width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}
+    .row{position:relative;width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row.needs-attention{background:color-mix(in srgb,var(--warning-color,#f0b429) 5%,transparent)}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}.configuration-indicator{position:absolute;top:0;bottom:0;left:0;width:7px;pointer-events:none}.configuration-indicator.complete{background:var(--success-color,#43a047)}.configuration-indicator.incomplete{background:var(--warning-color,#f0b429)}
     .device-icon{display:block;object-fit:contain;flex:none}.device-icon.list{width:38px;height:38px}.device-icon.hero{width:62px;height:62px}.device-icon.header{width:50px;height:50px}.device-icon.picker{width:70px;height:70px}
-    .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800);animation:fluks-runtime-pulse 1.6s ease-in-out infinite}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}.mapping-loading{display:flex;align-items:center;gap:14px}.mapping-loading strong{display:block;margin-bottom:3px}.mapping-loading p{margin:0;color:var(--secondary-text-color,#aaa)}.mapping-loading-inline{margin-left:auto;padding:8px 0;flex:none}.mapping-loading-inline strong{margin:0;white-space:nowrap}.loading-spinner{width:24px;height:24px;flex:none;border:3px solid color-mix(in srgb,var(--primary-color,#03a678) 25%,transparent);border-top-color:var(--primary-color,#03a678);border-radius:50%;animation:fluks-spin .8s linear infinite}@keyframes fluks-spin{to{transform:rotate(360deg)}}
+    .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected,.configuration-dot.complete{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800)}.configuration-dot{flex:none}.configuration-dot.incomplete{background:var(--warning-color,#f0b429)}#home-configuration .configuration-dot{align-self:flex-start;margin-top:5.6px;transform:none}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}.configuration-count{display:flex;align-items:center;gap:8px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}.mapping-loading{display:flex;align-items:center;gap:14px}.mapping-loading strong{display:block;margin-bottom:3px}.mapping-loading p{margin:0;color:var(--secondary-text-color,#aaa)}.mapping-loading-inline{margin-left:auto;padding:8px 0;flex:none}.mapping-loading-inline strong{margin:0;white-space:nowrap}.loading-spinner{width:24px;height:24px;flex:none;border:3px solid color-mix(in srgb,var(--primary-color,#03a678) 25%,transparent);border-top-color:var(--primary-color,#03a678);border-radius:50%;animation:fluks-spin .8s linear infinite}@keyframes fluks-spin{to{transform:rotate(360deg)}}
     .home-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px}.home-card{display:flex;align-items:flex-start;gap:14px;min-height:152px;margin:0;text-align:left}.home-card>ha-icon{color:var(--primary-color);font-size:30px;flex:none}.home-card h2{margin:0 0 8px}.home-card p{margin:0}.home-card-button{width:100%;cursor:pointer}.home-card-button .chevron{margin-left:auto;align-self:center}
     .device-heading{position:relative;display:flex;align-items:center;gap:18px;margin:2px 0 24px;padding-right:48px}.device-heading h1,.device-heading h2{margin:0 0 4px}.device-heading p{margin:0}.device-heading .device-name{font-size:16px;color:var(--primary-text-color)}.device-heading.compact{margin-bottom:20px}
-    .site-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
+    .site-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:center;gap:8px;padding:6px 8px 6px 10px}.site-row .configuration-indicator{border-radius:12px 0 0 12px}.site-link{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:7px 4px;border:0;background:transparent;text-align:left}.site-row ha-icon{color:var(--secondary-text-color)}.site-hero{width:62px;height:62px;color:var(--primary-color)}.site-header{width:50px;height:50px;color:var(--primary-color)}
     .context-menu{position:absolute;z-index:5;right:10px;top:52px;min-width:180px;padding:6px;background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:9px;box-shadow:var(--ha-card-box-shadow,0 4px 14px rgba(0,0,0,.24))}.context-menu[hidden]{display:none}.device-menu{right:0;top:44px}
     .overview-list .row{min-height:72px}.overview-list ha-icon{color:var(--primary-color);width:28px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:14px}.fields.two{grid-template-columns:repeat(2,minmax(0,1fr))}.fields.three{grid-template-columns:repeat(3,minmax(0,1fr))}
     label{display:grid;gap:7px;font-weight:600;margin-bottom:8px;min-width:0}.toggle-property{display:flex;align-items:center;justify-content:space-between;gap:16px}.toggle-control{position:relative;display:inline-flex;align-items:center;flex:none}.toggle-control input{position:absolute;width:1px;height:1px;opacity:0}.toggle-track{position:relative;width:42px;height:24px;border-radius:999px;background:var(--disabled-text-color,var(--secondary-text-color));transition:background .15s ease;cursor:pointer}.toggle-track::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--card-background-color);box-shadow:0 1px 3px rgba(0,0,0,.3);transition:transform .15s ease}.toggle-control input:checked + .toggle-track{background:var(--primary-color)}.toggle-control input:checked + .toggle-track::after{transform:translateX(18px)}.toggle-control input:focus-visible + .toggle-track{outline:2px solid var(--primary-color);outline-offset:2px}input,select{box-sizing:border-box;width:100%;padding:11px;border-radius:8px;border:1px solid var(--divider-color);background:var(--input-fill-color,var(--secondary-background-color));color:var(--primary-text-color);font:inherit}.property-input{position:relative;display:block;min-width:0}.property-input input{min-width:0;padding-right:54px}.property-input>span{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--secondary-text-color);font-weight:500;pointer-events:none}.physical-property small{font-weight:400}.validation-error{color:var(--error-color);font-weight:500}
-    .mapping-field{min-width:0}.matcher-proposal{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 12px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.matcher-proposal span{display:grid;min-width:0}.matcher-proposal small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color)}.input-conversions{display:grid;gap:10px;margin-top:10px}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}.input-conversions li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.input-conversions .order{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--primary-color);color:#fff;font-weight:700}.conversion-copy{display:grid;min-width:0}.conversion-copy strong,.conversion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.input-conversions .row-actions{display:flex;gap:4px;flex-wrap:wrap}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.add-conversion{justify-self:start}.conversion-editor{padding:8px 18px 18px}.conversion-editor [hidden]{display:none}
+    .mapping-field{min-width:0}.control-guidance{margin:0 0 12px}.matcher-proposal{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 12px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.matcher-proposal span{display:grid;min-width:0}.matcher-proposal small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--secondary-text-color)}.input-conversions{display:grid;gap:10px;margin-top:10px}.input-conversions ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}.input-conversions li{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:9px;border:1px solid var(--divider-color);border-radius:9px}.input-conversions .order{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--primary-color);color:#fff;font-weight:700}.conversion-copy{display:grid;min-width:0}.conversion-copy strong,.conversion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.input-conversions .row-actions{display:flex;gap:4px;flex-wrap:wrap}.input-conversions .row-actions button{min-height:34px;padding:5px 8px}.add-conversion{justify-self:start}.conversion-editor{padding:8px 18px 18px}.conversion-editor [hidden]{display:none}
     .picker-value{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;padding:10px 12px;background:var(--secondary-background-color);overflow:hidden}.source-icon{display:grid;place-items:center;width:34px;height:34px;flex:none;color:var(--primary-color)}
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}
     dialog{width:min(620px,calc(100vw - 32px));max-height:min(720px,calc(100vh - 32px));padding:0;border:1px solid var(--divider-color);border-radius:14px;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 14px 45px rgba(0,0,0,.38)}dialog::backdrop{background:rgba(0,0,0,.58)}.dialog-heading{display:flex;justify-content:space-between;align-items:center;padding:18px 18px 8px}.dialog-heading h2{margin:0}.search{padding:8px 16px;margin:0}.picker-results{max-height:min(530px,65vh);overflow:auto;border-top:1px solid var(--divider-color)}.picker-row{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;background:transparent;padding:8px 15px;overflow:hidden}.picker-row.selected{outline:2px solid var(--primary-color);outline-offset:-2px}.picker-row .trailing{flex:0 1 150px;min-width:0;max-width:28%;margin-left:auto;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}.empty-results{padding:22px}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
