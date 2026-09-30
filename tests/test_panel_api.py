@@ -29,7 +29,6 @@ from custom_components.fluks.panel_api import (
     COMMANDS,
     _editable_property_keys,
     _forecast_solar_prefill,
-    _has_local_context,
     _mappable_concepts,
     _migrate_legacy_mappings,
     _configuration_status,
@@ -160,9 +159,8 @@ async def test_control_suggestions_command_forwards_local_behavior_labels_and_ac
     }})
 
 
-def test_catalog_source_semantics_and_local_duplicate_context_are_reused(hass):
-    """Panel Add Device keeps the approved M2 catalog and uniqueness rules."""
-    entry = make_entry(hass)
+def test_catalog_source_semantics_are_reused(hass):
+    """Panel Add Device keeps the approved M2 catalog source rules."""
     concepts = _mappable_concepts(
         {
             "concepts": [
@@ -172,8 +170,6 @@ def test_catalog_source_semantics_and_local_duplicate_context_are_reused(hass):
         }
     )
     assert [item["concept"] for item in concepts] == ["battery.soc"]
-    assert _has_local_context(entry, "ha-a", "battery")
-    assert not _has_local_context(entry, "ha-a", "solar")
 
 
 def test_configuration_status_requires_mappings_and_nonempty_control_actions():
@@ -807,6 +803,7 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
                 "entry_id": entry.entry_id,
                 "device_type": "battery",
                 "ha_device_id": "ha-new",
+                "instance_id": "00000000-0000-4000-8000-000000000001",
                 "mappings": {
                     "battery.soc": {
                         "version": 1,
@@ -826,7 +823,8 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
         )
         await hass.async_block_till_done()
 
-    expected_id = stable_device_id("external-a", "battery", "ha-new")
+    instance_id = "00000000-0000-4000-8000-000000000001"
+    expected_id = stable_device_id("external-a", "battery", "ha-new", instance_id)
     assert api.create_device.await_args.args[:3] == ("site-a", expected_id, "battery")
     assert api.create_device.await_args.args[3] == {
         "capacityKwh": 15.8,
@@ -845,8 +843,109 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
     assert entry.options[CONF_DEVICE_CONTEXTS]["device-new"] == {
         "ha_device_id": "ha-new",
         "type": "battery",
+        "instance_id": instance_id,
     }
     conn.send_result.assert_called_once_with(6, {"device_id": "device-new"})
+
+
+async def test_add_save_allows_same_ha_type_with_distinct_retryable_instances(hass):
+    entry = make_entry(hass)
+    entry.options[CONF_DEVICE_CONTEXTS]["solar-existing"] = {
+        "ha_device_id": "ha-inverter",
+        "type": "solar",
+    }
+    existing_device = {
+        "id": "solar-existing",
+        "deviceId": stable_device_id("external-a", "solar", "ha-inverter"),
+        "type": "solar",
+    }
+    devices = [existing_device]
+    api = MagicMock(spec=FluksApiClient)
+    api.list_devices = AsyncMock(side_effect=lambda _site_id: list(devices))
+
+    async def create_device(_site_id, external_id, device_type, _properties):
+        device = {
+            "id": f"solar-new-{len(devices)}",
+            "deviceId": external_id,
+            "type": device_type,
+        }
+        devices.append(device)
+        return device
+
+    api.create_device = AsyncMock(side_effect=create_device)
+    api.list_mappings = AsyncMock(return_value=[])
+    catalog = {"solar": {"type": "solar", "concepts": []}}
+
+    async def save(request_id, instance_id):
+        conn = connection()
+        websocket_add_save(hass, conn, {
+            "id": request_id,
+            "type": COMMAND_ADD_SAVE,
+            "entry_id": entry.entry_id,
+            "device_type": "solar",
+            "ha_device_id": "ha-inverter",
+            "instance_id": instance_id,
+            "mappings": {},
+            "properties": {},
+        })
+        await hass.async_block_till_done()
+        return conn
+
+    first_instance = "00000000-0000-4000-8000-000000000011"
+    second_instance = "00000000-0000-4000-8000-000000000012"
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        first = await save(31, first_instance)
+        second = await save(32, second_instance)
+        retry = await save(33, second_instance)
+
+    created_external_ids = [call.args[1] for call in api.create_device.await_args_list]
+    assert created_external_ids == [
+        stable_device_id("external-a", "solar", "ha-inverter", first_instance),
+        stable_device_id("external-a", "solar", "ha-inverter", second_instance),
+    ]
+    assert api.create_device.await_count == 2
+    first.send_result.assert_called_once_with(31, {"device_id": "solar-new-1"})
+    second.send_result.assert_called_once_with(32, {"device_id": "solar-new-2"})
+    retry.send_result.assert_called_once_with(33, {"device_id": "solar-new-2"})
+    assert entry.options[CONF_DEVICE_CONTEXTS]["solar-existing"] == {
+        "ha_device_id": "ha-inverter",
+        "type": "solar",
+    }
+    assert entry.options[CONF_DEVICE_CONTEXTS]["solar-new-1"]["instance_id"] == first_instance
+    assert entry.options[CONF_DEVICE_CONTEXTS]["solar-new-2"]["instance_id"] == second_instance
+
+
+async def test_add_review_allows_existing_ha_device_type_pair(hass):
+    entry = make_entry(hass)
+    registry_device = MagicMock(
+        name_by_user="Battery", name="Battery", manufacturer="Example", model="One"
+    )
+    registry = MagicMock()
+    registry.async_get.return_value = registry_device
+    api = MagicMock(spec=FluksApiClient)
+    catalog = {"battery": {"type": "battery", "concepts": []}}
+    conn = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+        patch("custom_components.fluks.panel_api._panel_translations", AsyncMock(return_value={})),
+        patch("custom_components.fluks.panel_api.dr.async_get", return_value=registry),
+    ):
+        websocket_add_review(hass, conn, {
+            "id": 34,
+            "type": COMMAND_ADD_REVIEW,
+            "entry_id": entry.entry_id,
+            "device_type": "battery",
+            "ha_device_id": "ha-a",
+        })
+        await hass.async_block_till_done()
+
+    conn.send_result.assert_called_once()
+    assert conn.send_error.call_count == 0
 
 
 async def test_add_review_proposal_persists_unchanged_through_add_save(hass):
@@ -883,6 +982,7 @@ async def test_add_review_proposal_persists_unchanged_through_add_save(hass):
     registry.async_get.return_value = registry_device
     review_connection = connection()
     save_connection = connection()
+    instance_id = "00000000-0000-4000-8000-000000000002"
 
     with (
         patch("custom_components.fluks.panel_api._api", return_value=api),
@@ -904,6 +1004,7 @@ async def test_add_review_proposal_persists_unchanged_through_add_save(hass):
         websocket_add_save(hass, save_connection, {
             "id": 62, "type": COMMAND_ADD_SAVE, "entry_id": entry.entry_id,
             "device_type": "battery", "ha_device_id": "ha-new",
+            "instance_id": instance_id,
             "mappings": {
                 "battery.power": review["proposals"]["battery.power"]["configuration"]
             },

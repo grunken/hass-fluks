@@ -1096,6 +1096,7 @@ class FluksControlEditorPanel extends HTMLElement {
     };
   }
   _actions(saveKey = "save") { return `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save">${esc(this._t(saveKey))}</button></div>`; }
+  _newAddInstanceId() { return crypto.randomUUID(); }
   _renderAdd() {
     const type = this._context.device_types.find((t) => t.type === this._view.deviceType);
     const typePicker = `<section><h2>${esc(this._t("choose_type"))}</h2><div class="type-grid">${this._context.device_types.map((item) => `<button type="button" class="type-option ${item.type === this._view.deviceType ? "selected" : ""}" data-type="${esc(item.type)}"${this._mappingSuggestionsLoading ? " disabled" : ""}>${this._typeIcon(item.type, "picker")}<strong>${esc(item.name)}</strong></button>`).join("")}</div></section>`;
@@ -1128,7 +1129,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => history.back();
     this.shadowRoot.querySelector("#save").onclick = async () => {
-      if (!this._draft || !this._view.haDeviceId) return;
+      if (!this._draft || !this._view.haDeviceId || !this._view.instanceId) return;
       try {
         const form = this._collectForm(true);
         if (this._spaceHeaterNeedsRatedPower(this._view.deviceType, form.mappings, form.properties)) {
@@ -1137,8 +1138,16 @@ class FluksControlEditorPanel extends HTMLElement {
           return;
         }
         this._spaceHeaterValidationError = false;
-        const result = await this._call("fluks/config/add_save", { device_type: this._view.deviceType, ha_device_id: this._view.haDeviceId, ...form });
+        const result = await this._call("fluks/config/add_save", {
+          device_type: this._view.deviceType,
+          ha_device_id: this._view.haDeviceId,
+          instance_id: this._view.instanceId,
+          ...form,
+        });
         this._context = await this._call("fluks/config/context");
+        history.replaceState({ ...(history.state || {}), fluksView: {
+          name: "add", deviceType: this._view.deviceType,
+        } }, "");
         this._go(result?.device_id && this._draft.controls?.length
           ? { name: "device", deviceId: result.device_id }
           : { name: "home" });
@@ -1163,7 +1172,12 @@ class FluksControlEditorPanel extends HTMLElement {
     if (!haDeviceId || !this._view.deviceType || this._mappingSuggestionsLoading) return;
     this._mappingSuggestionsLoading = true;
     this._error = undefined;
-    this._view = { ...this._view, haDeviceId };
+    this._view = {
+      ...this._view,
+      haDeviceId,
+      instanceId: this._view.instanceId || this._newAddInstanceId(),
+    };
+    history.replaceState({ ...(history.state || {}), fluksView: this._view }, "");
     this._renderAdd();
     try {
       const draft = await this._call("fluks/config/add_review", { device_type: this._view.deviceType, ha_device_id: haDeviceId });

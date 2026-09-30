@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
@@ -818,23 +819,6 @@ def _present_concepts(
     return [dict(concept, label=concept_label(concept, translations)) for concept in concepts]
 
 
-def _has_local_context(entry: ConfigEntry, ha_device_id: str, device_type: str) -> bool:
-    contexts = entry.options.get(CONF_DEVICE_CONTEXTS, {})
-    if isinstance(contexts, dict) and any(
-        isinstance(value, dict)
-        and value.get(CONF_HA_DEVICE_ID) == ha_device_id
-        and value.get("type") == device_type
-        for value in contexts.values()
-    ):
-        return True
-    legacy = entry.options.get(CONF_DEVICE, {})
-    return (
-        isinstance(legacy, dict)
-        and legacy.get(CONF_HA_DEVICE_ID) == ha_device_id
-        and legacy.get("type") == device_type
-    )
-
-
 @websocket_api.websocket_command(
     {vol.Required("type"): COMMAND_CONTEXT, **BASE_SCHEMA}
 )
@@ -1062,7 +1046,7 @@ async def websocket_device_detail(hass, connection, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_add_review(hass, connection, msg):
-    """Validate uniqueness and return fact and control review suggestions."""
+    """Validate the selection and return fact and control review suggestions."""
     entry = None
     try:
         entry = _entry(hass, msg["entry_id"])
@@ -1073,8 +1057,6 @@ async def websocket_add_review(hass, connection, msg):
         catalog = await _catalog(api)
         if msg["device_type"] not in catalog or msg["device_type"] == SITE_DEVICE_TYPE:
             raise PanelCommandError("validation_error")
-        if _has_local_context(entry, msg["ha_device_id"], msg["device_type"]):
-            raise PanelCommandError("conflict")
         concepts = _mappable_concepts(catalog[msg["device_type"]])
         controls = _control_concepts(catalog[msg["device_type"]])
         properties = {
@@ -1233,6 +1215,7 @@ def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -
         **BASE_SCHEMA,
         vol.Required("device_type"): str,
         vol.Required("ha_device_id"): str,
+        vol.Required("instance_id"): str,
         vol.Required("mappings"): dict,
         vol.Optional("properties", default={}): dict,
     }
@@ -1252,14 +1235,19 @@ async def websocket_add_save(hass, connection, msg):
         selected = _validate_input_mappings(hass, concepts, msg["mappings"])
         _validate_solar_properties(msg["device_type"], msg["properties"])
         _validate_battery_properties(msg["device_type"], msg["properties"])
+        try:
+            instance_id = str(UUID(msg["instance_id"]))
+        except (TypeError, ValueError, AttributeError) as err:
+            raise PanelCommandError("validation_error") from err
         external_id = stable_device_id(
-            entry.data[CONF_INTEGRATION_ID], msg["device_type"], msg["ha_device_id"]
+            entry.data[CONF_INTEGRATION_ID],
+            msg["device_type"],
+            msg["ha_device_id"],
+            instance_id,
         )
         site_id = entry.data[CONF_SITE_ID]
         devices = await api.list_devices(site_id)
         existing = next((item for item in devices if item.get("deviceId") == external_id), None)
-        if _has_local_context(entry, msg["ha_device_id"], msg["device_type"]):
-            raise PanelCommandError("conflict")
         if existing is None:
             try:
                 device = await api.create_device(
@@ -1303,6 +1291,7 @@ async def websocket_add_save(hass, connection, msg):
         device_context = {
             CONF_HA_DEVICE_ID: msg["ha_device_id"],
             "type": msg["device_type"],
+            "instance_id": instance_id,
         }
         if cleared := _updated_clears(set(), msg["mappings"], selected):
             device_context[CONF_CLEARED_MAPPING_CONCEPTS] = cleared

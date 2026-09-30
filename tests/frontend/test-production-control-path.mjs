@@ -17,7 +17,12 @@ globalThis.customElements = {
 globalThis.CustomEvent = class {};
 globalThis.addEventListener = () => {};
 globalThis.removeEventListener = () => {};
-globalThis.history = { back: () => {} };
+globalThis.history = {
+  state: null,
+  back: () => {},
+  replaceState(state) { this.state = state; },
+  pushState(state) { this.state = state; },
+};
 globalThis.CSS = { escape: (value) => value };
 
 await import("../../custom_components/fluks/frontend/control-action-editor.js?rev=existing-ha-session");
@@ -347,6 +352,7 @@ test("production Add Device edits and persists suggested Input Mapping conversio
     entities: [{ entity_id: "sensor.battery_power", name: "Battery power", device_id: "ha-battery" }],
   };
   panel._view = { name: "add", deviceType: "battery" };
+  panel._newAddInstanceId = () => "00000000-0000-4000-8000-000000000021";
   const review = {
     concepts: [{ concept: "battery.power", label: "Power", cadence: "realtime" }],
     controls: [{ concept: "battery.power", label: "Power" }],
@@ -392,7 +398,10 @@ test("production Add Device edits and persists suggested Input Mapping conversio
   assert.ok(rendered.indexOf("Invert sign") < rendered.indexOf("Scale"));
 
   await save.onclick();
-  const persisted = calls.find((call) => call.type === "fluks/config/add_save").data.mappings["battery.power"];
+  const saveCall = calls.find((call) => call.type === "fluks/config/add_save");
+  const persisted = saveCall.data.mappings["battery.power"];
+  assert.equal(saveCall.data.instance_id, "00000000-0000-4000-8000-000000000021");
+  assert.equal(history.state.fluksView.instanceId, undefined);
   assert.deepEqual(persisted, {
     version: 1,
     entityId: "sensor.battery_power",

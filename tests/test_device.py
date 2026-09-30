@@ -16,6 +16,17 @@ def test_stable_device_identity_is_deterministic_per_ha_device_type_pair():
     assert battery != stable_device_id("integration", "battery", "ha-pylontech")
 
 
+def test_stable_device_identity_distinguishes_logical_instances_and_preserves_legacy_ids():
+    existing = stable_device_id("integration", "solar", "ha-inverter")
+    first = stable_device_id("integration", "solar", "ha-inverter", "instance-one")
+    second = stable_device_id("integration", "solar", "ha-inverter", "instance-two")
+
+    assert existing == stable_device_id("integration", "solar", "ha-inverter")
+    assert first != second
+    assert first == stable_device_id("integration", "solar", "ha-inverter", "instance-one")
+    assert existing != first
+
+
 def test_device_labels_always_include_localized_type_and_best_identity():
     translations = {
         "device_type_battery": "Batteri",

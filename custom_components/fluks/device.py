@@ -25,10 +25,15 @@ def icon_path(device_type: str) -> Path:
 
 
 def stable_device_id(
-    integration_id: str, device_type: str, ha_device_id: str
+    integration_id: str,
+    device_type: str,
+    ha_device_id: str,
+    instance_id: str | None = None,
 ) -> str:
-    """Derive one stable external identity for an HA Device/type pairing."""
+    """Derive a stable external identity for one logical HA Device instance."""
     identity = f"{DOMAIN}:{integration_id}:{device_type}:{ha_device_id}"
+    if instance_id is not None:
+        identity = f"{identity}:{instance_id}"
     return str(uuid5(NAMESPACE_URL, identity))
 
 
