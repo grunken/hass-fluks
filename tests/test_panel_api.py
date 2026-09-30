@@ -32,6 +32,7 @@ from custom_components.fluks.panel_api import (
     _mappable_concepts,
     _migrate_legacy_mappings,
     _configuration_status,
+    _present_device_names,
     async_register_panel_commands,
     websocket_add_review,
     websocket_add_save,
@@ -47,6 +48,103 @@ from custom_components.fluks.panel_api import (
 )
 
 KEY = "fluks_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+
+
+def test_solar_display_names_use_azimuth_and_only_number_duplicates():
+    devices = [
+        {
+            "id": "solar-first",
+            "deviceId": "external-first",
+            "type": "solar",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "properties": {"displayName": "Inverter", "azimuthDegrees": 135},
+        },
+        {
+            "id": "solar-second",
+            "deviceId": "external-second",
+            "type": "solar",
+            "createdAt": "2026-01-02T00:00:00Z",
+            "properties": {"displayName": "Inverter", "azimuthDegrees": 140},
+        },
+        {
+            "id": "solar-east",
+            "type": "solar",
+            "properties": {"displayName": "Inverter", "azimuthDegrees": 90},
+        },
+        {
+            "id": "battery",
+            "type": "battery",
+            "properties": {"displayName": "Inverter"},
+        },
+    ]
+    english = {
+        "compass_east": "East",
+        "compass_southeast": "Southeast",
+    }
+
+    assert _present_device_names(devices, english) == {
+        "solar-first": "Inverter · Southeast #1",
+        "solar-second": "Inverter · Southeast #2",
+        "solar-east": "Inverter · East",
+        "battery": "Inverter",
+    }
+
+
+def test_solar_display_names_use_localized_compass_direction():
+    solar = [
+        {
+            "id": "solar",
+            "type": "solar",
+            "properties": {"displayName": "Inverter", "azimuthDegrees": 135},
+        }
+    ]
+
+    assert _present_device_names(solar, {"compass_southeast": "Sydøst"}) == {
+        "solar": "Inverter · Sydøst",
+    }
+
+
+def test_only_duplicate_non_solar_display_names_get_numbered():
+    devices = [
+        {"id": "battery-a", "type": "battery", "properties": {"displayName": "Inverter"}},
+        {"id": "battery-b", "type": "battery", "properties": {"displayName": "Inverter"}},
+        {"id": "battery-unique", "type": "battery", "properties": {"displayName": "Other"}},
+    ]
+    translations = {"device_type_battery": "Battery"}
+
+    assert _present_device_names(devices, translations) == {
+        "battery-a": "Inverter #1",
+        "battery-b": "Inverter #2",
+        "battery-unique": "Other",
+    }
+
+
+def test_preexisting_number_suffix_is_removed_before_full_name_deduplication():
+    devices = [
+        {
+            "id": "battery",
+            "type": "battery",
+            "properties": {"displayName": "Inverter Goodwe #1"},
+        },
+        {
+            "id": "solar",
+            "type": "solar",
+            "properties": {
+                "displayName": "Inverter Goodwe #1",
+                "azimuthDegrees": 225,
+            },
+        },
+    ]
+    translations = {
+        "device_type_battery": "Battery",
+        "device_type_solar": "Solar",
+        "compass_southwest": "Southwest",
+    }
+
+    assert _present_device_names(devices, translations) == {
+        "battery": "Inverter Goodwe",
+        "solar": "Inverter Goodwe · Southwest",
+    }
 
 
 def make_entry(hass, *, title="Home", suffix="a"):
@@ -1246,6 +1344,7 @@ async def test_device_detail_uses_backend_attribute_choice(hass):
     api.get_device = AsyncMock(
         return_value={"id": "device-a", "type": "heatPump", "properties": {}}
     )
+    api.list_devices = AsyncMock(return_value=[api.get_device.return_value])
     api.list_mappings = AsyncMock(return_value=[])
     api.suggest_mappings = AsyncMock(
         return_value={
@@ -1318,6 +1417,7 @@ async def test_device_detail_does_not_request_suggestions_without_explicit_refre
     api.get_device = AsyncMock(
         return_value={"id": "device-a", "type": "battery", "properties": {}}
     )
+    api.list_devices = AsyncMock(return_value=[api.get_device.return_value])
     api.list_mappings = AsyncMock(return_value=[])
     api.suggest_mappings = AsyncMock(return_value={})
     conn = connection()
@@ -1690,6 +1790,7 @@ async def test_device_detail_preserves_existing_mapping_and_matches_only_missing
     api.get_device = AsyncMock(
         return_value={"id": "device-a", "type": "battery", "properties": {}}
     )
+    api.list_devices = AsyncMock(return_value=[api.get_device.return_value])
     api.list_mappings = AsyncMock(
         return_value=[
             {"id": "soc-map", "concept": "battery.soc", "direction": "input", "configuration": {"entityId": "sensor.existing_soc"}}
@@ -1735,6 +1836,7 @@ async def test_explicitly_cleared_suggestion_stays_unmapped(hass):
     api.get_device = AsyncMock(
         return_value={"id": "device-a", "type": "battery", "properties": {}}
     )
+    api.list_devices = AsyncMock(return_value=[api.get_device.return_value])
     existing_power = {
         "id": "power-map",
         "concept": "battery.power",
@@ -1829,6 +1931,7 @@ async def test_space_heater_uses_catalog_driven_fact_and_control_flows(hass):
     api.get_device = AsyncMock(
         return_value={"id": "heater-device", "type": "spaceHeater", "properties": {}}
     )
+    api.list_devices = AsyncMock(return_value=[api.get_device.return_value])
     api.list_mappings = AsyncMock(
         return_value=[
             {

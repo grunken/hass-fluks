@@ -130,6 +130,27 @@ def test_panel_device_and_concept_presentation_is_translated():
     assert english["concept_heatPump.temperature"] == "Temperature"
     assert danish["concept_heatPump.temperature"] == "Temperatur"
     assert danish["concept_heatPump.tankTemperature"] == "Beholdertemperatur"
+    compass_directions = (
+        "north",
+        "northeast",
+        "east",
+        "southeast",
+        "south",
+        "southwest",
+        "west",
+        "northwest",
+    )
+    assert [english[f"compass_{direction}"] for direction in compass_directions] == [
+        "North",
+        "Northeast",
+        "East",
+        "Southeast",
+        "South",
+        "Southwest",
+        "West",
+        "Northwest",
+    ]
+    assert danish["compass_southeast"] == "Sydøst"
     expected_heat_pump_concepts = {
         "power",
         "energy",

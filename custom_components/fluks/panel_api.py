@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
@@ -48,7 +49,6 @@ from .device import (
     CONF_HA_DEVICE_ID,
     SITE_DEVICE_TYPE,
     concept_label,
-    device_display_name,
     device_identity,
     device_type_name,
     stable_device_id,
@@ -63,6 +63,7 @@ from .observations import async_refresh_observations
 from .output_mapping import OutputMappingValidationError, validate_output_configuration
 
 _LOGGER = logging.getLogger(__name__)
+_DISPLAY_NUMBER_SUFFIX = re.compile(r"\s+#\d+$")
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
 COMMAND_RUNTIME_STATUS = f"{DOMAIN}/config/runtime_status"
@@ -647,6 +648,72 @@ def _present_device(
     return result
 
 
+def _present_device_names(
+    devices: list[dict[str, Any]], translations: dict[str, str]
+) -> dict[str, str]:
+    """Return display identities, adding translated Solar direction labels."""
+    directions = (
+        "north",
+        "northeast",
+        "east",
+        "southeast",
+        "south",
+        "southwest",
+        "west",
+        "northwest",
+    )
+    names: dict[str, str] = {}
+    duplicate_groups: dict[str, list[dict[str, Any]]] = {}
+    for device in devices:
+        internal_id = device.get("id")
+        if not isinstance(internal_id, str):
+            continue
+        identity = device_identity(device) or ""
+        identity = _DISPLAY_NUMBER_SUFFIX.sub("", identity).strip()
+        properties = device.get("properties") or {}
+        azimuth = properties.get("azimuthDegrees")
+        if (
+            device.get("type") == "solar"
+            and isinstance(azimuth, (int, float))
+            and not isinstance(azimuth, bool)
+            and math.isfinite(azimuth)
+            and 0 <= azimuth < 360
+        ):
+            direction = directions[int((azimuth + 22.5) // 45) % len(directions)]
+            localized_direction = translations.get(
+                f"compass_{direction}", direction.title()
+            )
+            identity = (
+                f"{identity} · {localized_direction}"
+                if identity
+                else localized_direction
+            )
+        displayed_name = (
+            f"{device_type_name(device, translations)} · {identity}"
+            if identity
+            else device_type_name(device, translations)
+        )
+        duplicate_groups.setdefault(displayed_name, []).append(device)
+        names[internal_id] = identity
+
+    for displayed_name, group in duplicate_groups.items():
+        if len(group) < 2:
+            continue
+        group.sort(
+            key=lambda item: (
+                str(item.get("createdAt") or ""),
+                str(item.get("deviceId") or ""),
+                str(item.get("id") or ""),
+            )
+        )
+        for index, device in enumerate(group, start=1):
+            identity = names[str(device["id"])]
+            names[str(device["id"])] = (
+                f"{identity} #{index}" if identity else f"#{index}"
+            )
+    return names
+
+
 async def _present_devices(
     hass: HomeAssistant,
     devices: list[dict[str, Any]],
@@ -654,6 +721,7 @@ async def _present_devices(
 ) -> list[dict[str, Any]]:
     translations = await _panel_translations(hass)
     physical = [item for item in devices if item.get("type") != SITE_DEVICE_TYPE]
+    names = _present_device_names(physical, translations)
     physical.sort(
         key=lambda item: (
             device_type_name(item, translations).casefold(),
@@ -664,6 +732,7 @@ async def _present_devices(
         _present_device(
             item,
             translations,
+            name=names.get(str(item["id"]), ""),
             configuration_status=(configuration_statuses or {}).get(str(item["id"])),
         )
         for item in physical
@@ -993,6 +1062,17 @@ async def websocket_device_detail(hass, connection, msg):
         )
         translations = await _panel_translations(hass)
         properties = dict(device.get("properties") or {})
+        display_identity = device_identity(device) or ""
+        if device_type != SITE_DEVICE_TYPE:
+            all_devices = await api.list_devices(site_id)
+            display_identity = _present_device_names(all_devices, translations).get(
+                str(device["id"]), display_identity
+            )
+        display_label = (
+            f"{device_type_name(device, translations)} · {display_identity}"
+            if display_identity
+            else device_type_name(device, translations)
+        )
         connection.send_result(
             msg["id"],
             {
@@ -1002,12 +1082,12 @@ async def websocket_device_detail(hass, connection, msg):
                 "name": (
                     entry.title.strip() or "Site"
                     if device_type == SITE_DEVICE_TYPE
-                    else device_identity(device) or ""
+                    else display_identity
                 ),
                 "label": (
                     entry.title.strip() or "Site"
                     if device_type == SITE_DEVICE_TYPE
-                    else device_display_name(device, translations)
+                    else display_label
                 ),
                 "properties": properties,
                 "property_suggestions": (
