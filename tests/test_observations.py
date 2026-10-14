@@ -391,6 +391,157 @@ async def test_non_numeric_temperature_attribute_keeps_text_without_unit(hass):
     send.assert_awaited_once_with({"deviceId": "heater", "heatPump.temperature": "heating"})
 
 
+async def test_duplicate_state_values_suppress_but_preserve_false_and_zero(hass):
+    api = AsyncMock()
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    mappings = {
+        "sensor.connection": [(
+            "car", "electricVehicle.connected", False, None, None, False,
+            {"on": True, "off": False},
+        )],
+        "sensor.mode": [(
+            "car", "electricVehicle.mode", False, None, None, False,
+            {"false": False, "zero": 0},
+        )],
+    }
+
+    for entity_id, states in (
+        ("sensor.connection", ("on", "on", "off", "off")),
+        ("sensor.mode", ("false", "zero", "zero")),
+    ):
+        for index, value in enumerate(states):
+            state = State(entity_id, value, {})
+            await observations._async_state_changed(
+                state_event(state, datetime.now(timezone.utc) + timedelta(seconds=index)),
+                mappings,
+                {},
+            )
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "car", "electricVehicle.connected": True},
+        {"deviceId": "car", "electricVehicle.connected": False},
+        {"deviceId": "car", "electricVehicle.mode": False},
+        {"deviceId": "car", "electricVehicle.mode": 0},
+    ]
+    await observations.async_stop()
+
+
+async def test_repeated_power_and_temperature_values_are_published(hass):
+    api = AsyncMock()
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    mappings = {
+        "sensor.power": [(
+            "device", "battery.power", False, None, None, False, None
+        )],
+        "sensor.temperature": [(
+            "device", "battery.temperature", False, None, None, False, None
+        )],
+    }
+    for entity_id, concept, value in (
+        ("sensor.power", "battery.power", "0"),
+        ("sensor.power", "battery.power", "0"),
+        ("sensor.temperature", "battery.temperature", "20"),
+        ("sensor.temperature", "battery.temperature", "20"),
+    ):
+        state = State(entity_id, value, {})
+        await observations._async_state_changed(
+            state_event(state, datetime.now(timezone.utc)), mappings, {}
+        )
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "device", "battery.power": 0},
+        {"deviceId": "device", "battery.power": 0},
+        {"deviceId": "device", "battery.temperature": 20},
+        {"deviceId": "device", "battery.temperature": 20},
+    ]
+    await observations.async_stop()
+
+
+async def test_failed_delivery_does_not_advance_last_sent_value(hass):
+    api = AsyncMock()
+    send = AsyncMock(side_effect=[False, True])
+    observations = publisher(hass, api, send)
+    mappings = {
+        "sensor.state": [(
+            "device", "heatPump.state", False, None, None, False, None
+        )]
+    }
+    for _ in range(2):
+        state = State("sensor.state", "ready", {})
+        await observations._async_state_changed(
+            state_event(state, datetime.now(timezone.utc)), mappings, {}
+        )
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "device", "heatPump.state": "ready"},
+        {"deviceId": "device", "heatPump.state": "ready"},
+    ]
+    assert observations._last_sent["device|heatPump.state"] == "ready"
+    await observations.async_stop()
+
+
+async def test_reconnect_resends_first_repeated_canonical_value(hass):
+    api = AsyncMock()
+    send = AsyncMock(return_value=True)
+    listeners = []
+
+    def subscribe(listener):
+        listeners.append(listener)
+        return lambda: listeners.remove(listener)
+
+    observations = RealtimeObservationPublisher(
+        hass,
+        api,
+        "site",
+        "entry",
+        send,
+        subscribe_runtime_status=subscribe,
+    )
+    observations._store = MemoryStore()
+    mappings = {
+        "sensor.state": [(
+            "device", "heatPump.state", False, None, None, False, None
+        )]
+    }
+    state = State("sensor.state", "ready", {})
+    event = state_event(state, datetime.now(timezone.utc))
+    await observations._async_state_changed(event, mappings, {})
+    await observations._async_state_changed(event, mappings, {})
+    listeners[0]({"state": "reconnecting"})
+    listeners[0]({"state": "connected"})
+    await observations._async_state_changed(event, mappings, {})
+
+    assert send.await_count == 2
+    await observations.async_stop()
+
+
+@pytest.mark.parametrize("concept", ["battery.chargeEnergy", "battery.dischargeEnergy"])
+async def test_energy_concepts_are_cumulative_and_suppress_repeated_totals(hass, concept):
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "battery-internal", "deviceId": "battery-external"}
+    ]
+    entity_id = f"sensor.{concept.rsplit('.', 1)[-1].casefold()}"
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "battery-internal",
+        "concept": concept,
+        "configuration": {"entityId": entity_id},
+    }]
+    hass.states.async_set(entity_id, "4", {"state_class": "total_increasing"})
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+    for value in ("4", "5", "5"):
+        hass.states.async_set(entity_id, value, {"state_class": "total_increasing"})
+        await hass.async_block_till_done()
+
+    assert [call.args[0][concept] for call in send.await_args_list] == [4, 5]
+    await observations.async_stop()
+
+
 async def test_cumulative_energy_starts_at_source_and_survives_resets(hass):
     api = AsyncMock()
     api.list_devices.return_value = [
@@ -423,7 +574,7 @@ async def test_cumulative_energy_starts_at_source_and_survives_resets(hass):
     await hass.async_block_till_done()
 
     assert [call.args[0]["spaceHeater.energy"] for call in send.await_args_list] == [
-        237.4, 237.7, 238.1, 238.1, 238.4, 238.4, 238.6
+        237.4, 237.7, 238.1, 238.4, 238.6
     ]
     stream = store.data["streams"]["heater-external|spaceHeater.energy"]
     assert stream == {
@@ -515,7 +666,11 @@ async def test_cumulative_streams_are_independent_and_unclassified_drop_is_froze
         "device-two|site.importEnergy",
     }
     assert store.data["streams"]["device-one|site.importEnergy"]["lifetime"] == "10"
-    send.assert_awaited_with({"deviceId": "device-one", "site.importEnergy": 10})
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "device-one", "site.importEnergy": 10},
+        {"deviceId": "device-one", "site.exportEnergy": 20},
+        {"deviceId": "device-two", "site.importEnergy": 30},
+    ]
 
 
 async def test_space_heater_fallback_power_and_energy_use_elapsed_heating_time(hass):
