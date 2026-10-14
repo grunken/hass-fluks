@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -29,25 +30,38 @@ TEMPERATURE_UNITS = {
 }
 AVAILABILITY_COOLDOWN = timedelta(minutes=5)
 _LOGGER = logging.getLogger(__name__)
+InputMapping = tuple[
+    str,
+    str,
+    bool,
+    str | None,
+    str | None,
+    str | bool | None,
+    dict[str, Any] | None,
+]
 
 
-def _raw_value(value: Any) -> Any:
+def _raw_value(value: Any, *, allow_object: bool = False) -> Any:
     if isinstance(value, str):
         value = value.strip()
         if value.lower() in INVALID_STATES:
             raise ValueError("Invalid Home Assistant state")
-    if value is None or isinstance(value, (dict, list)):
+    if value is None or isinstance(value, list) or (
+        isinstance(value, dict) and not allow_object
+    ):
         raise ValueError("Home Assistant value is not scalar")
     return value
 
 
-def _source_value(state: State, attribute: str | None) -> Any:
+def _source_value(
+    state: State, attribute: str | None, *, allow_object: bool = False
+) -> Any:
     """Read the configured state or attribute value."""
     if attribute is None:
-        return _raw_value(state.state)
+        return _raw_value(state.state, allow_object=allow_object)
     if attribute not in state.attributes:
         raise ValueError("Home Assistant attribute is unavailable")
-    return _raw_value(state.attributes[attribute])
+    return _raw_value(state.attributes[attribute], allow_object=allow_object)
 
 
 def _attribute_temperature_unit(
@@ -82,6 +96,62 @@ def _numeric_value(value: Any) -> int | float:
     if not math.isfinite(number):
         raise ValueError("Non-finite Home Assistant state")
     return number
+
+
+def _position_value(value: Any) -> dict[str, int | float]:
+    """Validate the structured coordinates used by electricVehicle.position."""
+    if not isinstance(value, dict) or not {"latitude", "longitude"} <= value.keys():
+        raise ValueError("Home Assistant value is not a latitude/longitude position")
+    return {
+        "latitude": _numeric_value(value["latitude"]),
+        "longitude": _numeric_value(value["longitude"]),
+    }
+
+
+def _distance_unit(
+    state: State, attribute: str | None, configured_unit: str | bool | None
+) -> str | None:
+    """Find the source unit for an odometer state or selected attribute."""
+    if isinstance(configured_unit, str) and configured_unit.strip():
+        return configured_unit.strip()
+    keys = (
+        (f"{attribute}_unit", "unit_of_measurement")
+        if attribute
+        else ("unit_of_measurement",)
+    )
+    for key in keys:
+        unit = state.attributes.get(key)
+        if isinstance(unit, str) and unit.strip():
+            return unit.strip()
+    return None
+
+
+def _odometer_kilometers(value: Any, source_unit: str | None) -> int | float:
+    """Normalize a supported odometer source unit to canonical kilometres."""
+    number = _numeric_value(value)
+    if isinstance(source_unit, str) and source_unit.strip().lower() == "mi":
+        return number * 1.609344
+    return number
+
+
+def _mapped_value_map(value: Any, values: dict[str, Any] | None) -> Any:
+    """Apply an existing input valueMap without treating false as absent."""
+    if not isinstance(values, dict):
+        return value
+    if isinstance(value, str) and value in values:
+        return values[value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    if isinstance(value, str):
+        normalized = re.sub(r"[\s_-]+", " ", value.strip().casefold()).strip()
+        for key, mapped in values.items():
+            if (
+                isinstance(key, str)
+                and re.sub(r"[\s_-]+", " ", key.strip().casefold()).strip()
+                == normalized
+            ):
+                return mapped
+    return value
 
 
 def _json_value(value: Any) -> str | int | float | bool:
@@ -225,7 +295,7 @@ class RealtimeObservationPublisher:
         state: State,
         attribute: str | None,
         canonical_temperature_unit: str | None,
-        mapping_declares_unit: bool,
+        mapping_declares_unit: str | bool | None,
     ) -> Any:
         value = _source_value(state, attribute)
         if (
@@ -290,10 +360,7 @@ class RealtimeObservationPublisher:
                 and concept.get("unit") in TEMPERATURE_UNITS
                 and isinstance(concept.get("concept"), str)
             }
-            by_entity: dict[
-                str,
-                list[tuple[str, str, bool, str | None, str | None, bool]],
-            ] = defaultdict(list)
+            by_entity: dict[str, list[InputMapping]] = defaultdict(list)
             configured: dict[str, set[str]] = defaultdict(set)
             active_sources: dict[str, str] = {}
             state_sources: dict[str, tuple[str, str | None]] = {}
@@ -331,7 +398,17 @@ class RealtimeObservationPublisher:
                         cumulative,
                         attribute,
                         temperature_units.get(concept),
-                        isinstance(configuration.get("unit"), str),
+                        configuration.get("unit", False),
+                        next(
+                            (
+                                transform.get("values")
+                                for transform in configuration.get("transforms", [])
+                                if isinstance(transform, dict)
+                                and transform.get("type") == "valueMap"
+                                and isinstance(transform.get("values"), dict)
+                            ),
+                            None,
+                        ),
                     )
                 )
                 stream = self._lifetime.get(self._stream_key(external_id, concept))
@@ -504,7 +581,7 @@ class RealtimeObservationPublisher:
         event: Event,
         mappings: dict[
             str,
-            list[tuple[str, str, bool, str | None, str | None, bool]],
+            list[InputMapping],
         ],
         derived: dict[str, list[tuple[str, bool, bool, Decimal, str | None]]],
     ) -> None:
@@ -513,7 +590,7 @@ class RealtimeObservationPublisher:
         if self._stopped or not isinstance(entity_id, str):
             return
         if state is None:
-            for device_id, concept, _cumulative, attribute, _unit, _declares_unit in (
+            for device_id, concept, _cumulative, attribute, _unit, _declares_unit, _value_map in (
                 mappings.get(entity_id, [])
             ):
                 await self._async_schedule_unavailable(
@@ -529,7 +606,8 @@ class RealtimeObservationPublisher:
             cumulative,
             attribute,
             temperature_unit,
-            mapping_declares_unit,
+            configured_unit,
+            value_map,
         ) in mappings.get(entity_id, []):
             key = self._stream_key(device_id, concept)
             source = self._source_id(state.entity_id, attribute)
@@ -547,14 +625,29 @@ class RealtimeObservationPublisher:
                 )
                 continue
             try:
-                value = _json_value(
-                    self._mapped_value(
-                        state,
-                        attribute,
-                        temperature_unit,
-                        mapping_declares_unit,
+                if concept == "electricVehicle.position":
+                    value = _position_value(
+                        _source_value(state, attribute, allow_object=True)
                     )
-                )
+                elif concept == "electricVehicle.odoMeter":
+                    value = _odometer_kilometers(
+                        _source_value(state, attribute),
+                        _distance_unit(
+                            state,
+                            attribute,
+                            configured_unit,
+                        ),
+                    )
+                else:
+                    value = _json_value(
+                        self._mapped_value(
+                            state,
+                            attribute,
+                            temperature_unit,
+                            configured_unit,
+                        )
+                    )
+                value = _mapped_value_map(value, value_map)
             except (TypeError, ValueError):
                 await self._async_complete_availability(
                     key, device_id, concept, source, False

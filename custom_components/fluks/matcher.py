@@ -31,6 +31,31 @@ IRRELEVANT_STATE_DOMAINS = {
     "script",
     "update",
 }
+_BOOLEAN_DOMAINS = {"binary_sensor", "input_boolean", "switch"}
+_CONNECTED_TRUE_VALUES = {
+    "on": True,
+    "true": True,
+    "1": True,
+    "yes": True,
+    "connected": True,
+    "plugged": True,
+    "plugged in": True,
+    "cable connected": True,
+    "cable plugged in": True,
+}
+_CONNECTED_FALSE_VALUES = {
+    "off": False,
+    "false": False,
+    "0": False,
+    "no": False,
+    "disconnected": False,
+    "unplugged": False,
+    "unplugged from charger": False,
+    "cable disconnected": False,
+    "cable unplugged": False,
+}
+_CONNECTED_VALUE_MAP = {**_CONNECTED_TRUE_VALUES, **_CONNECTED_FALSE_VALUES}
+_BOOLEAN_VALUE_SEPARATORS = re.compile(r"[\s_-]+")
 ATTRIBUTE_METADATA = {
     "attribution",
     "device_class",
@@ -50,6 +75,43 @@ ATTRIBUTE_METADATA = {
     "max_temp",
     "target_temp_step",
 }
+
+
+def _normalized_boolean_state(value: Any) -> str | None:
+    """Normalize a primitive boolean-like state for alias matching."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            return None
+        value = str(int(value)) if float(value).is_integer() else str(value)
+    if not isinstance(value, str):
+        return None
+    return _BOOLEAN_VALUE_SEPARATORS.sub(" ", value.strip().casefold()).strip()
+
+
+def _connected_concept(concept: dict[str, Any]) -> bool:
+    return str(concept.get("concept", "")).rsplit(".", 1)[-1] == "connected"
+
+
+def _boolean_mapping_values(
+    concept: dict[str, Any], value: Any, domain: str
+) -> dict[str, bool] | None:
+    """Return the default Value map for a recognized boolean source."""
+    if concept.get("datatype") != "boolean":
+        return None
+    normalized = _normalized_boolean_state(value)
+    if _connected_concept(concept):
+        if normalized in _CONNECTED_VALUE_MAP or domain in _BOOLEAN_DOMAINS:
+            return dict(_CONNECTED_VALUE_MAP)
+        return None
+    if normalized in {"on", "off", "true", "false"} or domain in _BOOLEAN_DOMAINS:
+        return (
+            {"true": True, "false": False}
+            if normalized in {"true", "false"} and domain not in _BOOLEAN_DOMAINS
+            else {"on": True, "off": False}
+        )
+    return None
 
 _LINEAR_UNITS: dict[str, tuple[str, float, str]] = {
     "mW": ("power", 0.001, "mW"),
@@ -387,13 +449,13 @@ def _datatype_evidence(
             return _evidence("datatype", "numeric_metadata", 2)
         return None
     if datatype == "boolean":
-        if isinstance(value, bool) or value in {"on", "off", "true", "false"}:
+        normalized = _normalized_boolean_state(value)
+        boolean_values = {"on", "off", "true", "false"}
+        if _connected_concept(concept):
+            boolean_values |= _CONNECTED_VALUE_MAP.keys()
+        if isinstance(value, bool) or normalized in boolean_values:
             return _evidence("datatype", "boolean_value", 4)
-        if _transient(value) and candidate.domain in {
-            "binary_sensor",
-            "input_boolean",
-            "switch",
-        }:
+        if _transient(value) and candidate.domain in _BOOLEAN_DOMAINS:
             return _evidence("datatype", "boolean_domain", 2)
         return None
     if datatype == "string":
@@ -504,16 +566,8 @@ def _configuration_for_candidate(
     if candidate.unit is not None and concept.get("unit") is not None:
         configuration["unit"] = candidate.unit
     transforms = list(conversion)
-    if concept.get("datatype") == "boolean" and (
-        candidate.value in {"on", "off", "true", "false"}
-        or candidate.domain in {"binary_sensor", "input_boolean", "switch"}
-    ):
-        values = (
-            {"true": True, "false": False}
-            if candidate.value in {"true", "false"}
-            and candidate.domain not in {"binary_sensor", "input_boolean", "switch"}
-            else {"on": True, "off": False}
-        )
+    values = _boolean_mapping_values(concept, candidate.value, candidate.domain)
+    if values is not None:
         transforms.append({"type": "valueMap", "values": values})
     if transforms:
         configuration["transforms"] = transforms
@@ -1178,20 +1232,10 @@ def input_configuration(
         if generated and normalized[: len(generated)] != generated:
             normalized = generated + normalized
 
-    if (
-        concept.get("datatype") == "boolean"
-        and not normalized
-        and (
-            value in {"on", "off", "true", "false"}
-            or domain in {"binary_sensor", "input_boolean", "switch"}
-        )
-    ):
-        values = (
-            {"true": True, "false": False}
-            if value in {"true", "false"}
-            and domain not in {"binary_sensor", "input_boolean", "switch"}
-            else {"on": True, "off": False}
-        )
+    values = (
+        _boolean_mapping_values(concept, value, domain) if not normalized else None
+    )
+    if values is not None:
         normalized = [{"type": "valueMap", "values": values}]
     if normalized:
         configuration["transforms"] = normalized

@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import re
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
@@ -66,6 +67,7 @@ _LOGGER = logging.getLogger(__name__)
 _DISPLAY_NUMBER_SUFFIX = re.compile(r"\s+#\d+$")
 
 COMMAND_CONTEXT = f"{DOMAIN}/config/context"
+COMMAND_RECENT_DECISIONS = f"{DOMAIN}/config/recent_decisions"
 COMMAND_RUNTIME_STATUS = f"{DOMAIN}/config/runtime_status"
 COMMAND_DEVICE_DETAIL = f"{DOMAIN}/config/device"
 COMMAND_ADD_REVIEW = f"{DOMAIN}/config/add_review"
@@ -962,6 +964,115 @@ async def websocket_context(hass, connection, msg):
         _send_error(hass, entry, connection, msg["id"], err)
 
 
+def _decision_timestamp(value: Any) -> float:
+    """Return a sortable UTC timestamp for an API ISO datetime."""
+    if not isinstance(value, str):
+        return 0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): COMMAND_RECENT_DECISIONS, **BASE_SCHEMA}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_recent_decisions(hass, connection, msg):
+    """Return a compact, safe presentation of the most recent Site Decisions."""
+    entry = None
+    try:
+        entry = _entry(hass, msg["entry_id"])
+        api = _api(hass, entry)
+        site_id = entry.data[CONF_SITE_ID]
+        response = await api.list_site_decision_explanations(site_id, limit=5)
+        devices = await api.list_devices(site_id)
+        translations = await _panel_translations(hass)
+        physical_devices = [
+            device for device in devices if device.get("type") != SITE_DEVICE_TYPE
+        ]
+        names = _present_device_names(physical_devices, translations)
+        devices_by_external_id = {
+            device.get("deviceId"): device
+            for device in physical_devices
+            if isinstance(device.get("deviceId"), str)
+        }
+        decisions: dict[str, dict[str, Any]] = {}
+        for record in response["data"]:
+            if not isinstance(record, dict) or not isinstance(
+                record.get("decision"), dict
+            ):
+                continue
+            decision = record["decision"]
+            decision_id = decision.get("id")
+            if not isinstance(decision_id, str):
+                continue
+            item = decisions.setdefault(decision_id, {"decision": decision})
+            explanation = record.get("deterministicText")
+            if isinstance(explanation, str) and explanation.strip():
+                item["explanation"] = explanation
+            item["explanation_created_at"] = record.get("createdAt")
+        for record in response["currentDecisions"]:
+            if not isinstance(record, dict) or not isinstance(
+                record.get("decision"), dict
+            ):
+                continue
+            decision = record["decision"]
+            decision_id = decision.get("id")
+            if isinstance(decision_id, str):
+                decisions.setdefault(decision_id, {"decision": decision})
+
+        presented = []
+        for item in decisions.values():
+            decision = item["decision"]
+            external_id = decision.get("deviceId")
+            device = devices_by_external_id.get(external_id)
+            identity = names.get(str(device.get("id")), "") if device else ""
+            type_name = device_type_name(device, translations) if device else ""
+            device_label = (
+                f"{type_name} · {identity}" if identity else type_name
+            ) or translations.get("unknown_device", "Unknown device")
+            concept = decision.get("concept")
+            if not isinstance(concept, str):
+                continue
+            action = concept_label({"concept": concept}, translations)
+            mode = decision.get("mode")
+            mode_key = (
+                f"behavior_{mode}_choice"
+                if isinstance(mode, str) and mode
+                else "default_behavior"
+            )
+            mode_label = translations.get(
+                mode_key,
+                str(mode) if mode else translations.get("default_behavior", ""),
+            ).replace("{controlName}", action)
+            presented.append(
+                {
+                    "id": decision["id"],
+                    "time": decision.get("createdAt") or item.get("explanation_created_at"),
+                    "device": device_label,
+                    "action": action,
+                    "mode": mode_label,
+                    "value": decision.get("value"),
+                    "explanation": item.get("explanation"),
+                    "_sort": _decision_timestamp(
+                        decision.get("createdAt")
+                        or item.get("explanation_created_at")
+                    ),
+                }
+            )
+        presented.sort(key=lambda item: (item["_sort"], item["id"]), reverse=True)
+        for item in presented:
+            item.pop("_sort", None)
+        connection.send_result(msg["id"], {"decisions": presented[:5]})
+    except (PanelCommandError, FluksApiError) as err:
+        _send_error(hass, entry, connection, msg["id"], err)
+
+
 def _present_entities(hass: HomeAssistant, registry) -> list[dict[str, Any]]:
     """Return safe local entity-picker metadata; never backend credentials."""
     result = []
@@ -1762,6 +1873,7 @@ async def websocket_site_delete(hass, connection, msg):
 
 COMMANDS = (
     websocket_context,
+    websocket_recent_decisions,
     websocket_runtime_status,
     websocket_device_detail,
     websocket_add_review,

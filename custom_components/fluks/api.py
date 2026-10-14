@@ -274,6 +274,23 @@ class FluksApiClient:
             raise FluksApiError("INVALID_RESPONSE")
         return data
 
+    async def list_site_decision_explanations(
+        self, site_id: str, *, limit: int = 5
+    ) -> dict[str, Any]:
+        """List recent Decisions and their deterministic explanations."""
+        response = await self._request(
+            "GET",
+            f"/sites/{site_id}/decisions/explanations",
+            params={"limit": str(limit)},
+            expected_status=200,
+            auth=AuthContext.INTEGRATION,
+        )
+        if not isinstance(response.get("data"), list) or not isinstance(
+            response.get("currentDecisions"), list
+        ):
+            raise FluksApiError("INVALID_RESPONSE")
+        return response
+
     async def create_device(
         self,
         site_id: str,

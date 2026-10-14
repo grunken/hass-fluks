@@ -182,6 +182,11 @@ async def test_observation_send_reuses_current_socket_after_reconnect():
     assert not await runtime.async_send({"deviceId": "device", "site.power": 1})
     await _wait_for(lambda: runtime._socket is second)
     assert await runtime.async_send({"deviceId": "device", "site.power": 2})
-    assert second.sent == [{"deviceId": "device", "site.power": 2}]
+    false_observation = {"deviceId": "device", "electricVehicle.connected": False}
+    assert await runtime.async_send(false_observation)
+    assert second.sent == [
+        {"deviceId": "device", "site.power": 2},
+        false_observation,
+    ]
     assert len(session.calls) == 2
     await runtime.async_stop()

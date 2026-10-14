@@ -37,6 +37,10 @@ class FluksControlEditorPanel extends HTMLElement {
     this._powerSignSamples = new Map();
     this._powerSignResolved = new Set();
     this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
+    this._recentDecisions = [];
+    this._recentDecisionsLoading = false;
+    this._recentDecisionsLoaded = false;
+    this._recentDecisionsError = false;
     this._runtimeStatusUnsubscribe = undefined;
     this._runtimeStatusTimer = undefined;
     this._runtimeStatusSubscriptionToken = 0;
@@ -58,6 +62,10 @@ class FluksControlEditorPanel extends HTMLElement {
       this._contextLoadToken += 1;
       this._entryId = entryId;
       this._context = this._detail = this._draft = undefined;
+      this._recentDecisions = [];
+      this._recentDecisionsLoading = false;
+      this._recentDecisionsLoaded = false;
+      this._recentDecisionsError = false;
       this._pendingControl = undefined;
       this._spaceHeaterValidationError = false;
       this._mappingSuggestionsLoading = false;
@@ -249,6 +257,7 @@ class FluksControlEditorPanel extends HTMLElement {
       if (!this._isCurrentView(token)) return;
     }
     this._render();
+    if (view.name === "home") void this._loadRecentDecisions();
     if (view.name === "edit") this._observePowerSigns(true);
     if (view.name === "edit" && this._isCurrentView(token) && this._hasUnmappedInputConcepts(this._detail)) {
       this._loadInputSuggestions(view.deviceId, token).catch(() => {});
@@ -492,7 +501,12 @@ class FluksControlEditorPanel extends HTMLElement {
       <div class="card list">${devices || `<p>${esc(this._t("no_devices"))}</p>`}</div></section>
       <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><button class="site-link" id="site-detail">${this._typeIcon("site")}
       <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>${this._configurationIndicator(site.configuration_status)}
-      <div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div></div></section>`);
+      <div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div></div></section>
+      <section id="recent-decisions"><h2>${esc(this._t("recent_decisions"))}</h2><div class="card list">
+      ${this._recentDecisionsLoading ? `<p class="decision-feed-message">${esc(this._t("loading_decisions"))}</p>` : this._recentDecisionsError ? `<p class="decision-feed-message">${esc(this._t("decisions_unavailable"))}</p>` : this._recentDecisions.length ? this._recentDecisions.map((decision) => {
+        const details = [this._decisionTime(decision.time), decision.action, decision.mode, decision.value].filter((value) => value !== undefined && value !== null && value !== "").join(" · ");
+        return `<div class="row decision-row"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon><span class="row-copy"><strong>${esc(decision.device)}</strong><span>${esc(details)}</span>${decision.explanation ? `<small class="decision-explanation">${esc(decision.explanation)}</small>` : ""}</span></div>`;
+      }).join("") : `<p class="decision-feed-message">${esc(this._t("no_recent_decisions"))}</p>`}</div></section>`);
     const add = this.shadowRoot.querySelector("#add");
     if (add) add.onclick = () => this._go({ name: "add" });
     this._wireMenu("site-menu", "site-actions");
@@ -505,6 +519,35 @@ class FluksControlEditorPanel extends HTMLElement {
     const devicesCard = this.shadowRoot.querySelector("#home-devices-card");
     if (devicesCard) devicesCard.onclick = () => this.shadowRoot.querySelector("#configured-devices")?.scrollIntoView({ behavior: "smooth" });
     this.shadowRoot.querySelectorAll("[data-device]").forEach((n) => n.onclick = () => this._go({ name: "device", deviceId: n.dataset.device }));
+  }
+  _decisionTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString(this._hass?.language || undefined, { dateStyle: "short", timeStyle: "short" });
+  }
+  async _loadRecentDecisions() {
+    if (this._recentDecisionsLoaded || this._recentDecisionsLoading || this._view.name !== "home") return;
+    const entryId = this._entryId;
+    this._recentDecisionsLoading = true;
+    this._renderHome();
+    try {
+      const result = await this._call("fluks/config/recent_decisions");
+      if (entryId !== this._entryId) return;
+      this._recentDecisions = Array.isArray(result?.decisions) ? result.decisions : [];
+      this._recentDecisionsError = false;
+    } catch (_) {
+      if (entryId !== this._entryId) return;
+      this._recentDecisions = [];
+      this._recentDecisionsError = true;
+      this._error = undefined;
+    } finally {
+      if (entryId === this._entryId) {
+        this._recentDecisionsLoading = false;
+        this._recentDecisionsLoaded = true;
+        if (this._view.name === "home") this._renderHome();
+      }
+    }
   }
   _renderDevice() {
     const site = this._detail.type === "site";
@@ -787,13 +830,14 @@ class FluksControlEditorPanel extends HTMLElement {
     return ["°C", "°F", "K"].includes(state?.attributes?.unit_of_measurement)
       || item.deviceClass === "temperature";
   }
-  _entitySources(item, canonicalTemperature = false) {
+  _entitySources(item, canonicalTemperature = false, structuredPosition = false) {
     const state = this._hass.states[item.id];
-    const sources = canonicalTemperature && !this._isTemperatureState(item, state)
+    const sources = structuredPosition || (canonicalTemperature && !this._isTemperatureState(item, state))
       ? []
       : [{ ...item, attribute: "", secondary: `${this._t("entity_state")} · ${item.id}`, trailing: this._formatState(state) }];
     for (const [attribute, value] of Object.entries(state?.attributes ?? {})) {
       if (canonicalTemperature && !this._isTemperatureAttribute(state, attribute, value)) continue;
+      if (structuredPosition && (attribute !== "position" || !value || typeof value !== "object" || Array.isArray(value))) continue;
       const formatted = this._formatSourceValue(value);
       const unit = canonicalTemperature ? this._temperatureUnit({ ...state, entity_id: item.id }, attribute) : "";
       const trailing = canonicalTemperature ? this._formatTemperatureSource(value, unit) : formatted;
@@ -819,6 +863,15 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _formatSourceValue(value) {
     if (value === undefined || value === null) return "";
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const isCoordinate = (coordinate) =>
+        (typeof coordinate === "number" || (typeof coordinate === "string" && coordinate.trim() !== ""))
+        && Number.isFinite(Number(coordinate));
+      if (!isCoordinate(value.latitude) || !isCoordinate(value.longitude)) return "";
+      const latitude = Number(value.latitude);
+      const longitude = Number(value.longitude);
+      return `${latitude}, ${longitude}`;
+    }
     const numeric = Number(value);
     return Number.isFinite(numeric)
       ? new Intl.NumberFormat(this._hass.language, { maximumFractionDigits: 3 }).format(numeric)
@@ -855,7 +908,7 @@ class FluksControlEditorPanel extends HTMLElement {
         && ["suggest", "unresolved"].includes(proposal.classification)
         ? this._proposalChoice(concept.concept, proposal)
         : "";
-      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept, configuration.attribute)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${proposed}${editableConversions && selected ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
+      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept, configuration.attribute)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${proposed}${editableConversions && selected && concept.datatype !== "object" ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
     }
     return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
   }
@@ -1030,7 +1083,8 @@ class FluksControlEditorPanel extends HTMLElement {
       const definitions = this._detail?.concepts ?? this._draft?.concepts ?? [];
       const definition = definitions.find((item) => item.concept === concept);
       const canonicalTemperature = definition?.datatype === "number" && ["°C", "°F", "K"].includes(definition?.unit);
-      if (kind === "entity") items = ordered.flatMap((item) => this._entitySources(item, canonicalTemperature));
+      const structuredPosition = definition?.concept === "electricVehicle.position";
+      if (kind === "entity") items = ordered.flatMap((item) => this._entitySources(item, canonicalTemperature, structuredPosition));
       else items = ordered;
       const filtered = items.filter((item) => `${item.name} ${item.secondary} ${item.id} ${item.trailing ?? ""}`.toLocaleLowerCase(this._hass.language).includes(normalized));
       dialog.querySelector(".picker-results").innerHTML = `${kind === "entity" ? `<button class="picker-row clear" data-value="" data-attribute=""><span class="source-icon"><ha-icon icon="mdi:close-circle-outline"></ha-icon></span><span class="row-copy"><strong>${esc(this._t("clear_selection"))}</strong><span>${esc(this._t("optional"))}</span></span></button>` : ""}${filtered.map((item) => `<button class="picker-row ${item.id === selected && (item.attribute ?? "") === selectedAttribute ? "selected" : ""}" data-value="${esc(item.id)}" data-attribute="${esc(item.attribute ?? "")}"><span class="source-icon"><ha-icon icon="${esc(item.icon || "mdi:devices")}"></ha-icon></span><span class="row-copy"><strong title="${esc(item.name)}">${esc(item.name)}</strong><span title="${esc(item.secondary || item.id)}">${esc(item.secondary || item.id)}</span></span>${item.trailing ? `<span class="trailing" title="${esc(item.trailing)}">${esc(item.trailing)}</span>` : ""}</button>`).join("") || `<p class="empty-results">${esc(this._t("no_results"))}</p>`}`;
@@ -1463,6 +1517,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .primary{background:var(--primary-color);color:var(--text-primary-color,#fff);border-color:var(--primary-color)}.danger{background:var(--error-color);border-color:var(--error-color);color:#fff}.danger-zone{border-color:var(--error-color)}.menu-danger{color:var(--error-color);background:transparent;border:0;width:100%;text-align:left}
     .icon{border:0;background:transparent;font-size:25px;padding:4px;width:42px;min-width:42px}.overflow{margin-left:auto;font-weight:700}.section-title,.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}.actions{justify-content:flex-end;margin:22px 0 0}
     .row{position:relative;width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row.needs-attention{background:color-mix(in srgb,var(--warning-color,#f0b429) 5%,transparent)}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}.configuration-indicator{position:absolute;top:0;bottom:0;left:0;width:7px;pointer-events:none}.configuration-indicator.complete{background:var(--success-color,#43a047)}.configuration-indicator.incomplete{background:var(--warning-color,#f0b429)}
+    .decision-row{align-items:flex-start}.decision-row>ha-icon{color:var(--primary-color);margin-top:2px;flex:none}.decision-explanation{white-space:normal;line-height:1.4}.decision-feed-message{margin:0;padding:14px 16px}
     .device-icon{display:block;object-fit:contain;flex:none}.device-icon.list{width:38px;height:38px}.device-icon.hero{width:62px;height:62px}.device-icon.header{width:50px;height:50px}.device-icon.picker{width:70px;height:70px}
     .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected,.configuration-dot.complete{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800)}.configuration-dot{flex:none}.configuration-dot.incomplete{background:var(--warning-color,#f0b429)}#home-configuration .configuration-dot{align-self:flex-start;margin-top:5.6px;transform:none}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}.configuration-count{display:flex;align-items:center;gap:8px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}.mapping-loading{display:flex;align-items:center;gap:14px}.mapping-loading strong{display:block;margin-bottom:3px}.mapping-loading p{margin:0;color:var(--secondary-text-color,#aaa)}.mapping-loading-inline{margin-left:auto;padding:8px 0;flex:none}.mapping-loading-inline strong{margin:0;white-space:nowrap}.loading-spinner{width:24px;height:24px;flex:none;border:3px solid color-mix(in srgb,var(--primary-color,#03a678) 25%,transparent);border-top-color:var(--primary-color,#03a678);border-radius:50%;animation:fluks-spin .8s linear infinite}@keyframes fluks-spin{to{transform:rotate(360deg)}}
     .home-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px}.home-card{display:flex;align-items:flex-start;gap:14px;min-height:152px;margin:0;text-align:left}.home-card>ha-icon{color:var(--primary-color);font-size:30px;flex:none}.home-card h2{margin:0 0 8px}.home-card p{margin:0}.home-card-button{width:100%;cursor:pointer}.home-card-button .chevron{margin-left:auto;align-self:center}

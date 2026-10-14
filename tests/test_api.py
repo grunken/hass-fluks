@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.fluks.api import (
     FluksApiClient,
+    FluksApiError,
     FluksCannotConnect,
     FluksConflict,
     FluksInvalidCredentials,
@@ -142,6 +143,35 @@ async def test_authenticated_site_and_integration_contract():
         "POST",
         f"{API_BASE_URL}/sites/site-id/integrations/internal-id/integration-key",
     )
+
+
+@pytest.mark.asyncio
+async def test_recent_decision_explanations_use_integration_auth():
+    response = {
+        "data": [{"decision": {"id": "decision-1"}, "deterministicText": "Saved energy."}],
+        "currentDecisions": [],
+    }
+    session = FakeSession(FakeResponse(200, response))
+    client = FluksApiClient(session, integration_key=INTEGRATION_KEY)
+
+    assert await client.list_site_decision_explanations("site-id", limit=5) == response
+    method, url, kwargs = session.requests[0]
+    assert (method, url) == (
+        "GET",
+        f"{API_BASE_URL}/sites/site-id/decisions/explanations",
+    )
+    assert kwargs["params"] == {"limit": "5"}
+    assert kwargs["headers"] == {"Authorization": f"Bearer {INTEGRATION_KEY}"}
+
+
+@pytest.mark.asyncio
+async def test_recent_decision_explanations_reject_invalid_response():
+    client = FluksApiClient(
+        FakeSession(FakeResponse(200, {"data": []})),
+        integration_key=INTEGRATION_KEY,
+    )
+    with pytest.raises(FluksApiError, match="INVALID_RESPONSE"):
+        await client.list_site_decision_explanations("site-id")
 
 
 @pytest.mark.asyncio

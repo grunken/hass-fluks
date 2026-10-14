@@ -1249,6 +1249,7 @@ test("homepage renders configured devices and live runtime status", () => {
       reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
       configured_devices: "{count} configured", configuration: "Configuration",
       configuration_description: "Manage devices and mappings",
+      recent_decisions: "Recent Decisions", no_recent_decisions: "No recent Decisions.",
     },
     site: { id: "site-device", name: "Hjem" },
     devices: [
@@ -1257,6 +1258,10 @@ test("homepage renders configured devices and live runtime status", () => {
     ],
   };
   panel._runtimeStatus = { state: "connected", disconnected_at: null };
+  panel._recentDecisions = [{
+    time: "2026-09-30T12:00:00Z", device: "Solar · Roof", action: "Power",
+    mode: "Targets Power", value: 1200, explanation: "Solar production is available.",
+  }];
   let rendered;
   const statusNode = { innerHTML: "" };
   const siteMenu = { onclick: undefined };
@@ -1277,6 +1282,10 @@ test("homepage renders configured devices and live runtime status", () => {
   assert.match(rendered.body, /data-device="heat-1"/);
   assert.match(rendered.body, /fluks-device-icons\/heat_pump\.png/);
   assert.match(rendered.body, /home-configuration/);
+  assert.match(rendered.body, /Recent Decisions/);
+  assert.match(rendered.body, /Solar · Roof/);
+  assert.match(rendered.body, /Power · Targets Power · 1200/);
+  assert.match(rendered.body, /Solar production is available\./);
 
   panel._applyRuntimeStatus({ state: "reconnecting", disconnected_at: Date.now() - 61000 });
   assert.match(statusNode.innerHTML, /Reconnecting · 01:01/);
@@ -2101,6 +2110,40 @@ test("production Input Mapping picker offers entity state and attributes directl
   assert.deepEqual(panel._collectForm(true).mappings["heatPump.temperature"], {
     version: 1, entityId: "climate.buffer",
   });
+});
+
+test("production Input Mapping picker keeps structured EV coordinates selectable", () => {
+  const panel = new Panel();
+  panel._context = { translations: { entity_state: "State" }, entities: [] };
+  panel._hass = {
+    states: { "device_tracker.car": { state: "home", attributes: {
+      latitude: 55.6761,
+      longitude: 12.5683,
+      position: { latitude: 55.6761, longitude: 12.5683 },
+    } } },
+    language: "en", localize: () => undefined,
+  };
+
+  const sources = panel._entitySources({ id: "device_tracker.car", name: "Car", secondary: "device_tracker.car" }, false, true);
+  assert.deepEqual(sources.find(({ attribute }) => attribute === "position").trailing, "55.6761, 12.5683");
+  assert.deepEqual(sources.map(({ attribute }) => attribute), ["position"]);
+  panel._inputDraft = {
+    "electricVehicle.position": { version: 1, entityId: "device_tracker.car", attribute: "position", transforms: [{ type: "scale", factor: 5 }] },
+    "electricVehicle.odoMeter": { version: 1, entityId: "sensor.car_odometer" },
+    "electricVehicle.distanceToSite": { version: 1, entityId: "sensor.distance" },
+  };
+  const mapping = panel._mappingFields({
+    concepts: [
+      { concept: "electricVehicle.position", label: "Position", cadence: "realtime", datatype: "object" },
+      { concept: "electricVehicle.odoMeter", label: "Odometer", cadence: "realtime" },
+      { concept: "electricVehicle.distanceToSite", label: "Distance to site", cadence: "realtime" },
+    ],
+    mappings: {},
+  }, true);
+  assert.match(mapping, /Position/);
+  assert.match(mapping, /Odometer/);
+  assert.match(mapping, /Distance to site/);
+  assert.doesNotMatch(mapping, /data-input-transform="add" data-input-concept="electricVehicle\.position"/);
 });
 
 test("clearing a persisted Input Mapping remains cleared until Save or Cancel", async () => {

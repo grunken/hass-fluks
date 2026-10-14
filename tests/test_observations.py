@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from homeassistant.core import State
 
 from custom_components.fluks.observations import RealtimeObservationPublisher
@@ -706,7 +708,7 @@ async def test_real_space_heater_mappings_override_fallback_values(hass):
             datetime.now(timezone.utc),
         ),
         {
-                "sensor.real_power": [("heater-external", "spaceHeater.power", False, None, None, False)],
+                "sensor.real_power": [("heater-external", "spaceHeater.power", False, None, None, False, None)],
         },
         {},
     )
@@ -721,7 +723,7 @@ async def test_real_space_heater_mappings_override_fallback_values(hass):
             datetime.now(timezone.utc),
         ),
         {
-            "sensor.real_energy": [("heater-external", "spaceHeater.energy", False, None, None, False)],
+            "sensor.real_energy": [("heater-external", "spaceHeater.energy", False, None, None, False, None)],
         },
         {},
     )
@@ -759,18 +761,180 @@ async def test_mapped_source_recovery_before_cooldown_sends_no_availability_even
     source = State("sensor.source", "unavailable", {})
     await observations._async_state_changed(
         state_event(source, datetime.now(timezone.utc)),
-        {"sensor.source": [("device-external", "solar.power", False, None, None, False)]},
+        {"sensor.source": [("device-external", "solar.power", False, None, None, False, None)]},
         {},
     )
     assert send.await_count == 0
     recovered = State("sensor.source", "12", {})
     await observations._async_state_changed(
         state_event(recovered, datetime.now(timezone.utc)),
-        {"sensor.source": [("device-external", "solar.power", False, None, None, False)]},
+        {"sensor.source": [("device-external", "solar.power", False, None, None, False, None)]},
         {},
     )
 
     send.assert_awaited_once_with({"deviceId": "device-external", "solar.power": 12})
+    await observations.async_stop()
+
+
+async def test_electric_vehicle_position_attribute_keeps_coordinate_object(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "car-internal", "deviceId": "car-external", "type": "electricVehicle"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "car-internal",
+        "concept": "electricVehicle.position",
+        "configuration": {
+            "entityId": "device_tracker.car",
+            "attribute": "position",
+        },
+    }]
+    api.get_device_type_catalog.return_value = [{
+        "type": "electricVehicle",
+        "concepts": [{"concept": "electricVehicle.position", "datatype": "object"}],
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "device_tracker.car",
+        "home",
+        {"position": {"latitude": "55.6761", "longitude": 12.5683}},
+    )
+    await hass.async_block_till_done()
+
+    send.assert_awaited_once_with({
+        "deviceId": "car-external",
+        "electricVehicle.position": {"latitude": 55.6761, "longitude": 12.5683},
+    })
+    await observations.async_stop()
+
+
+async def test_value_mapped_electric_vehicle_connected_publishes_true_and_false(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "car-internal", "deviceId": "car-external", "type": "electricVehicle"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "car-internal",
+        "concept": "electricVehicle.connected",
+        "configuration": {
+            "entityId": "binary_sensor.car_connected",
+            "transforms": [{
+                "type": "valueMap",
+                "values": {"on": True, "off": False},
+            }],
+        },
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set("binary_sensor.car_connected", "on")
+    await hass.async_block_till_done()
+    hass.states.async_set("binary_sensor.car_connected", "off")
+    await hass.async_block_till_done()
+
+    payloads = [call.args[0] for call in send.await_args_list]
+    assert payloads == [
+        {"deviceId": "car-external", "electricVehicle.connected": True},
+        {"deviceId": "car-external", "electricVehicle.connected": False},
+    ]
+    assert [type(payload["electricVehicle.connected"]) for payload in payloads] == [
+        bool,
+        bool,
+    ]
+    await observations.async_stop()
+
+
+async def test_connected_value_map_matches_case_and_whitespace_without_defaulting_unknown(
+    hass,
+):
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "car-internal", "deviceId": "car-external", "type": "electricVehicle"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "car-internal",
+        "concept": "electricVehicle.connected",
+        "configuration": {
+            "entityId": "sensor.car_connection",
+            "transforms": [{
+                "type": "valueMap",
+                "values": {
+                    "plugged in": True,
+                    "unplugged from charger": False,
+                },
+            }],
+        },
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set("sensor.car_connection", "  PLUGGED_In  ")
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.car_connection", "UNPLUGGED-from charger")
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.car_connection", "charging")
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.car_connection", "unknown")
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.car_connection", "unavailable")
+    await hass.async_block_till_done()
+
+    payloads = [call.args[0] for call in send.await_args_list]
+    assert payloads == [
+        {"deviceId": "car-external", "electricVehicle.connected": True},
+        {"deviceId": "car-external", "electricVehicle.connected": False},
+        {"deviceId": "car-external", "electricVehicle.connected": "charging"},
+    ]
+    assert type(payloads[0]["electricVehicle.connected"]) is bool
+    assert type(payloads[1]["electricVehicle.connected"]) is bool
+
+    await observations.async_stop()
+
+
+@pytest.mark.parametrize(
+    ("unit", "source_value", "expected"),
+    [("mi", "10", 16.09344), ("km", "10", 10)],
+)
+async def test_electric_vehicle_odometer_publishes_canonical_kilometres(
+    hass, unit, source_value, expected
+):
+    api = AsyncMock()
+    api.list_devices.return_value = [
+        {"id": "car-internal", "deviceId": "car-external", "type": "electricVehicle"}
+    ]
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "car-internal",
+        "concept": "electricVehicle.odoMeter",
+        "configuration": {
+            "entityId": "sensor.car_odometer",
+            "unit": unit,
+            "transforms": (
+                [{"type": "scale", "factor": 1.609344}] if unit == "mi" else []
+            ),
+        },
+    }]
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    hass.states.async_set(
+        "sensor.car_odometer", source_value, {"unit_of_measurement": unit}
+    )
+    await hass.async_block_till_done()
+
+    send.assert_awaited_once_with({
+        "deviceId": "car-external",
+        "electricVehicle.odoMeter": expected,
+    })
     await observations.async_stop()
 
 
@@ -781,7 +945,7 @@ async def test_mapped_source_unavailable_after_cooldown_is_sent_once(hass):
     observations = publisher(hass, api, send, cooldown=0)
     await observations.async_refresh()
     mappings = {
-        "sensor.source": [("device-external", "site.power", False, None, None, False)]
+        "sensor.source": [("device-external", "site.power", False, None, None, False, None)]
     }
     unavailable = State("sensor.source", "unavailable", {})
     await observations._async_state_changed(
@@ -815,6 +979,7 @@ async def test_mapped_attribute_recovery_sends_available_after_unavailable(hass)
             "current_temperature",
             None,
             False,
+            None,
         )]
     }
     unavailable = State("climate.tank", "unavailable", {"current_temperature": "unknown"})
@@ -850,7 +1015,7 @@ async def test_valid_observation_recovers_without_separate_available_event(hass)
     await observations.async_refresh()
     mappings = {
         "sensor.source": [(
-            "device-external", "battery.soc", False, None, None, False
+            "device-external", "battery.soc", False, None, None, False, None
         )]
     }
     await observations._async_state_changed(
@@ -881,7 +1046,7 @@ async def test_unavailable_sent_state_survives_restart(hass):
     await first.async_refresh()
     mappings = {
         "sensor.source": [(
-            "device-external", "solar.power", False, None, None, False
+            "device-external", "solar.power", False, None, None, False, None
         )]
     }
     await first._async_state_changed(

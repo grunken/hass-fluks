@@ -1061,8 +1061,89 @@ def test_native_boolean_fact_can_meet_auto_threshold(hass):
 
     assert proposal["classification"] == "auto"
     assert proposal["configuration"]["transforms"] == [
-        {"type": "valueMap", "values": {"on": True, "off": False}}
+        {
+            "type": "valueMap",
+            "values": {
+                "on": True,
+                "true": True,
+                "1": True,
+                "yes": True,
+                "connected": True,
+                "plugged": True,
+                "plugged in": True,
+                "cable connected": True,
+                "cable plugged in": True,
+                "off": False,
+                "false": False,
+                "0": False,
+                "no": False,
+                "disconnected": False,
+                "unplugged": False,
+                "unplugged from charger": False,
+                "cable disconnected": False,
+                "cable unplugged": False,
+            },
+        }
     ]
+
+
+@pytest.mark.parametrize(
+    ("state", "key", "expected"),
+    [
+        ("PLUGGED_In", "plugged in", True),
+        (" Cable   Plugged In ", "cable plugged in", True),
+        ("UNPLUGGED-from charger", "unplugged from charger", False),
+        ("cable_disconnected", "cable disconnected", False),
+    ],
+)
+def test_connected_boolean_aliases_are_boolean_evidence_and_get_value_map(
+    hass, state, key, expected
+):
+    concept = {
+        "concept": "electricVehicle.connected",
+        "datatype": "boolean",
+        "cadence": "realtime",
+        "usages": ["fact"],
+    }
+    proposal = _match(
+        hass,
+        [concept],
+        [
+            _candidate(
+                "sensor.vehicle_connected",
+                value=state,
+                unit=None,
+                device_class=None,
+                state_class=None,
+                domain="sensor",
+            )
+        ],
+    )["electricVehicle.connected"]
+    configuration = proposal["configuration"]
+    values = configuration["transforms"][0]["values"]
+    assert values["plugged in"] is True
+    assert values["unplugged from charger"] is False
+    assert values[key] is expected
+    assert "charging" not in values
+    assert "idle" not in values
+    assert "paused" not in values
+    assert "complete" not in values
+
+
+def test_connected_manual_value_map_override_is_preserved(hass):
+    manual = [{"type": "valueMap", "values": {"ready": True, "away": False}}]
+    configuration = input_configuration(
+        hass,
+        {
+            "concept": "electricVehicle.connected",
+            "datatype": "boolean",
+            "cadence": "realtime",
+            "usages": ["fact"],
+        },
+        "binary_sensor.vehicle_connected",
+        transforms=manual,
+    )
+    assert configuration["transforms"] == manual
 
 
 async def test_existing_version_one_mapping_can_preserve_legacy_unit_behavior(hass):

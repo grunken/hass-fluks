@@ -10,6 +10,7 @@ from custom_components.fluks.const import (
     CONF_CLEARED_MAPPING_CONCEPTS,
     CONF_DEVICE_CONTEXTS,
     CONF_INTEGRATION_KEY,
+    CONF_SITE_ID,
     DOMAIN,
     DATA_RUNTIME,
 )
@@ -18,6 +19,7 @@ from custom_components.fluks.panel_api import (
     COMMAND_ADD_REVIEW,
     COMMAND_ADD_SAVE,
     COMMAND_CONTEXT,
+    COMMAND_RECENT_DECISIONS,
     COMMAND_RUNTIME_STATUS,
     COMMAND_CONTROL_CAPABILITIES,
     COMMAND_CONTROL_SAVE,
@@ -37,6 +39,7 @@ from custom_components.fluks.panel_api import (
     websocket_add_review,
     websocket_add_save,
     websocket_context,
+    websocket_recent_decisions,
     websocket_runtime_status,
     websocket_control_capabilities,
     websocket_control_save,
@@ -202,7 +205,7 @@ def test_registers_only_finite_product_commands(hass):
         "custom_components.fluks.panel_api.websocket_api.async_register_command"
     ) as register:
         async_register_panel_commands(hass)
-    assert register.call_count == len(COMMANDS) == 11
+    assert register.call_count == len(COMMANDS) == 12
 
 
 async def test_control_capabilities_command_is_admin_and_never_returns_credentials(hass):
@@ -718,6 +721,92 @@ async def test_context_contains_required_site_device_separate_from_devices(hass)
     serialized = repr(sent)
     assert "integration_key" not in serialized
     assert KEY not in serialized
+
+
+async def test_recent_decisions_present_device_action_time_and_explanation(hass):
+    entry = SimpleNamespace(data={CONF_SITE_ID: "site-id"})
+    api = MagicMock(spec=FluksApiClient)
+    api.list_site_decision_explanations = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "decision": {
+                        "id": "decision-1",
+                        "deviceId": "solar-external",
+                        "concept": "solar.power",
+                        "value": 1200,
+                        "mode": "target",
+                        "createdAt": "2026-09-30T12:00:00Z",
+                    },
+                    "deterministicText": "Solar production is available.",
+                    "createdAt": "2026-09-30T12:00:01Z",
+                }
+            ],
+            "currentDecisions": [
+                {
+                    "decision": {
+                        "id": "decision-2",
+                        "deviceId": "solar-external",
+                        "concept": "solar.power",
+                        "value": 900,
+                        "mode": None,
+                        "createdAt": "2026-10-01T12:00:00Z",
+                    },
+                    "explanationStatus": "unavailable",
+                }
+            ],
+        }
+    )
+    api.list_devices = AsyncMock(
+        return_value=[
+            {
+                "id": "solar-internal",
+                "deviceId": "solar-external",
+                "type": "solar",
+                "properties": {"displayName": "Roof"},
+            }
+        ]
+    )
+    conn = connection()
+    results = []
+    conn.send_result.side_effect = lambda _id, result: results.append(result)
+    translations = {
+        "device_type_solar": "Solar",
+        "concept_solar.power": "Power",
+        "behavior_target_choice": "Targets Power",
+        "default_behavior": "Default behavior",
+    }
+
+    with (
+        patch("custom_components.fluks.panel_api._entry", return_value=entry),
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._panel_translations",
+            AsyncMock(return_value=translations),
+        ),
+    ):
+        websocket_recent_decisions(
+            hass,
+            conn,
+            {"id": 1, "type": COMMAND_RECENT_DECISIONS, "entry_id": "entry-id"},
+        )
+        await hass.async_block_till_done()
+
+    api.list_site_decision_explanations.assert_awaited_once_with("site-id", limit=5)
+    assert not conn.send_error.called, conn.send_error.call_args_list
+    assert conn.send_result.called
+    assert [item["id"] for item in results[0]["decisions"]] == [
+        "decision-2",
+        "decision-1",
+    ]
+    first, second = results[0]["decisions"]
+    assert first["device"] == "Solar · Roof"
+    assert first["mode"] == "Default behavior"
+    assert first["explanation"] is None
+    assert second["time"] == "2026-09-30T12:00:00Z"
+    assert second["action"] == "Power"
+    assert second["mode"] == "Targets Power"
+    assert second["explanation"] == "Solar production is available."
 
 
 async def test_runtime_status_subscription_sends_snapshot_and_transitions(hass):
