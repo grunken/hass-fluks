@@ -39,6 +39,9 @@ InputMapping = tuple[
     str | bool | None,
     dict[str, Any] | None,
 ]
+RuntimeStatusSubscriber = Callable[
+    [Callable[[dict[str, Any]], None]], Callable[[], None]
+]
 
 
 def _raw_value(value: Any, *, allow_object: bool = False) -> Any:
@@ -163,6 +166,30 @@ def _json_value(value: Any) -> str | int | float | bool:
     return value
 
 
+def _same_canonical_value(left: Any, right: Any) -> bool:
+    """Compare JSON-like values while keeping booleans distinct from numbers."""
+    if isinstance(left, bool) != isinstance(right, bool):
+        return False
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _same_canonical_value(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _same_canonical_value(a, b) for a, b in zip(left, right)
+        )
+    return left == right
+
+
+def _is_cumulative_energy(concept: str) -> bool:
+    return concept.rsplit(".", 1)[-1].casefold().endswith("energy")
+
+
+def _preserves_repeated_observations(concept: str) -> bool:
+    name = concept.rsplit(".", 1)[-1].casefold()
+    return name.endswith("power") or name.endswith("temperature")
+
+
 class RealtimeObservationPublisher:
     """Maintain one entry-scoped set of mapped HA state listeners."""
 
@@ -175,11 +202,14 @@ class RealtimeObservationPublisher:
         send: Callable[[dict[str, Any]], Awaitable[bool]],
         *,
         availability_cooldown: float = AVAILABILITY_COOLDOWN.total_seconds(),
+        subscribe_runtime_status: RuntimeStatusSubscriber | None = None,
     ) -> None:
         self._hass = hass
         self._api = api
         self._site_id = site_id
         self._send = send
+        self._last_sent: dict[str, Any] = {}
+        self._unsubscribe_runtime_status: Callable[[], None] | None = None
         self._store = Store[dict[str, Any]](
             hass,
             ENERGY_LIFETIME_STORAGE_VERSION,
@@ -198,6 +228,40 @@ class RealtimeObservationPublisher:
         self._refresh_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._stopped = False
+        if subscribe_runtime_status is not None:
+            self._unsubscribe_runtime_status = subscribe_runtime_status(
+                self._async_runtime_status_changed
+            )
+
+    def _async_runtime_status_changed(self, status: dict[str, Any]) -> None:
+        """Forget duplicate baselines while disconnected so reconnect resends state."""
+        if status.get("state") != "connected":
+            self._last_sent.clear()
+
+    async def _async_send_observations(
+        self,
+        device_id: str,
+        values: dict[str, Any],
+    ) -> bool:
+        """Send nonduplicate canonical values and remember only successful sends."""
+        pending: dict[str, Any] = {}
+        for concept, value in values.items():
+            key = self._stream_key(device_id, concept)
+            previous = self._last_sent.get(key)
+            if (
+                not _preserves_repeated_observations(concept)
+                and previous is not None
+                and _same_canonical_value(previous, value)
+            ):
+                continue
+            pending[concept] = value
+        if not pending:
+            return False
+        sent = bool(await self._send({"deviceId": device_id, **pending}))
+        if sent:
+            for concept, value in pending.items():
+                self._last_sent[self._stream_key(device_id, concept)] = value
+        return sent
 
     async def _async_load(self) -> None:
         if self._loaded:
@@ -389,7 +453,9 @@ class RealtimeObservationPublisher:
                 if concept == "spaceHeater.state":
                     state_sources[internal_id] = (entity_id, attribute)
                 cumulative = (
-                    (configuration.get("source") or {}).get("kind") == "cumulative"
+                    _is_cumulative_energy(concept)
+                    or (configuration.get("source") or {}).get("kind")
+                    == "cumulative"
                 )
                 by_entity[entity_id].append(
                     (
@@ -616,7 +682,7 @@ class RealtimeObservationPublisher:
                     key, device_id, concept, source
                 )
                 continue
-            if cumulative:
+            if cumulative or _is_cumulative_energy(concept):
                 published = await self._async_publish_cumulative(
                     state, device_id, concept, attribute
                 )
@@ -653,7 +719,9 @@ class RealtimeObservationPublisher:
                     key, device_id, concept, source, False
                 )
                 continue
-            published = bool(await self._send({"deviceId": device_id, concept: value}))
+            published = await self._async_send_observations(
+                device_id, {concept: value}
+            )
             await self._async_complete_availability(
                 key, device_id, concept, source, published
             )
@@ -746,7 +814,14 @@ class RealtimeObservationPublisher:
         if energy_changed and energy_value is not None:
             payload["spaceHeater.energy"] = self._json_decimal(energy_value)
         if len(payload) > 1:
-            await self._send(payload)
+            await self._async_send_observations(
+                device_id,
+                {
+                    concept: value
+                    for concept, value in payload.items()
+                    if concept != "deviceId"
+                },
+            )
 
     async def _async_publish_cumulative(
         self,
@@ -794,9 +869,10 @@ class RealtimeObservationPublisher:
                     "last_reset": marker,
                 }
                 await self._store.async_save(self._store_payload())
-        return bool(await self._send(
-            {"deviceId": device_id, concept: self._json_decimal(lifetime)}
-        ))
+        return await self._async_send_observations(
+            device_id,
+            {concept: self._json_decimal(lifetime)},
+        )
 
     @staticmethod
     def _source_id(entity_id: str, attribute: str | None) -> str:
@@ -808,6 +884,9 @@ class RealtimeObservationPublisher:
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
+        if self._unsubscribe_runtime_status is not None:
+            self._unsubscribe_runtime_status()
+            self._unsubscribe_runtime_status = None
         tasks = list(self._availability_tasks.values())
         for task in tasks:
             if not task.done():

@@ -61,6 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data[CONF_SITE_ID],
         entry.entry_id,
         runtime.async_send,
+        subscribe_runtime_status=runtime.add_status_listener,
     )
     publishers = hass.data[DOMAIN].setdefault(DATA_OBSERVATIONS, {})
     if (previous := publishers.pop(entry.entry_id, None)) is not None:
