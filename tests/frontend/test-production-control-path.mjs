@@ -1361,6 +1361,77 @@ test("incomplete device detail makes Controls the next action", () => {
   assert.match(panel.rendered, /Complete mappings/);
 });
 
+test("device pages share a back row and icon title with the device name below", () => {
+  const panel = new Panel();
+  panel._context = { translations: { back: "Back", mappings_and_properties: "Mappings & properties", controls: "Controls", overview: "Overview" } };
+  panel._detail = { type: "electricVehicle", type_name: "Electric vehicle", name: "EV charger", properties: { vendor: "Example", model: "Wallbox" } };
+
+  panel._frame("", "<section>page content</section>", true, panel._deviceHeader(panel._t("mappings_and_properties")));
+  assert.match(panel.shadowRoot.innerHTML, /<h1>Electric vehicle · Mappings &amp; properties<\/h1>/);
+
+  panel._frame("", "<section>page content</section>", true, panel._deviceHeader("Controls"));
+  const controls = panel.shadowRoot.innerHTML;
+  assert.match(controls, /<header class="device-page-navigation"><button class="icon" id="back"/);
+  assert.match(controls, /fluks-device-icons\/electric_vehicle\.png/);
+  assert.match(controls, /<h1>Electric vehicle · Controls<\/h1>/);
+  assert.match(controls, /<p class="device-name">EV charger<\/p>/);
+  assert.match(controls, /<p class="device-metadata">Example · Wallbox<\/p>/);
+  assert.ok(controls.indexOf('id="back"') < controls.indexOf('device-icon header'));
+
+  panel._frame("", "<section>page content</section>", true, panel._deviceHeader("Power"));
+  assert.match(panel.shadowRoot.innerHTML, /<h1>Electric vehicle · Power<\/h1>/);
+  panel._frame("", "<section>page content</section>", true, panel._deviceHeader(panel._t("overview")));
+  assert.match(panel.shadowRoot.innerHTML, /<h1>Electric vehicle · Overview<\/h1>/);
+});
+
+test("Device overview rows request their respective Mapping section scroll targets", () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    measurements_energy: "Measurements & energy", measurements_count: "measurements", energy_count: "energy",
+    controls: "Controls", available: "available", device_information: "Device information", optional: "Optional",
+    device_actions: "Actions", delete_device: "Delete device", overview: "Overview",
+  } };
+  panel._detail = {
+    id: "battery-1", type: "battery", type_name: "Battery", name: "Home battery", properties: {},
+    concepts: [{ concept: "battery.power", cadence: "realtime" }], mappings: {}, controls: [], output_mappings: {},
+  };
+  const nodes = new Map(["#edit", "#information", "#controls", "#delete"].map((selector) => [selector, {}]));
+  const navigation = [];
+  panel._frame = () => {};
+  panel._wireMenu = () => {};
+  panel._go = (...args) => navigation.push(args);
+  panel.shadowRoot.querySelector = (selector) => nodes.get(selector);
+
+  panel._renderDevice();
+  nodes.get("#edit").onclick();
+  nodes.get("#information").onclick();
+  assert.deepEqual(navigation, [
+    [{ name: "edit", deviceId: "battery-1" }, false, "measurements"],
+    [{ name: "edit", deviceId: "battery-1" }, false, "device-information"],
+  ]);
+});
+
+test("requested Mapping section scrolls after initial detail render", async () => {
+  const panel = new Panel();
+  panel._context = {};
+  panel._view = { name: "edit", deviceId: "battery-1" };
+  panel._viewToken = 1;
+  panel._pendingScrollTarget = "measurements";
+  panel._call = async () => ({ id: "battery-1", concepts: [], mappings: {} });
+  const events = [];
+  const target = { scrollIntoView: (options) => events.push(["scroll", options]) };
+  panel._render = () => events.push(["render"]);
+  panel._observePowerSigns = () => {};
+  panel._hasUnmappedInputConcepts = () => false;
+  panel.shadowRoot.querySelector = (selector) => selector === "#measurements" ? target : null;
+
+  await panel._loadView(1);
+
+  assert.deepEqual(events, [["render"], ["scroll", { block: "start" }]]);
+  assert.equal(panel._pendingScrollTarget, null);
+  assert.match(panel._propertiesForm({}, "battery"), /<section class="card" id="device-information">/);
+});
+
 test("battery status accepts derived measurement paths and requires the control chain", () => {
   const panel = new Panel();
   const detail = {
@@ -1537,7 +1608,7 @@ test("water heater status accepts power or energy derivation and requires temper
 test("Site detail reuses shared Mapping and Controls views from catalog data", () => {
   const panel = new Panel();
   panel._context = { translations: {
-    site_information: "Site information", measurements_energy: "Measurements & energy", controls: "Controls",
+    site_information: "Site information", measurements_energy: "Measurements & energy", controls: "Controls", overview: "Overview",
     measurements_count: "measurements", energy_count: "energy mappings", available: "available", delete_site: "Delete site",
     device_actions: "Actions", configured: "Configured", not_configured: "Not configured", measurements: "Measurements", energy: "Energy",
   }, entities: [] };
@@ -1556,14 +1627,15 @@ test("Site detail reuses shared Mapping and Controls views from catalog data", (
     output_mappings: { "site.power": [{ concept: "site.power", mode: null, configuration: { version: 1, actions: [{ type: "serviceCall", service: "switch.turn_on", target: { entityId: "switch.grid" }, data: {} }] } }] },
   };
   let rendered; const destinations = []; const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
-  panel._frame = (title, body) => { rendered = { title, body }; };
+  panel._frame = (title, body, _back, deviceHeader) => { rendered = { title, body, deviceHeader }; };
   panel._wireMenu = () => {};
   panel._go = (view) => destinations.push(view);
   panel.shadowRoot.querySelector = (selector) => nodes.get(selector);
   panel._renderDevice();
   assert.match(rendered.body, /Measurements &amp; energy/);
   assert.match(rendered.body, /Site information/);
-  assert.match(rendered.body, /Home/);
+  assert.equal(rendered.deviceHeader.name, "Home");
+  assert.equal(rendered.deviceHeader.title, "Site · Overview");
   nodes.get('#edit').onclick(); nodes.get('#controls').onclick(); nodes.get('#information').onclick();
   assert.deepEqual(destinations, [
     { name: "edit", deviceId: "site-device" },
@@ -1673,6 +1745,23 @@ test("heat pump mapping UI renders only finalized catalog concepts", () => {
   );
 });
 
+test("Controls overview shows a padded empty state when a device has no controls", () => {
+  const panel = new Panel();
+  panel._context = { translations: { controls: "Controls", no_controls_available: "0 available controls" } };
+  panel._detail = {
+    id: "solar-1", type: "solar", type_name: "Solar", name: "Roof array", properties: {},
+    concepts: [], mappings: {}, controls: [], output_mappings: {},
+  };
+  let body = "";
+  panel._frame = (_title, rendered) => { body = rendered; };
+  panel.shadowRoot.querySelectorAll = () => [];
+
+  panel._renderControls();
+
+  assert.match(body, /^<div class="card">0 available controls<\/div>$/);
+  assert.doesNotMatch(body, /Not configured/);
+});
+
 test("ordinary Device and canonical Site route to their distinct lifecycle deletes", () => {
   const routeDelete = (type) => {
     const panel = new Panel(); const nodes = new Map([...['#edit', '#controls', '#information', '#delete'].map((key) => [key, {}])]);
@@ -1718,8 +1807,8 @@ test("production Edit mappings path saves and restores ordered input conversions
 
   panel._renderEdit();
   assert.match(body, /sensor\.grid_power/);
-  assert.match(body, /Conversions|conversions/);
   assert.match(body, /data-input-transform="add"/);
+  assert.doesNotMatch(body, />Conversions</);
   assert.doesNotMatch(body, /data-input-transform-type|data-input-transform-value/);
   assert.equal(panel._commitInputConversion("site.power", undefined, "invert", ""), true);
   panel._renderEdit();
@@ -1741,6 +1830,84 @@ test("production Edit mappings path saves and restores ordered input conversions
   reopened._renderEdit();
   assert.match(body, /Invert sign|invert/);
   assert.match(body, /sensor\.grid_power/);
+});
+
+test("Mapping panel uses shared compact spacing and responsive page widths", () => {
+  const css = new Panel()._styles();
+  assert.match(css, /main\{max-width:1120px/);
+  assert.match(css, /@media\(max-width:760px\)/);
+  assert.match(css, /\.mapping-field\{padding:10px 12px 8px/);
+  assert.match(css, /\.mapping-columns\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.fields,\.fields\.two,\.fields\.three,\.mapping-columns\{grid-template-columns:1fr\}/);
+  assert.match(css, /\.mapping-masonry\{display:grid;align-content:start;gap:18px;margin-bottom:18px\}/);
+  assert.match(css, /\.configuration-indicator\.complete\{background:var\(--success-color/);
+  assert.match(css, /\.configuration-indicator\.incomplete\{background:var\(--warning-color/);
+});
+
+test("mapping masonry balances cards and keeps their columns fixed while conversions change", () => {
+  const concepts = [
+    { concept: "battery.power", label: "Power", datatype: "number", cadence: "realtime" },
+    { concept: "battery.soc", label: "State of charge", datatype: "number", cadence: "realtime" },
+    { concept: "battery.temperature", label: "Temperature", datatype: "number", cadence: "realtime" },
+    { concept: "battery.energy", label: "Energy", datatype: "number", cadence: "interval" },
+    { concept: "battery.chargeEnergy", label: "Charge energy", datatype: "number", cadence: "interval" },
+    { concept: "battery.dischargeEnergy", label: "Discharge energy", datatype: "number", cadence: "interval" },
+  ];
+  const panel = new Panel();
+  panel._view = { name: "edit", deviceId: "battery-1" };
+  panel._inputDraftDevice = "battery-1";
+  panel._context = { translations: { measurements: "Measurements", energy: "Energy" }, entities: [] };
+  panel._hass = { states: {}, language: "en", localize: () => undefined };
+  panel._inputDraft = Object.fromEntries(concepts.map((item, index) => [item.concept, {
+    version: 1, entityId: `sensor.${index}`,
+    transforms: Array.from({ length: [3, 0, 1, 4, 0, 2][index] }, () => ({ type: "invert" })),
+  }]));
+  const detail = { id: "battery-1", concepts, mappings: {}, proposals: {} };
+  const placements = (html) => Object.fromEntries(
+    [...html.matchAll(/class="mapping-field" data-concept="([^"]+)" data-masonry-column="([01])"/g)]
+      .map(([, concept, column]) => [concept, Number(column)]),
+  );
+  const displayOrder = (html, group) => {
+    const section = html.match(new RegExp(`<section class="mapping-group"(?: id="[^"]+")? data-mapping-group="${group}">([\\s\\S]*?)<\\/section>`));
+    return [...(section?.[1] ?? "").matchAll(/class="mapping-field" data-concept="([^"]+)"/g)]
+      .map(([, concept]) => concept);
+  };
+
+  const initial = panel._mappingFields(detail, true);
+  assert.equal(Object.keys(placements(initial)).length, concepts.length);
+  assert.match(initial, /<section class="mapping-group" id="measurements"/);
+  assert.equal((initial.match(/<h2>(Measurements|Energy)<\/h2>/g) ?? []).length, 2);
+  assert.match(initial, /<section class="mapping-group" id="measurements" data-mapping-group="measurements"><h2>Measurements<\/h2><div class="mapping-columns">/);
+  panel.shadowRoot.querySelectorAll = () => concepts.map((item, index) => ({
+    dataset: {
+      concept: item.concept,
+      mappingGroup: item.cadence === "interval" ? "energy" : "measurements",
+    },
+    getBoundingClientRect: () => ({ height: [70, 300, 70, 70, 300, 70][index] }),
+  }));
+  panel._renderInputDraft = () => {};
+  panel._balanceMappingMasonry();
+  const originalPlacements = placements(panel._mappingFields(detail, true));
+  for (const group of ["measurements", "energy"]) {
+    const section = panel._mappingMasonry.sections[group];
+    const groupPlacements = concepts.filter((item) => (item.cadence === "interval" ? "energy" : "measurements") === group)
+      .map((item) => originalPlacements[item.concept]);
+    assert.deepEqual(new Set(groupPlacements), new Set([0, 1]));
+    assert.equal(section.measured, true);
+    assert.ok(Math.abs(section.loads[0] - section.loads[1]) <= 160);
+    const groupConcepts = concepts.filter((item) => (item.cadence === "interval" ? "energy" : "measurements") === group);
+    const expectedDisplayOrder = [0, 1].flatMap((column) => groupConcepts
+      .filter((item) => originalPlacements[item.concept] === column).map((item) => item.concept));
+    assert.deepEqual(displayOrder(panel._mappingFields(detail, true), group), expectedDisplayOrder);
+  }
+
+  panel._inputDraft["battery.energy"].transforms = [];
+  panel._inputDraft["battery.chargeEnergy"].transforms = Array.from(
+    { length: 8 }, () => ({ type: "offset", amount: 1 }),
+  );
+  const edited = panel._mappingFields(detail, true);
+  assert.deepEqual(placements(edited), originalPlacements);
+  assert.equal((edited.match(/class="mapping-field"/g) ?? []).length, concepts.length);
 });
 
 test("Battery physical fields keep learned knowledge separate from editable values", () => {
