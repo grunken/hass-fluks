@@ -34,6 +34,7 @@ class FluksControlEditorPanel extends HTMLElement {
     this._clearedInputConcepts = new Set();
     this._proposalDraftConcepts = new Set();
     this._acceptedDraftConcepts = new Set();
+    this._mappingMasonry = undefined;
     this._powerSignSamples = new Map();
     this._powerSignResolved = new Set();
     this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
@@ -205,8 +206,9 @@ class FluksControlEditorPanel extends HTMLElement {
     const { FluksControlActionEditor } = await loadControlActionEditor();
     if (!customElements.get(CONTROL_ACTION_EDITOR_TAG)) customElements.define(CONTROL_ACTION_EDITOR_TAG, FluksControlActionEditor);
   }
-  _go(view, replace = false) {
+  _go(view, replace = false, scrollTarget = null) {
     const token = this._beginView(view);
+    this._pendingScrollTarget = scrollTarget;
     const state = { ...(history.state || {}), fluksView: view };
     (replace ? history.replaceState : history.pushState).call(history, state, "");
     this._loadView(token);
@@ -214,6 +216,8 @@ class FluksControlEditorPanel extends HTMLElement {
   _beginView(view) {
     this._viewToken += 1;
     this._view = view;
+    this._pendingScrollTarget = null;
+    this._mappingMasonry = undefined;
     this._detail = this._draft = undefined;
     this._inputSuggestionsLoading = false;
     this._powerSignSamples.clear();
@@ -236,6 +240,12 @@ class FluksControlEditorPanel extends HTMLElement {
   _isCurrentView(token) {
     return token === this._viewToken;
   }
+  _scrollToPendingTarget(token) {
+    if (!this._isCurrentView(token) || !this._pendingScrollTarget) return;
+    const target = this.shadowRoot.querySelector(`#${this._pendingScrollTarget}`);
+    this._pendingScrollTarget = null;
+    target?.scrollIntoView?.({ block: "start" });
+  }
   async _loadView(token = this._viewToken) {
     if (!this._context || !this._isCurrentView(token)) return;
     const view = this._view;
@@ -257,6 +267,7 @@ class FluksControlEditorPanel extends HTMLElement {
       if (!this._isCurrentView(token)) return;
     }
     this._render();
+    this._scrollToPendingTarget(token);
     if (view.name === "home") void this._loadRecentDecisions();
     if (view.name === "edit") this._observePowerSigns(true);
     if (view.name === "edit" && this._isCurrentView(token) && this._hasUnmappedInputConcepts(this._detail)) {
@@ -301,12 +312,25 @@ class FluksControlEditorPanel extends HTMLElement {
       "delete-site": () => this._renderDeleteSite(),
     }[this._view.name] || (() => this._renderHome()))();
   }
-  _frame(title, body, back = false) {
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><main><header>
+  _frame(title, body, back = false, deviceHeader = null) {
+    const pageHeader = deviceHeader
+      ? `<header class="device-page-navigation"><button class="icon" id="back" aria-label="${esc(this._t("back"))}">←</button></header>
+        <div class="device-heading compact device-page-heading">${this._typeIcon(deviceHeader.type, "header")}<div class="device-heading-copy"><h1>${esc(deviceHeader.title)}</h1><p class="device-name">${esc(deviceHeader.name)}</p>${deviceHeader.metadata ? `<p class="device-metadata">${esc(deviceHeader.metadata)}</p>` : ""}</div>${deviceHeader.trailing ?? ""}</div>`
+      : `<header>
       ${back ? `<button class="icon" id="back" aria-label="${esc(this._t("back"))}">←</button>` : ""}
-      <div><h1>${esc(title)}</h1>${back ? "" : `<p>${TAGLINE}</p>`}</div></header>
+      <div><h1>${esc(title)}</h1>${back ? "" : `<p>${TAGLINE}</p>`}</div></header>`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><main>${pageHeader}
       ${this._error ? `<div class="error" role="alert">${esc(this._error)}</div>` : ""}${body}</main>`;
     this.shadowRoot.querySelector("#back")?.addEventListener("click", () => history.back());
+  }
+  _deviceHeader(title, trailing = "") {
+    return {
+      type: this._detail.type,
+      title: `${this._detail.type_name} · ${title}`,
+      name: this._detail.name || this._detail.type_name,
+      metadata: this._metadata(this._detail.properties),
+      trailing,
+    };
   }
   _message(message) { this._frame("fluks", `<section class="card"><p>${esc(message)}</p></section>`); }
   _mappingSuggestionsLoader(inline = false) {
@@ -560,17 +584,19 @@ class FluksControlEditorPanel extends HTMLElement {
     const controlsSummary = status.controls_complete
       ? `${this._detail.controls.length} ${this._t("available")}`
       : this._t("controls_need_configuration");
-    this._frame("", `<div class="device-heading">${this._typeIcon(this._detail.type, "hero")}<div>
-      <h1>${esc(this._detail.type_name)}</h1><p class="device-name">${esc(this._detail.name || this._detail.type_name)}</p>${metadata ? `<p>${esc(metadata)}</p>` : ""}</div>
-      <button class="icon overflow" id="device-menu" aria-label="${esc(this._t("device_actions"))}" aria-haspopup="menu">⋮</button>
-      <div class="context-menu device-menu" id="device-actions-menu" role="menu" hidden><button class="menu-danger" id="delete" role="menuitem">${esc(this._t(site ? "delete_site" : "delete_device"))}</button></div></div>
-      <div class="card list overview-list">
+    const deviceMenu = `<button class="icon overflow" id="device-menu" aria-label="${esc(this._t("device_actions"))}" aria-haspopup="menu">⋮</button>
+      <div class="context-menu device-menu" id="device-actions-menu" role="menu" hidden><button class="menu-danger" id="delete" role="menuitem">${esc(this._t(site ? "delete_site" : "delete_device"))}</button></div>`;
+    this._frame("", `<div class="card list overview-list">
       <button class="row ${status.mappings_complete ? "" : "needs-attention"}" id="edit"><ha-icon icon="mdi:chart-line"></ha-icon><span class="row-copy"><strong>${esc(this._t("measurements_energy"))}</strong><span>${esc(mappingSummary)}</span></span>${this._configurationIndicator({ complete: status.mappings_complete })}<span class="chevron">›</span></button>
       <button class="row ${status.controls_complete ? "" : "needs-attention"}" id="controls"><ha-icon icon="mdi:tune-variant"></ha-icon><span class="row-copy"><strong>${esc(this._t("controls"))}</strong><span>${esc(controlsSummary)}</span></span>${this._configurationIndicator({ complete: status.controls_complete })}<span class="chevron">›</span></button>
-      <button class="row" id="information"><ha-icon icon="mdi:information-outline"></ha-icon><span class="row-copy"><strong>${esc(this._t(site ? "site_information" : "device_information"))}</strong><span>${esc(site ? this._detail.name : metadata || this._t("optional"))}</span></span><span class="chevron">›</span></button></div>`, true);
+      <button class="row" id="information"><ha-icon icon="mdi:information-outline"></ha-icon><span class="row-copy"><strong>${esc(this._t(site ? "site_information" : "device_information"))}</strong><span>${esc(site ? this._detail.name : metadata || this._t("optional"))}</span></span><span class="chevron">›</span></button></div>`, true, this._deviceHeader(this._t("overview"), deviceMenu));
     this._wireMenu("device-menu", "device-actions-menu");
-    this.shadowRoot.querySelector("#edit").onclick = () => this._go({ name: "edit", deviceId: this._detail.id });
-    this.shadowRoot.querySelector("#information").onclick = () => this._go({ name: site ? "site-information" : "edit", deviceId: this._detail.id });
+    this.shadowRoot.querySelector("#edit").onclick = () => this._go({ name: "edit", deviceId: this._detail.id }, false, "measurements");
+    this.shadowRoot.querySelector("#information").onclick = () => this._go(
+      site ? { name: "site-information", deviceId: this._detail.id } : { name: "edit", deviceId: this._detail.id },
+      false,
+      site ? null : "device-information",
+    );
     this.shadowRoot.querySelector("#controls").onclick = () => this._go({ name: "controls", deviceId: this._detail.id });
     this.shadowRoot.querySelector("#delete").onclick = () => this._go(site ? { name: "delete-site", stage: "confirm" } : { name: "delete-device", deviceId: this._detail.id, stage: "confirm" });
   }
@@ -892,7 +918,7 @@ class FluksControlEditorPanel extends HTMLElement {
       const detail = transform.type === "scale" ? ` × ${transform.factor}` : transform.type === "offset" ? ` ${transform.amount}` : transform.type === "valueMap" ? ` · ${Object.keys(transform.values ?? {}).length}` : "";
       return `<li><span class="order">${visibleIndex + 1}</span><span class="conversion-copy"><strong>${esc(this._t(transform.type === "valueMap" ? "value_map" : transform.type))}</strong><small>${esc(detail.trim())}</small></span><span class="row-actions"><button type="button" data-input-transform="up" data-input-concept="${esc(concept)}" data-index="${index}" ${visibleIndex === 0 ? "disabled" : ""}>↑ ${esc(this._t("up"))}</button><button type="button" data-input-transform="down" data-input-concept="${esc(concept)}" data-index="${index}" ${visibleIndex === visible.length - 1 ? "disabled" : ""}>↓ ${esc(this._t("down"))}</button>${transform.type === "valueMap" ? "" : `<button type="button" data-input-transform="edit" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("edit"))}</button>`}<button type="button" data-input-transform="remove" data-input-concept="${esc(concept)}" data-index="${index}">${esc(this._t("remove"))}</button></span></li>`;
       }).join("");
-    return `<div class="input-conversions"><strong>${esc(this._t("conversions"))}</strong>${rows ? `<ol>${rows}</ol>` : `<small>${esc(this._t("no_transforms"))}</small>`}<button type="button" class="add-conversion" data-input-transform="add" data-input-concept="${esc(concept)}">＋ ${esc(this._t("add_conversion"))}</button></div>`;
+    return `<div class="input-conversions">${rows ? `<ol>${rows}</ol>` : ""}<button type="button" class="add-conversion" data-input-transform="add" data-input-concept="${esc(concept)}">＋ ${esc(this._t("add_conversion"))}</button></div>`;
   }
   _mappingFields(detail, editableConversions = false) {
     const groups = { measurements: [], energy: [] };
@@ -908,9 +934,81 @@ class FluksControlEditorPanel extends HTMLElement {
         && ["suggest", "unresolved"].includes(proposal.classification)
         ? this._proposalChoice(concept.concept, proposal)
         : "";
-      groups[concept.cadence === "interval" ? "energy" : "measurements"].push(`<div class="mapping-field"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", selected, concept.concept, configuration.attribute)}<input type="hidden" data-concept="${esc(concept.concept)}" value="${esc(selected)}"></label>${proposed}${editableConversions && selected && concept.datatype !== "object" ? this._inputConversions(concept.concept, configuration) : ""}</div>`);
+      const group = concept.cadence === "interval" ? "energy" : "measurements";
+      const conversionCount = editableConversions && selected && concept.datatype !== "object"
+        ? (configuration.transforms ?? []).filter((transform) => !(concept.concept === BATTERY_POWER_CONCEPT
+          && transform?.type === "scale" && Number(transform.factor) === 1)).length
+        : 0;
+      groups[group].push({
+        concept: concept.concept,
+        group,
+        configuration,
+        selected,
+        proposed,
+        height: 104 + (proposed ? 48 : 0) + (selected && concept.datatype !== "object" ? 30 + conversionCount * 46 : 0),
+      });
     }
-    return Object.entries(groups).filter(([, f]) => f.length).map(([name, fields]) => `<section class="card"><h2>${esc(this._t(name))}</h2><div class="fields">${fields.join("")}</div></section>`).join("");
+    const key = this._inputDraftDevice ?? `${this._view.name}:${this._view.deviceId ?? this._view.haDeviceId ?? ""}`;
+    if (this._mappingMasonry?.key !== key) {
+      this._mappingMasonry = {
+        key,
+        sections: Object.fromEntries(Object.keys(groups).map((group) => [group, {
+          assignments: {}, loads: [0, 0], counts: [0, 0], order: [], measured: false,
+        }])),
+      };
+    }
+    const layout = this._mappingMasonry;
+    for (const [group, fields] of Object.entries(groups)) {
+      const section = layout.sections[group];
+      for (const field of fields) {
+        if (!section.order.includes(field.concept)) {
+          section.order.push(field.concept);
+          const estimatedLoads = section.loads.map((load, column) => load + (section.counts[column] ? 10 : 0));
+          const column = estimatedLoads[0] <= estimatedLoads[1] ? 0 : 1;
+          section.assignments[field.concept] = column;
+          section.loads[column] += field.height + (section.counts[column] ? 10 : 0);
+          section.counts[column] += 1;
+        }
+      }
+      for (const field of fields) {
+        field.column = section.assignments[field.concept];
+        const concept = detail.concepts.find((item) => item.concept === field.concept);
+        field.card = `<div class="mapping-field" data-concept="${esc(field.concept)}" data-masonry-column="${field.column}" data-mapping-group="${group}"><label>${esc(this._conceptLabel(concept))}${this._pickerValue("entity", field.selected, field.concept, field.configuration.attribute)}<input type="hidden" data-concept="${esc(field.concept)}" value="${esc(field.selected)}"></label>${field.proposed}${editableConversions && field.selected && concept.datatype !== "object" ? this._inputConversions(field.concept, field.configuration) : ""}</div>`;
+      }
+    }
+    return `<div class="mapping-masonry">${Object.entries(groups).map(([group, fields]) => fields.length
+      ? `<section class="mapping-group" id="${group}" data-mapping-group="${group}"><h2>${esc(this._t(group))}</h2><div class="mapping-columns">${[0, 1].map((column) => `<div class="mapping-column" data-masonry-column="${column}">${fields.filter((field) => field.column === column).map((field) => field.card).join("")}</div>`).join("")}</section>`
+      : "").join("")}</div>`;
+  }
+  _balanceMappingMasonry() {
+    const layout = this._mappingMasonry;
+    if (!layout) return;
+    const cards = [...this.shadowRoot.querySelectorAll(".mapping-field")];
+    if (!cards.length) return;
+    const heights = new Map(cards.map((card) => [card.dataset.concept, card.getBoundingClientRect().height]));
+    if (cards.some((card) => !(heights.get(card.dataset.concept) > 0))) return;
+    let changed = false;
+    for (const [group, section] of Object.entries(layout.sections)) {
+      if (section.measured) continue;
+      const groupCards = cards.filter((card) => card.dataset.mappingGroup === group);
+      if (!groupCards.length) continue;
+      const assignments = {};
+      const loads = [0, 0];
+      const counts = [0, 0];
+      for (const concept of section.order) {
+        const estimatedLoads = loads.map((load, column) => load + (counts[column] ? 10 : 0));
+        const column = estimatedLoads[0] <= estimatedLoads[1] ? 0 : 1;
+        assignments[concept] = column;
+        loads[column] += heights.get(concept) + (counts[column] ? 10 : 0);
+        counts[column] += 1;
+      }
+      changed ||= section.order.some((concept) => assignments[concept] !== section.assignments[concept]);
+      section.assignments = assignments;
+      section.loads = loads;
+      section.counts = counts;
+      section.measured = true;
+    }
+    if (changed) this._renderInputDraft();
   }
   _proposalChoice(concept, proposal) {
     const source = proposal.source ?? {};
@@ -938,7 +1036,7 @@ class FluksControlEditorPanel extends HTMLElement {
       const placeholder = displaySuggestion ? `~${displaySuggestion}` : "";
       return `<label class="physical-property">${esc(this._t(label))}<span class="property-input"><input type="number" step="any" ${constraints} data-property="${esc(key)}" value="${esc(configured ?? "")}" ${placeholder ? `placeholder="${esc(placeholder)}"` : ""} ${readOnly ? "readonly" : ""}><span>${esc(unit)}</span></span>${displaySuggestion ? `<small>${esc(this._t(hint))}: ${esc(displaySuggestion)} ${esc(unit)}</small>` : ""}</label>`;
     };
-    return `<section class="card"><h2>${esc(this._t("device_information"))}</h2><div class="fields three">
+    return `<section class="card" id="device-information"><h2>${esc(this._t("device_information"))}</h2><div class="fields three">
       ${[["displayName", "name"], ["vendor", "vendor"], ["model", "model"]].map(([key, label]) => `<label>${esc(this._t(label))}<input data-property="${key}" value="${esc(properties[key] || "")}"></label>`).join("")}</div></section>
       ${deviceType === "solar" ? `<section class="card"><h2>${esc(this._t("installation"))}</h2><div class="fields three">
       ${physicalField("installedKWp", "solar.maximumKwpObserved", "installed_solar_capacity", "estimated_by_fluks", "kWp", 'min="0"')}
@@ -1125,7 +1223,8 @@ class FluksControlEditorPanel extends HTMLElement {
       };
     }
     const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(this._detail.type, this._inputDraft, this._editProperties);
-    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div>${this._inputSuggestionsLoading ? this._mappingSuggestionsLoader(true) : ""}</div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError, this._inputDraft)}${this._actions("save_mapping")}`, true);
+    this._frame("", `${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError, this._inputDraft)}${this._actions("save_mapping")}`, true, this._deviceHeader(this._t("mappings_and_properties"), this._inputSuggestionsLoading ? this._mappingSuggestionsLoader(true) : ""));
+    this._balanceMappingMasonry();
     this._wirePickers();
     this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => this._cancelEdit();
@@ -1170,7 +1269,8 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     if (this._mappingSuggestionsLoading) body += this._mappingSuggestionsLoader();
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
-    this._frame(type ? `${this._t("add_device")} · ${type.name}` : this._t("add_device"), body, true);
+    this._frame(this._t("add_device"), body, true);
+    this._balanceMappingMasonry();
     this.shadowRoot.querySelectorAll("[data-type]").forEach((node) => node.onclick = () => {
       this._view = { name: "add", deviceType: node.dataset.type };
       this._spaceHeaterValidationError = false;
@@ -1282,7 +1382,10 @@ class FluksControlEditorPanel extends HTMLElement {
       }
       return `<button class="row ${configured ? "" : "needs-attention"}" data-control="${esc(c.concept)}"><span class="row-copy"><strong>${esc(this._conceptLabel(c))}</strong><small>${esc(configured ? this._t("configured") : this._t("controls_need_configuration"))}</small></span>${this._configurationIndicator({ complete: configured })}<span>›</span></button>`;
     }).join("");
-    this._frame(`${this._detail.type_name} · ${this._t("controls")}`, `<div class="card list">${rows || `<p>${esc(this._t("not_configured"))}</p>`}</div>`, true);
+    const content = rows
+      ? `<div class="card list">${rows}</div>`
+      : `<div class="card">${esc(this._t("no_controls_available"))}</div>`;
+    this._frame("", content, true, this._deviceHeader(this._t("controls")));
     this.shadowRoot.querySelectorAll("[data-control]").forEach((n) => n.onclick = () => this._go({ name: "control", deviceId: this._detail.id, concept: n.dataset.control }));
   }
   _renderControl() {
@@ -1296,7 +1399,7 @@ class FluksControlEditorPanel extends HTMLElement {
       });
       return this._message(this._t("context_missing"));
     }
-    this._frame(`${this._detail.type_name} · ${this._conceptLabel(control)}`, `<p>${esc(this._t("control_persistence_intro"))}</p><${CONTROL_ACTION_EDITOR_TAG}></${CONTROL_ACTION_EDITOR_TAG}>`, true);
+    this._frame("", `<p>${esc(this._t("control_persistence_intro"))}</p><${CONTROL_ACTION_EDITOR_TAG}></${CONTROL_ACTION_EDITOR_TAG}>`, true, this._deviceHeader(this._conceptLabel(control)));
     const editor = this.shadowRoot.querySelector(CONTROL_ACTION_EDITOR_TAG);
     const key = `${this._detail.id}:${control.concept}`;
     editor.controlName = this._conceptLabel(control);
@@ -1535,8 +1638,52 @@ class FluksControlEditorPanel extends HTMLElement {
     .type-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:24px}.type-option{display:flex;min-height:128px;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:var(--card-background-color)}.type-option.selected{border:2px solid var(--primary-color);background:color-mix(in srgb,var(--primary-color) 8%,var(--card-background-color))}.add-source{border-top:1px solid var(--divider-color);padding-top:22px}.suggestion-copy{margin:4px 0 18px}
     dialog{width:min(620px,calc(100vw - 32px));max-height:min(720px,calc(100vh - 32px));padding:0;border:1px solid var(--divider-color);border-radius:14px;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 14px 45px rgba(0,0,0,.38)}dialog::backdrop{background:rgba(0,0,0,.58)}.dialog-heading{display:flex;justify-content:space-between;align-items:center;padding:18px 18px 8px}.dialog-heading h2{margin:0}.search{padding:8px 16px;margin:0}.picker-results{max-height:min(530px,65vh);overflow:auto;border-top:1px solid var(--divider-color)}.picker-row{width:100%;height:62px;display:flex;align-items:center;gap:11px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;background:transparent;padding:8px 15px;overflow:hidden}.picker-row.selected{outline:2px solid var(--primary-color);outline-offset:-2px}.picker-row .trailing{flex:0 1 150px;min-width:0;max-width:28%;margin-left:auto;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}.empty-results{padding:22px}.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
     .error{background:var(--error-color);color:#fff;padding:12px;margin-bottom:16px;border-radius:7px}
-    @media(max-width:700px){main{padding:16px 12px 36px}.fields,.fields.two,.fields.three{grid-template-columns:1fr}.home-shortcuts{grid-template-columns:1fr}.home-card{min-height:0}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.device-icon.hero{width:52px;height:52px}.section-title{align-items:flex-start}.actions{position:sticky;z-index:4;bottom:0;background:var(--primary-background-color);padding:10px 0}.row{padding:12px}.card{padding:14px}.list{padding:0}.picker-results{max-height:60vh}.picker-row .trailing{flex-basis:96px;max-width:24%}.input-conversions li{grid-template-columns:30px minmax(0,1fr)}.input-conversions .row-actions{grid-column:2}}
-    @media(max-width:390px){.type-grid{grid-template-columns:1fr 1fr}.type-option{min-height:108px}.device-icon.picker{width:58px;height:58px}.section-title{flex-wrap:wrap}}
+    @media(max-width:760px){main{padding:18px 16px 36px}.fields,.fields.two,.fields.three{grid-template-columns:1fr}.home-shortcuts{grid-template-columns:1fr}.home-card{min-height:0}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.device-icon.hero{width:52px;height:52px}.section-title{align-items:flex-start}.actions{position:sticky;z-index:4;bottom:0;background:var(--primary-background-color);padding:10px 0}.row{padding:12px}.card{padding:14px}.list{padding:0}.picker-results{max-height:60vh}.picker-row .trailing{flex-basis:96px;max-width:24%}.input-conversions li{grid-template-columns:30px minmax(0,1fr)}.input-conversions .row-actions{grid-column:2}}
+    @media(max-width:390px){main{padding:16px 12px 32px}.type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.type-option{min-height:104px;padding:10px 8px}.device-icon.picker{width:58px;height:58px}.section-title{flex-wrap:wrap}}
+    /* Keep each view on the same page rhythm while retaining status accents. */
+    main{max-width:1120px;padding:28px 28px 44px}
+    header{align-items:center;margin-bottom:20px}
+    h1{font-size:26px;letter-spacing:-.015em}
+    h2{font-size:17px;margin-bottom:10px}
+    section{margin-bottom:18px}
+    .card{padding:16px;margin-bottom:12px;border-radius:12px}
+    .list{padding:0}
+    .home-status-line{margin:0 0 16px;font-size:14px}
+    .home-shortcuts{gap:12px;margin-bottom:18px}
+    .home-card{min-height:132px;padding:16px}
+    .device-heading{gap:14px;margin-bottom:18px}
+    .device-heading.compact{margin-bottom:14px}
+    .overview-list .row{min-height:64px}
+    .fields{gap:12px}
+    .mapping-masonry{display:grid;align-content:start;gap:18px;margin-bottom:18px}
+    .mapping-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:14px}
+    .mapping-column{display:grid;align-content:start;gap:10px;min-width:0}
+    .mapping-group{display:block;min-width:0;margin:0}
+    .mapping-group h2{margin:0;padding:0 2px 2px}
+    .mapping-field{padding:10px 12px 8px;border:1px solid var(--divider-color);border-radius:10px;background:var(--secondary-background-color)}
+    .mapping-field label{margin:0}
+    .picker-value{height:auto;min-height:54px;padding:8px 10px}
+    .source-icon{width:30px;height:30px}
+    .input-conversions{gap:6px;margin-top:8px}
+    .input-conversions ol{gap:6px}
+    .input-conversions li{padding:7px 8px;border-radius:8px;background:var(--card-background-color)}
+    .input-conversions .order{width:24px;height:24px;font-size:12px}
+    .input-conversions .row-actions button{min-height:30px;padding:4px 7px;font-size:12px}
+    .add-conversion{min-height:32px;padding:4px 8px;border-color:transparent;background:transparent;color:var(--primary-color);font-size:13px}
+    .add-conversion:hover{background:color-mix(in srgb,var(--primary-color) 8%,transparent)}
+    .matcher-proposal{margin:8px 0;padding:8px}
+    .type-grid{gap:10px;margin-bottom:18px}
+    .type-option{min-height:112px;border-radius:12px}
+    .type-option.selected{border:2px solid var(--primary-color)}
+    .add-source{padding-top:16px}
+    .suggestion-copy{margin:0 0 12px}
+    .control-guidance{margin-bottom:10px}
+    .device-page-navigation{min-height:0;margin:0 0 2px;align-items:center}
+    .device-heading.compact.device-page-heading{margin:0 0 18px}
+    .device-page-heading .device-heading-copy{min-width:0}
+    .device-page-heading .device-metadata{color:var(--secondary-text-color);font-size:13px}
+    @media(max-width:760px){main{padding:18px 16px 36px}.home-shortcuts{gap:10px}.home-card{min-height:0}.fields,.fields.two,.fields.three,.mapping-columns{grid-template-columns:1fr}.device-heading{gap:12px}.card{padding:14px}}
+    @media(max-width:390px){main{padding:16px 12px 32px}.type-option{min-height:104px;padding:10px 8px}}
   `; }
 }
 customElements.define(PANEL_TAG, FluksControlEditorPanel);
