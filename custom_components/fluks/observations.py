@@ -425,6 +425,7 @@ class RealtimeObservationPublisher:
                 and isinstance(concept.get("concept"), str)
             }
             by_entity: dict[str, list[InputMapping]] = defaultdict(list)
+            initial_target_soc_mappings: dict[str, list[InputMapping]] = defaultdict(list)
             configured: dict[str, set[str]] = defaultdict(set)
             active_sources: dict[str, str] = {}
             state_sources: dict[str, tuple[str, str | None]] = {}
@@ -457,26 +458,27 @@ class RealtimeObservationPublisher:
                     or (configuration.get("source") or {}).get("kind")
                     == "cumulative"
                 )
-                by_entity[entity_id].append(
-                    (
-                        external_id,
-                        concept,
-                        cumulative,
-                        attribute,
-                        temperature_units.get(concept),
-                        configuration.get("unit", False),
-                        next(
-                            (
-                                transform.get("values")
-                                for transform in configuration.get("transforms", [])
-                                if isinstance(transform, dict)
-                                and transform.get("type") == "valueMap"
-                                and isinstance(transform.get("values"), dict)
-                            ),
-                            None,
+                input_mapping: InputMapping = (
+                    external_id,
+                    concept,
+                    cumulative,
+                    attribute,
+                    temperature_units.get(concept),
+                    configuration.get("unit", False),
+                    next(
+                        (
+                            transform.get("values")
+                            for transform in configuration.get("transforms", [])
+                            if isinstance(transform, dict)
+                            and transform.get("type") == "valueMap"
+                            and isinstance(transform.get("values"), dict)
                         ),
-                    )
+                        None,
+                    ),
                 )
+                by_entity[entity_id].append(input_mapping)
+                if concept == "electricVehicle.targetSocMaximum":
+                    initial_target_soc_mappings[entity_id].append(input_mapping)
                 stream = self._lifetime.get(self._stream_key(external_id, concept))
                 source = self._source_id(entity_id, attribute)
                 if cumulative and (stream is None or stream.get("source") != source):
@@ -543,6 +545,17 @@ class RealtimeObservationPublisher:
                         rated,
                         attribute,
                     )
+            for entity_id, input_mappings in initial_target_soc_mappings.items():
+                if (state := self._hass.states.get(entity_id)) is None:
+                    continue
+                await self._async_state_changed(
+                    Event(
+                        "state_changed",
+                        {"entity_id": entity_id, "new_state": state},
+                    ),
+                    {entity_id: input_mappings},
+                    {},
+                )
 
     @staticmethod
     def _source_unavailable(state: State, attribute: str | None) -> bool:

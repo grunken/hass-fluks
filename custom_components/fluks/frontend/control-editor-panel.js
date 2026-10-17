@@ -921,7 +921,7 @@ class FluksControlEditorPanel extends HTMLElement {
     return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(displayName)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
   }
   _editableDeviceProperties(properties, deviceType) {
-    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
+    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : []), ...(deviceType === "electricVehicle" ? ["batteryCapacity", "targetSocMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
     return Object.fromEntries(keys.filter((key) => Object.hasOwn(properties, key)).map((key) => [key, properties[key]]));
   }
   _spaceHeaterNeedsRatedPower(deviceType, mappings, properties) {
@@ -931,12 +931,12 @@ class FluksControlEditorPanel extends HTMLElement {
     return !hasMapping("spaceHeater.power") && !hasMapping("spaceHeater.energy")
       && (ratedPower === null || ratedPower === undefined || ratedPower === "" || !Number.isFinite(Number(ratedPower)));
   }
-  _propertiesForm(properties, deviceType, learned = {}, validationError = false) {
-    const physicalField = (key, suggestionKey, label, hint, unit, constraints) => {
+  _propertiesForm(properties, deviceType, learned = {}, validationError = false, mappings = {}) {
+    const physicalField = (key, suggestionKey, label, hint, unit, constraints, readOnly = false) => {
       const configured = properties[key]; const suggestion = learned[suggestionKey];
       const displaySuggestion = suggestion == null ? "" : String(Math.trunc(Number(suggestion) * 100) / 100);
       const placeholder = displaySuggestion ? `~${displaySuggestion}` : "";
-      return `<label class="physical-property">${esc(this._t(label))}<span class="property-input"><input type="number" step="any" ${constraints} data-property="${esc(key)}" value="${esc(configured ?? "")}" ${placeholder ? `placeholder="${esc(placeholder)}"` : ""}><span>${esc(unit)}</span></span>${displaySuggestion ? `<small>${esc(this._t(hint))}: ${esc(displaySuggestion)} ${esc(unit)}</small>` : ""}</label>`;
+      return `<label class="physical-property">${esc(this._t(label))}<span class="property-input"><input type="number" step="any" ${constraints} data-property="${esc(key)}" value="${esc(configured ?? "")}" ${placeholder ? `placeholder="${esc(placeholder)}"` : ""} ${readOnly ? "readonly" : ""}><span>${esc(unit)}</span></span>${displaySuggestion ? `<small>${esc(this._t(hint))}: ${esc(displaySuggestion)} ${esc(unit)}</small>` : ""}</label>`;
     };
     return `<section class="card"><h2>${esc(this._t("device_information"))}</h2><div class="fields three">
       ${[["displayName", "name"], ["vendor", "vendor"], ["model", "model"]].map(([key, label]) => `<label>${esc(this._t(label))}<input data-property="${key}" value="${esc(properties[key] || "")}"></label>`).join("")}</div></section>
@@ -949,6 +949,10 @@ class FluksControlEditorPanel extends HTMLElement {
       ${physicalField("capacityKwh", "battery.capacityKwhEstimated", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}
       ${physicalField("battery.socMinimum", "battery.socMinimumObserved", "minimum_soc", "lowest_observed_by_fluks", "%", 'min="0" max="100"')}
       ${physicalField("battery.socMaximum", "battery.socMaximumObserved", "maximum_soc", "highest_observed_by_fluks", "%", 'min="0" max="100"')}
+      </div></section>` : ""}
+      ${deviceType === "electricVehicle" ? `<section class="card"><h2>${esc(this._t("electric_vehicle_configuration"))}</h2><div class="fields three">
+      ${physicalField("batteryCapacity", "batteryCapacityObserved", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}
+      ${physicalField("targetSocMaximum", "targetSocMaximumObserved", "maximum_soc", "highest_observed_by_fluks", "%", 'min="0" max="100"', Boolean(mappings?.["electricVehicle.targetSocMaximum"]?.entityId))}
       </div></section>` : ""}`;
   }
   _collectForm(useInputDraft = false) {
@@ -1121,7 +1125,7 @@ class FluksControlEditorPanel extends HTMLElement {
       };
     }
     const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(this._detail.type, this._inputDraft, this._editProperties);
-    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div>${this._inputSuggestionsLoading ? this._mappingSuggestionsLoader(true) : ""}</div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError)}${this._actions("save_mapping")}`, true);
+    this._frame("", `<div class="device-heading compact">${this._typeIcon(this._detail.type, "header")}<div><h1>${esc(this._t("edit_mappings"))}</h1><p>${esc(this._detail.label)}</p></div>${this._inputSuggestionsLoading ? this._mappingSuggestionsLoader(true) : ""}</div>${this._mappingFields(this._detail, true)}${site ? "" : this._propertiesForm(this._editProperties, this._detail.type, this._detail.properties, propertyError, this._inputDraft)}${this._actions("save_mapping")}`, true);
     this._wirePickers();
     this._wireInputConversions();
     this.shadowRoot.querySelector("#cancel").onclick = () => this._cancelEdit();
@@ -1162,7 +1166,7 @@ class FluksControlEditorPanel extends HTMLElement {
     if (type && this._draft && this._view.haDeviceId) {
       const detail = { concepts: this._draft.concepts, mappings: {}, proposals: this._draft.proposals };
       const propertyError = this._spaceHeaterValidationError && this._spaceHeaterNeedsRatedPower(type.type, this._inputDraft, this._draft.properties);
-      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._renderAddControlSuggestions(this._draft)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError)}`;
+      body += `<p class="suggestion-copy">${esc(this._t("review_suggestions"))}</p>${this._mappingFields(detail, true)}${this._renderAddControlSuggestions(this._draft)}${this._propertiesForm(this._draft.properties, type.type, {}, propertyError, this._inputDraft)}`;
     }
     if (this._mappingSuggestionsLoading) body += this._mappingSuggestionsLoader();
     body += `<div class="actions"><button id="cancel">${esc(this._t("cancel"))}</button><button class="primary" id="save" ${!this._draft ? "disabled" : ""}>${esc(this._t("save_device"))}</button></div>`;
