@@ -1811,6 +1811,32 @@ test("configured Battery values take precedence, clear to hints, and remain Batt
   assert.doesNotMatch(panel._propertiesForm({}, "heatPump"), /Battery configuration|capacityKwh|socMinimum|socMaximum/);
 });
 
+test("EV configuration uses observed values and locks maximum SOC when mapped", () => {
+  const panel = new Panel();
+  panel._context = { translations: {
+    device_information: "Device information", electric_vehicle_configuration: "Electric vehicle configuration",
+    battery_capacity: "Battery capacity", maximum_soc: "Maximum SOC",
+    estimated_by_fluks: "Estimated by fluks", highest_observed_by_fluks: "Highest observed by fluks",
+  } };
+  const learned = { batteryCapacityObserved: 72.5, targetSocMaximumObserved: 96 };
+  const body = panel._propertiesForm({}, "electricVehicle", learned, false, {});
+  assert.match(body, /data-property="batteryCapacity" value="" placeholder="~72\.5"/);
+  assert.match(body, /Estimated by fluks: 72\.5 kWh/);
+  assert.match(body, /data-property="targetSocMaximum" value="" placeholder="~96"/);
+  assert.match(body, /Highest observed by fluks: 96 %/);
+  assert.doesNotMatch(body, /minimum_soc|socMinimum/);
+
+  const mapped = panel._propertiesForm(
+    { targetSocMaximum: 88 }, "electricVehicle", learned, false,
+    { "electricVehicle.targetSocMaximum": { entityId: "sensor.car_target", attribute: "target" } },
+  );
+  assert.match(mapped, /data-property="targetSocMaximum" value="88"[^>]*readonly/);
+  assert.doesNotMatch(mapped, /data-property="batteryCapacity"[^>]*readonly/);
+  assert.deepEqual(panel._editableDeviceProperties({ batteryCapacity: 70, targetSocMaximum: 88 }, "electricVehicle"), {
+    batteryCapacity: 70, targetSocMaximum: 88,
+  });
+});
+
 test("Solar installed capacity keeps learned suggestion separate and round-trips backend state", async () => {
   const learned = { "solar.maximumKwpObserved": 14.038032 };
   const panel = new Panel();

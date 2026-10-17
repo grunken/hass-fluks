@@ -1679,6 +1679,67 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
     conn.send_result.assert_called_once_with(70, {"properties": updated_properties})
 
 
+async def test_ev_target_soc_property_mapping_saves_attribute_without_manual_override(hass):
+    entry = make_entry(hass)
+    hass.states.async_set("sensor.car_target", "idle", {"target_soc": "82"})
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={
+        "id": "car-device", "type": "electricVehicle", "properties": {
+            "batteryCapacity": 68,
+            "targetSocMaximum": 75,
+            "batteryCapacityObserved": 67.2,
+            "targetSocMaximumObserved": 96,
+        },
+    })
+    api.list_mappings = AsyncMock(return_value=[])
+    api.update_device_properties = AsyncMock(return_value={
+        "id": "car-device", "type": "electricVehicle", "properties": {
+            "batteryCapacity": 70,
+            "batteryCapacityObserved": 67.2,
+            "targetSocMaximumObserved": 96,
+        },
+    })
+    api.create_mapping = AsyncMock()
+    catalog = {"electricVehicle": {
+        "type": "electricVehicle",
+        "concepts": [{
+            "concept": "electricVehicle.targetSocMaximum",
+            "datatype": "number", "unit": "%", "cadence": "realtime",
+            "usages": ["fact"], "source": "mapping",
+        }],
+    }}
+    conn = connection()
+
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        websocket_device_save(hass, conn, {
+            "id": 73, "type": COMMAND_DEVICE_SAVE, "entry_id": entry.entry_id,
+            "device_id": "car-device",
+            "mappings": {"electricVehicle.targetSocMaximum": {
+                "version": 1,
+                "entityId": "sensor.car_target",
+                "attribute": "target_soc",
+            }},
+            "properties": {"batteryCapacity": 70, "targetSocMaximum": 75},
+        })
+        await hass.async_block_till_done()
+
+    api.update_device_properties.assert_awaited_once_with(
+        "site-a", "car-device", {"batteryCapacity": 70}
+    )
+    api.create_mapping.assert_awaited_once()
+    assert api.create_mapping.await_args.args[1]["concept"] == "electricVehicle.targetSocMaximum"
+    assert api.create_mapping.await_args.args[1]["configuration"] == {
+        "version": 1, "entityId": "sensor.car_target", "attribute": "target_soc",
+    }
+    assert "batteryCapacity" in _editable_property_keys("electricVehicle")
+    assert "targetSocMaximum" in _editable_property_keys("electricVehicle")
+    assert "battery.socMinimum" not in _editable_property_keys("electricVehicle")
+    conn.send_result.assert_called_once()
+
+
 async def test_battery_suggestions_are_noop_and_configured_values_can_be_cleared(hass):
     """Suggestion-only Save is inert; null removes only manual configuration."""
     entry = make_entry(hass)

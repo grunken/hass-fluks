@@ -1335,6 +1335,8 @@ def _editable_property_keys(device_type: str) -> set[str]:
         keys.add("ratedPowerW")
     elif device_type == "battery":
         keys.update({"capacityKwh", "battery.socMinimum", "battery.socMaximum"})
+    elif device_type == "electricVehicle":
+        keys.update({"batteryCapacity", "targetSocMaximum"})
     elif device_type == SITE_DEVICE_TYPE:
         keys.update({"arbitrageEnabled", "arbitrageMinimumReturnPercentage"})
     return keys
@@ -1400,6 +1402,29 @@ def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -
             raise PanelCommandError("validation_error")
 
 
+def _validate_electric_vehicle_properties(
+    device_type: str, properties: dict[str, Any]
+) -> None:
+    """Validate documented manually configured EV properties."""
+    keys = {"batteryCapacity", "targetSocMaximum"}
+    if device_type != "electricVehicle" and any(key in properties for key in keys):
+        raise PanelCommandError("validation_error")
+    capacity = properties.get("batteryCapacity")
+    if capacity is not None and (
+        not isinstance(capacity, (int, float))
+        or isinstance(capacity, bool)
+        or capacity <= 0
+    ):
+        raise PanelCommandError("validation_error")
+    target_soc = properties.get("targetSocMaximum")
+    if target_soc is not None and (
+        not isinstance(target_soc, (int, float))
+        or isinstance(target_soc, bool)
+        or not 0 <= target_soc <= 100
+    ):
+        raise PanelCommandError("validation_error")
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): COMMAND_ADD_SAVE,
@@ -1424,8 +1449,17 @@ async def websocket_add_save(hass, connection, msg):
             raise PanelCommandError("validation_error")
         concepts = _mappable_concepts(catalog[msg["device_type"]])
         selected = _validate_input_mappings(hass, concepts, msg["mappings"])
-        _validate_solar_properties(msg["device_type"], msg["properties"])
-        _validate_battery_properties(msg["device_type"], msg["properties"])
+        submitted_properties = dict(msg["properties"])
+        if (
+            msg["device_type"] == "electricVehicle"
+            and "electricVehicle.targetSocMaximum" in selected
+        ):
+            submitted_properties.pop("targetSocMaximum", None)
+        _validate_solar_properties(msg["device_type"], submitted_properties)
+        _validate_battery_properties(msg["device_type"], submitted_properties)
+        _validate_electric_vehicle_properties(
+            msg["device_type"], submitted_properties
+        )
         try:
             instance_id = str(UUID(msg["instance_id"]))
         except (TypeError, ValueError, AttributeError) as err:
@@ -1449,7 +1483,7 @@ async def websocket_add_save(hass, connection, msg):
                         hass,
                         msg["ha_device_id"],
                         msg["device_type"],
-                        msg["properties"],
+                        submitted_properties,
                     ),
                 )
             except FluksConflict:
@@ -1535,15 +1569,31 @@ async def websocket_device_save(hass, connection, msg):
             key: value
             for key, value in msg["properties"].items()
             if key in _editable_property_keys(device_type)
+            and not (
+                device_type == "electricVehicle"
+                and key == "targetSocMaximum"
+                and "electricVehicle.targetSocMaximum" in selected
+            )
         }
         _validate_solar_properties(device_type, submitted)
         _validate_battery_properties(device_type, submitted)
+        _validate_electric_vehicle_properties(device_type, submitted)
         changed = {
             key: value
             for key, value in submitted.items()
             if original_properties.get(key) != value
             and (value is not None or key in original_properties)
         }
+        after_mapping_properties: dict[str, Any] = {}
+        if (
+            device_type == "electricVehicle"
+            and "electricVehicle.targetSocMaximum" in current_inputs
+            and "electricVehicle.targetSocMaximum" not in selected
+            and "targetSocMaximum" in changed
+        ):
+            after_mapping_properties["targetSocMaximum"] = changed.pop(
+                "targetSocMaximum"
+            )
         updated_device = device
         if changed:
             updated_device = await api.update_device_properties(
@@ -1587,6 +1637,10 @@ async def websocket_device_save(hass, connection, msg):
                             "configuration": configuration,
                         },
                     )
+        if after_mapping_properties:
+            updated_device = await api.update_device_properties(
+                site_id, msg["device_id"], after_mapping_properties
+            )
         current_clears = _cleared_mapping_concepts(entry, msg["device_id"])
         cleared = _updated_clears(
             current_clears,

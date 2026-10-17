@@ -248,6 +248,60 @@ async def test_state_and_attribute_mappings_publish_selected_raw_source(hass):
     ]
 
 
+@pytest.mark.parametrize(
+    ("attribute", "initial_state", "initial_attributes", "updated_state", "updated_attributes"),
+    [
+        (None, "80", {}, "85", {}),
+        ("target", "idle", {"target": "80"}, "idle", {"target": "85"}),
+    ],
+)
+async def test_ev_target_soc_mapping_publishes_initial_and_updated_values(
+    hass, attribute, initial_state, initial_attributes, updated_state, updated_attributes
+):
+    api = AsyncMock()
+    api.list_devices.return_value = [{
+        "id": "car-internal", "deviceId": "car-external", "type": "electricVehicle",
+    }]
+    configuration = {"entityId": "sensor.car_target_soc"}
+    if attribute is not None:
+        configuration["attribute"] = attribute
+    api.list_mappings.return_value = [{
+        "direction": "input",
+        "deviceId": "car-internal",
+        "concept": "electricVehicle.targetSocMaximum",
+        "configuration": configuration,
+    }]
+    api.get_device_type_catalog.return_value = [{
+        "type": "electricVehicle",
+        "concepts": [{
+            "concept": "electricVehicle.targetSocMaximum",
+            "datatype": "number",
+            "unit": "%",
+        }],
+    }]
+    hass.states.async_set(
+        "sensor.car_target_soc", initial_state, initial_attributes
+    )
+    send = AsyncMock(return_value=True)
+    observations = publisher(hass, api, send)
+    await observations.async_refresh()
+
+    send.assert_awaited_once_with({
+        "deviceId": "car-external",
+        "electricVehicle.targetSocMaximum": 80,
+    })
+    hass.states.async_set(
+        "sensor.car_target_soc", updated_state, updated_attributes
+    )
+    await hass.async_block_till_done()
+
+    assert [call.args[0] for call in send.await_args_list] == [
+        {"deviceId": "car-external", "electricVehicle.targetSocMaximum": 80},
+        {"deviceId": "car-external", "electricVehicle.targetSocMaximum": 85},
+    ]
+    await observations.async_stop()
+
+
 async def test_temperature_attribute_unit_is_inferred_and_normalized(hass):
     """Only canonical temperature attributes use HA temperature units."""
     api = AsyncMock()
