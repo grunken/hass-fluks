@@ -989,9 +989,13 @@ async def websocket_recent_decisions(hass, connection, msg):
         entry = _entry(hass, msg["entry_id"])
         api = _api(hass, entry)
         site_id = entry.data[CONF_SITE_ID]
-        response = await api.list_site_decision_explanations(site_id, limit=5)
+        response = await api.list_site_decision_explanations(site_id, limit=10)
         devices = await api.list_devices(site_id)
         translations = await _panel_translations(hass)
+        site_device = next(
+            (device for device in devices if device.get("type") == SITE_DEVICE_TYPE),
+            None,
+        )
         physical_devices = [
             device for device in devices if device.get("type") != SITE_DEVICE_TYPE
         ]
@@ -1031,11 +1035,20 @@ async def websocket_recent_decisions(hass, connection, msg):
             decision = item["decision"]
             external_id = decision.get("deviceId")
             device = devices_by_external_id.get(external_id)
-            identity = names.get(str(device.get("id")), "") if device else ""
-            type_name = device_type_name(device, translations) if device else ""
-            device_label = (
-                f"{type_name} · {identity}" if identity else type_name
-            ) or translations.get("unknown_device", "Unknown device")
+            if (
+                site_device
+                and external_id
+                and external_id == site_device.get("deviceId")
+            ):
+                device_label = entry.title.strip() or str(
+                    (site_device.get("properties") or {}).get("name") or "Site"
+                )
+            else:
+                identity = names.get(str(device.get("id")), "") if device else ""
+                type_name = device_type_name(device, translations) if device else ""
+                device_label = (
+                    f"{type_name} · {identity}" if identity else type_name
+                ) or translations.get("unknown_device", "Unknown device")
             concept = decision.get("concept")
             if not isinstance(concept, str):
                 continue
@@ -1068,7 +1081,7 @@ async def websocket_recent_decisions(hass, connection, msg):
         presented.sort(key=lambda item: (item["_sort"], item["id"]), reverse=True)
         for item in presented:
             item.pop("_sort", None)
-        connection.send_result(msg["id"], {"decisions": presented[:5]})
+        connection.send_result(msg["id"], {"decisions": presented[:10]})
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)
 

@@ -1261,6 +1261,9 @@ test("homepage renders configured devices and live runtime status", () => {
   panel._recentDecisions = [{
     time: "2026-09-30T12:00:00Z", device: "Solar · Roof", action: "Power",
     mode: "Targets Power", value: 1200, explanation: "Solar production is available.",
+  }, {
+    time: "2026-10-01T12:00:00Z", device: "Eventyrhaven 1", action: "Power",
+    mode: "Default behavior", value: 800, explanation: "Site level decision.",
   }];
   let rendered;
   const statusNode = { innerHTML: "" };
@@ -1284,8 +1287,14 @@ test("homepage renders configured devices and live runtime status", () => {
   assert.match(rendered.body, /home-configuration/);
   assert.match(rendered.body, /Recent Decisions/);
   assert.match(rendered.body, /Solar · Roof/);
+  assert.match(rendered.body, /Eventyrhaven 1/);
   assert.match(rendered.body, /Power · Targets Power · 1200/);
   assert.match(rendered.body, /Solar production is available\./);
+  assert.match(rendered.body, /Site level decision\./);
+
+  panel._recentDecisions = [];
+  panel._renderHome();
+  assert.match(rendered.body, /No recent Decisions\./);
 
   panel._applyRuntimeStatus({ state: "reconnecting", disconnected_at: Date.now() - 61000 });
   assert.match(statusNode.innerHTML, /Reconnecting · 01:01/);

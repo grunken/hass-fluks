@@ -275,7 +275,7 @@ class FluksApiClient:
         return data
 
     async def list_site_decision_explanations(
-        self, site_id: str, *, limit: int = 5
+        self, site_id: str, *, limit: int = 10
     ) -> dict[str, Any]:
         """List recent Decisions and their deterministic explanations."""
         response = await self._request(
