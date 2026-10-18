@@ -740,7 +740,22 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
                     },
                     "deterministicText": "Solar production is available.",
                     "createdAt": "2026-09-30T12:00:01Z",
-                }
+                },
+                *[
+                    {
+                        "decision": {
+                            "id": f"decision-older-{day}",
+                            "deviceId": "solar-external",
+                            "concept": "solar.power",
+                            "value": day,
+                            "mode": "target",
+                            "createdAt": f"2026-09-{29 - day:02}T12:00:00Z",
+                        },
+                        "deterministicText": f"Explanation {day}.",
+                        "createdAt": f"2026-09-{29 - day:02}T12:00:01Z",
+                    }
+                    for day in range(1, 10)
+                ],
             ],
             "currentDecisions": [
                 {
@@ -792,13 +807,15 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
         )
         await hass.async_block_till_done()
 
-    api.list_site_decision_explanations.assert_awaited_once_with("site-id", limit=5)
+    api.list_site_decision_explanations.assert_awaited_once_with("site-id", limit=10)
     assert not conn.send_error.called, conn.send_error.call_args_list
     assert conn.send_result.called
     assert [item["id"] for item in results[0]["decisions"]] == [
         "decision-2",
         "decision-1",
+        *[f"decision-older-{day}" for day in range(1, 9)],
     ]
+    assert len(results[0]["decisions"]) == 10
     first, second = results[0]["decisions"]
     assert first["device"] == "Solar · Roof"
     assert first["mode"] == "Default behavior"
@@ -807,6 +824,64 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
     assert second["action"] == "Power"
     assert second["mode"] == "Targets Power"
     assert second["explanation"] == "Solar production is available."
+
+
+async def test_recent_site_decision_uses_configured_site_name(hass):
+    entry = SimpleNamespace(data={CONF_SITE_ID: "site-id"}, title="Eventyrhaven 1")
+    api = MagicMock(spec=FluksApiClient)
+    api.list_site_decision_explanations = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "decision": {
+                        "id": "site-decision",
+                        "deviceId": "site-external",
+                        "concept": "site.power",
+                        "value": 1200,
+                        "createdAt": "2026-10-01T12:00:00Z",
+                    },
+                    "deterministicText": "Site power decision.",
+                }
+            ],
+            "currentDecisions": [],
+        }
+    )
+    api.list_devices = AsyncMock(
+        return_value=[
+            {
+                "id": "site-internal",
+                "deviceId": "site-external",
+                "type": "site",
+                "properties": {},
+            }
+        ]
+    )
+    conn = connection()
+    results = []
+    conn.send_result.side_effect = lambda _id, result: results.append(result)
+
+    with (
+        patch("custom_components.fluks.panel_api._entry", return_value=entry),
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._panel_translations",
+            AsyncMock(
+                return_value={
+                    "concept_site.power": "Power",
+                    "default_behavior": "Default behavior",
+                }
+            ),
+        ),
+    ):
+        websocket_recent_decisions(
+            hass,
+            conn,
+            {"id": 1, "type": COMMAND_RECENT_DECISIONS, "entry_id": "entry-id"},
+        )
+        await hass.async_block_till_done()
+
+    assert not conn.send_error.called, conn.send_error.call_args_list
+    assert results[0]["decisions"][0]["device"] == "Eventyrhaven 1"
 
 
 async def test_runtime_status_subscription_sends_snapshot_and_transitions(hass):

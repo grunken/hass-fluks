@@ -154,13 +154,13 @@ async def test_recent_decision_explanations_use_integration_auth():
     session = FakeSession(FakeResponse(200, response))
     client = FluksApiClient(session, integration_key=INTEGRATION_KEY)
 
-    assert await client.list_site_decision_explanations("site-id", limit=5) == response
+    assert await client.list_site_decision_explanations("site-id", limit=10) == response
     method, url, kwargs = session.requests[0]
     assert (method, url) == (
         "GET",
         f"{API_BASE_URL}/sites/site-id/decisions/explanations",
     )
-    assert kwargs["params"] == {"limit": "5"}
+    assert kwargs["params"] == {"limit": "10"}
     assert kwargs["headers"] == {"Authorization": f"Bearer {INTEGRATION_KEY}"}
 
 
