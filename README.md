@@ -1,119 +1,196 @@
-# fluks
+# Fluks for Home Assistant
 
 **Your energy. Decides together.**
 
-fluks is an intelligent energy management system that coordinates the energy in your home.
+**One home. One energy system. Smarter decisions together.**
 
-Instead of controlling solar production, batteries, electric vehicles, heating and other energy devices independently, fluks looks at the home as a whole.
+Fluks is an intelligent home energy optimization platform that learns how your home uses energy, forecasts what comes next, and coordinates your energy devices as one connected system.
 
-It combines what is happening now with what is expected to happen next and continuously decides how the available energy should be used.
+Your solar panels, battery, electric vehicle and heating shouldn't have to make decisions independently.
 
-## Home Assistant
+**Fluks brings them together.**
 
-This integration connects Home Assistant to fluks.
+[**Visit fluks.one**](https://fluks.one) · [**Get started**](https://fluks.one/en/#get-started) · [**Report an issue**](https://github.com/grunken/hass-fluks/issues)
 
-Home Assistant provides observations from your home and executes control decisions made by fluks.
+---
 
-fluks does not require integrations for specific brands or device models. It uses the capabilities already exposed by Home Assistant.
+## Why Fluks?
 
-**If it works with Home Assistant, it can work with fluks.**
+Most home energy automations react to what's happening right now.
 
-## Mapping
+Fluks also considers **what's likely to happen next**.
 
-Every Home Assistant installation is different.
+It combines:
 
-Entity names, measurements and available controls vary between manufacturers and integrations. fluks uses mappings to connect those capabilities to the things it understands.
+- **Learning** — Understand how your home and its devices actually behave.
+- **Forecasting** — Anticipate energy demand, solar production and upcoming conditions.
+- **Electricity prices** — Consider when energy is cheaper or more expensive.
+- **Whole-home optimization** — Coordinate energy decisions across devices instead of optimizing each device in isolation.
+- **Continuous adaptation** — Reconsider decisions as measurements and forecasts change.
 
-During configuration, fluks can automatically suggest mappings based on what Home Assistant exposes.
+The goal is simple: **make better use of your home's energy, automatically.**
 
-You review and accept the mappings before they are used.
+## Your entire home. Working together.
 
-This means fluks can work with existing Home Assistant integrations without needing device-specific support for every manufacturer.
+Fluks is designed to coordinate the energy capabilities already available through Home Assistant.
 
-## How it works
+| Energy system | What Fluks considers |
+|---|---|
+| ☀️ Solar panels | Production, forecasts and available surplus |
+| 🔋 Home batteries | Charging, discharging and energy storage |
+| 🚗 Electric vehicles | Charging demand and available vehicle information |
+| ♨️ Heat pumps | Heating demand and thermal storage |
+| 🚿 Water heaters | Hot water temperature and heating flexibility |
+| 🌡️ Space heating | Temperature, energy consumption and heating response |
+| 🏠 Your home | Overall energy balance, demand and electricity prices |
 
-The Home Assistant integration has two primary responsibilities:
+Fluks evaluates these capabilities together, according to the measurements and controls available in your installation.
 
-1. Send observations from your home to fluks.
-2. Execute control decisions received from fluks.
+**Your home is more than a collection of smart devices. Fluks treats it as one energy system.**
 
-fluks combines these observations with information such as forecasts, electricity prices and the capabilities available in your home.
+## Built for Home Assistant
 
-Home Assistant remains the connection to your physical devices. fluks provides the intelligence that coordinates them.
+Home Assistant connects Fluks to your existing devices.
 
-## Installation
+Fluks provides the intelligence that learns, forecasts and optimizes across them.
 
-### Install with HACS
+The integration:
 
-Until fluks is included in the HACS default store, add this repository as a custom repository:
+1. Discovers device information and available capabilities.
+2. Helps you map measurements and controls.
+3. Sends observations to Fluks.
+4. Receives and executes optimization decisions.
+5. Lets you review and adjust device configuration.
 
-1. In HACS, open **Integrations** and select the three-dot menu.
-2. Choose **Custom repositories**.
-3. Enter `https://github.com/grunken/hass-fluks` and select **Integration** as the category.
-4. Add the repository, install **fluks**, and restart Home Assistant.
+Fluks uses the sensors and controls exposed by your existing Home Assistant integrations, regardless of manufacturer.
 
-Then go to **Settings → Devices & services → Add integration → fluks**.
+**No additional device-specific Fluks integration is required.**
+
+You continue using the integrations that already connect your devices to Home Assistant. Fluks builds on the information and control capabilities they provide.
+
+Actual functionality depends on the measurements and controls exposed by those integrations.
+
+## Install with HACS
+
+Fluks is currently available through HACS as a custom repository while its official HACS listing is pending.
+
+### Step 1 — Add the repository
+
+1. Open **HACS** in Home Assistant.
+2. Open the three-dot menu and select **Custom repositories**.
+3. Enter the repository URL:
+
+   `https://github.com/grunken/hass-fluks`
+
+4. Select **Integration** as the repository type.
+5. Add the repository.
+
+### Step 2 — Install Fluks
+
+1. Find **Fluks** in HACS.
+2. Select **Download**.
+3. Restart Home Assistant when required.
+
+### Step 3 — Connect your home
+
+1. Go to **Settings → Devices & services**.
+2. Select **Add integration**.
+3. Search for **Fluks**.
+4. Follow the configuration flow.
+
+You're ready to start connecting your home's energy devices.
+
+**[Full installation guide →](https://fluks.one/en/#get-started)**
 
 ### Manual installation
 
-Copy `custom_components/fluks` from this repository into your Home Assistant `custom_components` directory so the integration is available as:
+Alternatively, copy the `custom_components/fluks` directory into your Home Assistant configuration directory, preserving the directory structure.
 
-```text
-custom_components/fluks
-```
+Restart Home Assistant and add the Fluks integration through **Settings → Devices & services**.
 
-Restart Home Assistant after installation.
+## Smart mapping. Less configuration.
 
-Then go to:
+Every Home Assistant installation is different.
 
-**Settings → Devices & services → Add integration → fluks**
+Manufacturers use different entity names, measurements and controls. Fluks uses a flexible mapping system to understand these capabilities.
 
-## Configuration
+During setup, Fluks can suggest mappings automatically based on the sensors and controls provided by your existing Home Assistant integrations.
 
-The fluks integration guides you through connecting your home and configuring the devices fluks can use.
+You can review, accept or adjust the suggestions before they are used.
 
-For each device, select the corresponding device from Home Assistant.
+**The goal is to make configuration as simple as possible, without requiring manufacturer-specific rules.**
 
-fluks inspects the available capabilities and can suggest mappings automatically. Review the suggestions, adjust them if necessary, and save the configuration.
+## How Fluks works
 
-Once configured, observations and control decisions are exchanged automatically between Home Assistant and fluks.
+The process is continuous:
 
-Configuration can be changed later from the fluks integration.
+**Observe → Learn → Forecast → Optimize → Decide → Adapt**
 
-## What fluks can coordinate
+Home Assistant supplies observations through the sensors exposed by your existing integrations and executes supported controls through their available actions.
 
-Depending on what is available in your home, fluks can coordinate energy across things such as:
+Fluks processes energy information, forecasts and device capabilities to produce coordinated decisions.
 
-- Solar production
-- Battery storage
-- Electric vehicle charging
-- Heat pumps
-- Water heating
-- Space heating
-- Other energy consumption and controllable loads
+As new observations arrive, Fluks can adapt its plans to changing conditions.
 
-These are not optimized as isolated devices. fluks considers how they affect the energy balance of the home together.
+Rather than maintaining separate automations for every possible combination of prices, weather and devices, Fluks approaches the home as a single optimization problem.
+
+## Join the Fluks beta
+
+**Fluks is looking for early Home Assistant users.**
+
+Whether you have solar panels, a home battery, an EV charger, a heat pump or another interesting energy setup, your experience can help shape Fluks.
+
+We're especially interested in:
+
+- Different manufacturers and Home Assistant integrations.
+- Homes with multiple energy devices.
+- Feedback on installation and automatic mapping.
+- Real-world optimization behavior.
+- Bugs, missing capabilities and usability improvements.
+
+You don't need to be a developer to participate.
+
+**[Get started with Fluks →](https://fluks.one/en/#get-started)**
+
+Found something that doesn't work?
+
+**[Report an issue on GitHub →](https://github.com/grunken/hass-fluks/issues)**
 
 ## Troubleshooting
 
-If fluks does not appear after installation, verify that the integration is located in:
+**Fluks doesn't appear in Home Assistant**
 
-```text
-custom_components/fluks
-```
+Check that the integration was installed correctly and restart Home Assistant.
 
-and restart Home Assistant.
+**A measurement or control wasn't detected**
 
-After adding fluks, configuration and connection status are available from the integration under **Settings → Devices & services**.
+Open the device configuration and review the available mappings. You can adjust mappings manually.
 
-If a measurement or control is not mapped automatically, open the device configuration and review its mappings. Suggestions can be adjusted manually.
+**Something isn't working as expected**
 
-## Development
+Open a [GitHub issue](https://github.com/grunken/hass-fluks/issues) with a description of the problem, relevant logs and the Home Assistant version.
 
-This repository contains the Home Assistant integration for fluks.
+Please remove credentials, tokens and other private information before sharing logs.
 
-The fluks energy-management backend is a separate part of the fluks platform.
+## Open source integration. Independent intelligence.
 
-## License
+This repository contains the open-source Home Assistant integration for Fluks.
 
-No license has been declared for this repository yet.
+The Fluks backend, forecasting and optimization services are separate components.
+
+The Home Assistant integration is licensed under the **MIT License**. See [LICENSE](LICENSE).
+
+## Links
+
+- **Website:** https://fluks.one
+- **Installation:** https://fluks.one/en/#get-started
+- **Releases:** https://github.com/grunken/hass-fluks/releases
+- **Issues and feedback:** https://github.com/grunken/hass-fluks/issues
+
+---
+
+**Fluks**
+
+*Your energy. Decides together.*
+
+https://fluks.one
