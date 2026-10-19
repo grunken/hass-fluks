@@ -150,7 +150,7 @@ def test_panel_contains_administration_and_persisted_controls_without_execution(
     assert "control-saved" in source
     assert "e.detail.behaviors" in source
     assert "output_mappings" in source
-    assert "@media(max-width:700px)" in source
+    assert "@media(max-width:760px)" in source
     assert "history.pushState" in source
     assert "iframe" not in source.lower()
     assert "WebSocket(" not in source
@@ -226,12 +226,12 @@ def test_destructive_views_use_named_resources_and_resource_specific_auth_copy()
     source = Path(
         "custom_components/fluks/frontend/control-editor-panel.js"
     ).read_text()
-    en = json.loads(Path("custom_components/fluks/translations/en.json").read_text())[
-        "panel"
-    ]
-    da = json.loads(Path("custom_components/fluks/translations/da.json").read_text())[
-        "panel"
-    ]
+    en = json.loads(
+        Path("custom_components/fluks/panel_translations/en.json").read_text()
+    )
+    da = json.loads(
+        Path("custom_components/fluks/panel_translations/da.json").read_text()
+    )
 
     assert '{ deviceName: this._detail.label }' in source
     assert '{ siteName: this._context.site.name }' in source

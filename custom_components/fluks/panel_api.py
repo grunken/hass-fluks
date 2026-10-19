@@ -82,7 +82,7 @@ COMMAND_SITE_DELETE = f"{DOMAIN}/config/site_delete"
 BASE_SCHEMA = {
     vol.Required("entry_id"): str,
 }
-TRANSLATIONS_DIRECTORY = Path(__file__).parent / "translations"
+PANEL_TRANSLATIONS_DIRECTORY = Path(__file__).parent / "panel_translations"
 
 _FORECAST_SOLAR_DOMAIN = "forecast_solar"
 _FORECAST_SOLAR_PLANE_TYPE = "plane"
@@ -438,8 +438,10 @@ def _forecast_solar_prefill(
 def _load_panel_translations(language: str) -> dict[str, str]:
     """Load the custom panel namespace, which HA does not expose via localize()."""
     locale = "da" if language.lower().split("-", 1)[0] == "da" else "en"
-    with (TRANSLATIONS_DIRECTORY / f"{locale}.json").open(encoding="utf-8") as file:
-        panel = json.load(file).get("panel", {})
+    with (PANEL_TRANSLATIONS_DIRECTORY / f"{locale}.json").open(
+        encoding="utf-8"
+    ) as file:
+        panel = json.load(file)
     return {str(key): str(value) for key, value in panel.items() if isinstance(value, str)}
 
 

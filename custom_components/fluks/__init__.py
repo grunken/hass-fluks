@@ -4,6 +4,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import FluksApiClient
@@ -20,6 +21,8 @@ from .observations import RealtimeObservationPublisher
 from .output_execution import RuntimeOutputExecutor
 from .panel_api import async_register_panel_commands
 from .runtime import FluksRuntimeWebSocket
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:

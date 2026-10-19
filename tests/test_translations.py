@@ -7,13 +7,20 @@ import json
 from pathlib import Path
 
 from custom_components.fluks.const import DOMAIN
+from custom_components.fluks.panel_api import _load_panel_translations
 
 TRANSLATIONS = Path("custom_components") / DOMAIN / "translations"
+PANEL_TRANSLATIONS = Path("custom_components") / DOMAIN / "panel_translations"
 
 
 def load_translation(language: str) -> dict:
     """Load a custom integration translation file."""
     return json.loads((TRANSLATIONS / f"{language}.json").read_text())
+
+
+def load_panel_translation(language: str) -> dict:
+    """Load the custom panel strings, kept outside HA's translation schema."""
+    return json.loads((PANEL_TRANSLATIONS / f"{language}.json").read_text())
 
 
 def key_structure(value, prefix=()):
@@ -43,12 +50,20 @@ def test_translation_files_are_valid_and_have_key_parity():
     danish = load_translation("da")
 
     assert key_structure(english) == key_structure(danish)
+    assert "panel" not in english
+    assert "panel" not in danish
     assert english["config"]["step"]["user"]["title"] == (
-        "Your Energy. Decides together."
+        "Your energy. Decides together."
     )
     assert danish["config"]["step"]["user"]["title"] == (
-        "Your Energy. Decides together."
+        "Your energy. Decides together."
     )
+
+
+def test_panel_translation_loader_reads_the_separate_resource():
+    """The runtime panel continues loading its strings after HA schema split."""
+    assert _load_panel_translations("en")["unknown_device"] == "Unknown device"
+    assert _load_panel_translations("da")["unknown_device"] == "Ukendt enhed"
 
 
 def test_config_flow_translation_keys_exist():
@@ -97,8 +112,10 @@ def test_config_flow_translation_keys_exist():
 
 def test_panel_device_and_concept_presentation_is_translated():
     """The production panel owns localized Device and concept presentation."""
-    english = load_translation("en")["panel"]
-    danish = load_translation("da")["panel"]
+    english = load_panel_translation("en")
+    danish = load_panel_translation("da")
+    assert key_structure(english) == key_structure(danish)
+    assert english["tagline"] == "Your energy. Decides together."
     canonical_types = {
         "solar",
         "generator",
