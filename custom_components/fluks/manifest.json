@@ -1,7 +1,9 @@
 {
   "domain": "fluks",
   "name": "fluks",
-  "codeowners": ["@grunken"],
+  "codeowners": [
+    "@grunken"
+  ],
   "config_flow": true,
   "dependencies": [
     "frontend",
@@ -12,5 +14,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/grunken/hass-fluks/issues",
   "requirements": [],
-  "version": "1.5.2"
+  "version": "1.5.3"
 }
