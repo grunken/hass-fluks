@@ -26,6 +26,8 @@
   "recent_decisions": "Recent Decisions",
   "loading_decisions": "Loading Decisions…",
   "no_recent_decisions": "No recent Decisions.",
+  "show_more": "Show more",
+  "loading_more_decisions": "Loading…",
   "decisions_unavailable": "Recent Decisions are unavailable right now.",
   "unknown_device": "Unknown device",
   "add_device": "Add device",

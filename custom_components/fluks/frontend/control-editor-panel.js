@@ -42,6 +42,8 @@ class FluksControlEditorPanel extends HTMLElement {
     this._recentDecisionsLoading = false;
     this._recentDecisionsLoaded = false;
     this._recentDecisionsError = false;
+    this._recentDecisionsNextCursor = undefined;
+    this._recentDecisionsLoadingMore = false;
     this._runtimeStatusUnsubscribe = undefined;
     this._runtimeStatusTimer = undefined;
     this._runtimeStatusSubscriptionToken = 0;
@@ -67,6 +69,8 @@ class FluksControlEditorPanel extends HTMLElement {
       this._recentDecisionsLoading = false;
       this._recentDecisionsLoaded = false;
       this._recentDecisionsError = false;
+      this._recentDecisionsNextCursor = undefined;
+      this._recentDecisionsLoadingMore = false;
       this._pendingControl = undefined;
       this._spaceHeaterValidationError = false;
       this._mappingSuggestionsLoading = false;
@@ -530,7 +534,7 @@ class FluksControlEditorPanel extends HTMLElement {
       ${this._recentDecisionsLoading ? `<p class="decision-feed-message">${esc(this._t("loading_decisions"))}</p>` : this._recentDecisionsError ? `<p class="decision-feed-message">${esc(this._t("decisions_unavailable"))}</p>` : this._recentDecisions.length ? this._recentDecisions.map((decision) => {
         const details = [this._decisionTime(decision.time), decision.action, decision.mode, decision.value].filter((value) => value !== undefined && value !== null && value !== "").join(" · ");
         return `<div class="row decision-row"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon><span class="row-copy"><strong>${esc(decision.device)}</strong><span>${esc(details)}</span>${decision.explanation ? `<small class="decision-explanation">${esc(decision.explanation)}</small>` : ""}</span></div>`;
-      }).join("") : `<p class="decision-feed-message">${esc(this._t("no_recent_decisions"))}</p>`}</div></section>`);
+      }).join("") : `<p class="decision-feed-message">${esc(this._t("no_recent_decisions"))}</p>`}</div>${this._recentDecisionsLoaded && this._recentDecisionsNextCursor && this._recentDecisions.length < 200 ? `<button class="secondary decision-show-more" id="recent-decisions-more" type="button" ${this._recentDecisionsLoadingMore ? "disabled" : ""}>${esc(this._t(this._recentDecisionsLoadingMore ? "loading_more_decisions" : "show_more"))}</button>` : ""}</section>`);
     const add = this.shadowRoot.querySelector("#add");
     if (add) add.onclick = () => this._go({ name: "add" });
     this._wireMenu("site-menu", "site-actions");
@@ -542,6 +546,8 @@ class FluksControlEditorPanel extends HTMLElement {
     if (configuration) configuration.onclick = () => this._go({ name: "device", deviceId: site.id });
     const devicesCard = this.shadowRoot.querySelector("#home-devices-card");
     if (devicesCard) devicesCard.onclick = () => this.shadowRoot.querySelector("#configured-devices")?.scrollIntoView({ behavior: "smooth" });
+    const showMore = this.shadowRoot.querySelector("#recent-decisions-more");
+    if (showMore) showMore.onclick = () => void this._loadMoreRecentDecisions();
     this.shadowRoot.querySelectorAll("[data-device]").forEach((n) => n.onclick = () => this._go({ name: "device", deviceId: n.dataset.device }));
   }
   _decisionTime(value) {
@@ -558,7 +564,8 @@ class FluksControlEditorPanel extends HTMLElement {
     try {
       const result = await this._call("fluks/config/recent_decisions");
       if (entryId !== this._entryId) return;
-      this._recentDecisions = Array.isArray(result?.decisions) ? result.decisions : [];
+      this._recentDecisions = (Array.isArray(result?.decisions) ? result.decisions : []).slice(0, 200);
+      this._recentDecisionsNextCursor = result?.next_cursor ?? null;
       this._recentDecisionsError = false;
     } catch (_) {
       if (entryId !== this._entryId) return;
@@ -569,6 +576,31 @@ class FluksControlEditorPanel extends HTMLElement {
       if (entryId === this._entryId) {
         this._recentDecisionsLoading = false;
         this._recentDecisionsLoaded = true;
+        if (this._view.name === "home") this._renderHome();
+      }
+    }
+  }
+  async _loadMoreRecentDecisions() {
+    if (this._recentDecisionsLoadingMore || !this._recentDecisionsNextCursor || this._recentDecisions.length >= 200 || this._view.name !== "home") return;
+    const entryId = this._entryId;
+    this._recentDecisionsLoadingMore = true;
+    this._renderHome();
+    try {
+      const result = await this._call("fluks/config/recent_decisions", { cursor: this._recentDecisionsNextCursor });
+      if (entryId !== this._entryId) return;
+      const known = new Set(this._recentDecisions.map((decision) => decision.id));
+      for (const decision of Array.isArray(result?.decisions) ? result.decisions : []) {
+        if (this._recentDecisions.length >= 200) break;
+        if (decision?.id && known.has(decision.id)) continue;
+        if (decision?.id) known.add(decision.id);
+        this._recentDecisions.push(decision);
+      }
+      this._recentDecisionsNextCursor = result?.next_cursor ?? null;
+    } catch (_) {
+      this._error = undefined;
+    } finally {
+      if (entryId === this._entryId) {
+        this._recentDecisionsLoadingMore = false;
         if (this._view.name === "home") this._renderHome();
       }
     }
@@ -1624,7 +1656,7 @@ class FluksControlEditorPanel extends HTMLElement {
     .primary{background:var(--primary-color);color:var(--text-primary-color,#fff);border-color:var(--primary-color)}.danger{background:var(--error-color);border-color:var(--error-color);color:#fff}.danger-zone{border-color:var(--error-color)}.menu-danger{color:var(--error-color);background:transparent;border:0;width:100%;text-align:left}
     .icon{border:0;background:transparent;font-size:25px;padding:4px;width:42px;min-width:42px}.overflow{margin-left:auto;font-weight:700}.section-title,.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}.actions{justify-content:flex-end;margin:22px 0 0}
     .row{position:relative;width:100%;display:flex;align-items:center;gap:14px;text-align:left;border:0;border-bottom:1px solid var(--divider-color);border-radius:0;padding:13px 16px;background:transparent;color:var(--primary-text-color)}.row:last-child{border-bottom:0}.row.needs-attention{background:color-mix(in srgb,var(--warning-color,#f0b429) 5%,transparent)}.row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;overflow:hidden}.row-copy strong,.row-copy span{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row-copy strong{font-weight:600}.row-copy span,.eyebrow,small{color:var(--secondary-text-color);font-size:13px}.chevron{font-size:24px;color:var(--secondary-text-color);flex:none}.configuration-indicator{position:absolute;top:0;bottom:0;left:0;width:7px;pointer-events:none}.configuration-indicator.complete{background:var(--success-color,#43a047)}.configuration-indicator.incomplete{background:var(--warning-color,#f0b429)}
-    .decision-row{align-items:flex-start}.decision-row>ha-icon{color:var(--primary-color);margin-top:2px;flex:none}.decision-explanation{white-space:normal;line-height:1.4}.decision-feed-message{margin:0;padding:14px 16px}
+    .decision-row{align-items:flex-start}.decision-row>ha-icon{color:var(--primary-color);margin-top:2px;flex:none}.decision-explanation{white-space:normal;line-height:1.4}.decision-feed-message{margin:0;padding:14px 16px}.decision-show-more{margin-top:12px}
     .device-icon{display:block;object-fit:contain;flex:none}.device-icon.list{width:38px;height:38px}.device-icon.hero{width:62px;height:62px}.device-icon.header{width:50px;height:50px}.device-icon.picker{width:70px;height:70px}
     .home-status-line{display:flex;align-items:center;gap:9px;margin:-8px 0 22px;font-size:16px}.runtime-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--error-color)}.runtime-dot.connected,.configuration-dot.complete{background:var(--success-color,#43a047)}.runtime-dot.reconnecting{background:var(--warning-color,#ff9800)}.configuration-dot{flex:none}.configuration-dot.incomplete{background:var(--warning-color,#f0b429)}#home-configuration .configuration-dot{align-self:flex-start;margin-top:5.6px;transform:none}.home-card-status{display:flex;align-items:center;gap:8px;margin-bottom:8px}.home-card-status .runtime-dot{width:10px;height:10px}.configuration-count{display:flex;align-items:center;gap:8px}@keyframes fluks-runtime-pulse{50%{opacity:.45}}.mapping-loading{display:flex;align-items:center;gap:14px}.mapping-loading strong{display:block;margin-bottom:3px}.mapping-loading p{margin:0;color:var(--secondary-text-color,#aaa)}.mapping-loading-inline{margin-left:auto;padding:8px 0;flex:none}.mapping-loading-inline strong{margin:0;white-space:nowrap}.loading-spinner{width:24px;height:24px;flex:none;border:3px solid color-mix(in srgb,var(--primary-color,#03a678) 25%,transparent);border-top-color:var(--primary-color,#03a678);border-radius:50%;animation:fluks-spin .8s linear infinite}@keyframes fluks-spin{to{transform:rotate(360deg)}}
     .home-shortcuts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px}.home-card{display:flex;align-items:flex-start;gap:14px;min-height:152px;margin:0;text-align:left}.home-card>ha-icon{color:var(--primary-color);font-size:30px;flex:none}.home-card h2{margin:0 0 8px}.home-card p{margin:0}.home-card-button{width:100%;cursor:pointer}.home-card-button .chevron{margin-left:auto;align-self:center}

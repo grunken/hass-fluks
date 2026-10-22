@@ -770,6 +770,7 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
                     "explanationStatus": "unavailable",
                 }
             ],
+            "nextCursor": "older-cursor",
         }
     )
     api.list_devices = AsyncMock(
@@ -807,7 +808,9 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
         )
         await hass.async_block_till_done()
 
-    api.list_site_decision_explanations.assert_awaited_once_with("site-id", limit=10)
+    api.list_site_decision_explanations.assert_awaited_once_with(
+        "site-id", limit=10, cursor=None
+    )
     assert not conn.send_error.called, conn.send_error.call_args_list
     assert conn.send_result.called
     assert [item["id"] for item in results[0]["decisions"]] == [
@@ -816,7 +819,8 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
         *[f"decision-older-{day}" for day in range(1, 9)],
     ]
     assert len(results[0]["decisions"]) == 10
-    first, second = results[0]["decisions"]
+    assert results[0]["next_cursor"] == "older-cursor"
+    first, second = results[0]["decisions"][:2]
     assert first["device"] == "Solar · Roof"
     assert first["mode"] == "Default behavior"
     assert first["explanation"] is None
@@ -824,6 +828,76 @@ async def test_recent_decisions_present_device_action_time_and_explanation(hass)
     assert second["action"] == "Power"
     assert second["mode"] == "Targets Power"
     assert second["explanation"] == "Solar production is available."
+
+
+async def test_recent_decisions_cursor_returns_next_explanation_page(hass):
+    entry = SimpleNamespace(data={CONF_SITE_ID: "site-id"})
+    api = MagicMock(spec=FluksApiClient)
+    api.list_site_decision_explanations = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "decision": {
+                        "id": "older-decision",
+                        "deviceId": "solar-external",
+                        "concept": "solar.power",
+                        "value": 600,
+                        "createdAt": "2026-09-20T12:00:00Z",
+                    },
+                    "deterministicText": "Older explanation.",
+                }
+            ],
+            "currentDecisions": [
+                {
+                    "decision": {
+                        "id": "current-decision",
+                        "deviceId": "solar-external",
+                        "concept": "solar.power",
+                        "value": 700,
+                    },
+                    "explanationStatus": "unavailable",
+                }
+            ],
+            "nextCursor": None,
+        }
+    )
+    api.list_devices = AsyncMock(
+        return_value=[{
+            "id": "solar-internal",
+            "deviceId": "solar-external",
+            "type": "solar",
+            "properties": {"displayName": "Roof"},
+        }]
+    )
+    conn = connection()
+    results = []
+    conn.send_result.side_effect = lambda _id, result: results.append(result)
+
+    with (
+        patch("custom_components.fluks.panel_api._entry", return_value=entry),
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch(
+            "custom_components.fluks.panel_api._panel_translations",
+            AsyncMock(return_value={"device_type_solar": "Solar", "concept_solar.power": "Power"}),
+        ),
+    ):
+        websocket_recent_decisions(
+            hass,
+            conn,
+            {
+                "id": 1,
+                "type": COMMAND_RECENT_DECISIONS,
+                "entry_id": "entry-id",
+                "cursor": "older-cursor",
+            },
+        )
+        await hass.async_block_till_done()
+
+    api.list_site_decision_explanations.assert_awaited_once_with(
+        "site-id", limit=10, cursor="older-cursor"
+    )
+    assert [item["id"] for item in results[0]["decisions"]] == ["older-decision"]
+    assert results[0]["next_cursor"] is None
 
 
 async def test_recent_site_decision_uses_configured_site_name(hass):

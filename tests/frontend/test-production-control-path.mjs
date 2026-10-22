@@ -1250,6 +1250,7 @@ test("homepage renders configured devices and live runtime status", () => {
       configured_devices: "{count} configured", configuration: "Configuration",
       configuration_description: "Manage devices and mappings",
       recent_decisions: "Recent Decisions", no_recent_decisions: "No recent Decisions.",
+      show_more: "Show more", loading_more_decisions: "Loading…",
     },
     site: { id: "site-device", name: "Hjem" },
     devices: [
@@ -1292,6 +1293,19 @@ test("homepage renders configured devices and live runtime status", () => {
   assert.match(rendered.body, /Solar production is available\./);
   assert.match(rendered.body, /Site level decision\./);
 
+  panel._recentDecisionsLoaded = true;
+  panel._recentDecisionsNextCursor = "older-cursor";
+  panel._renderHome();
+  assert.match(rendered.body, /id="recent-decisions-more"/);
+  assert.match(rendered.body, /Show more/);
+  panel._recentDecisionsNextCursor = null;
+  panel._renderHome();
+  assert.doesNotMatch(rendered.body, /id="recent-decisions-more"/);
+  panel._recentDecisionsNextCursor = "older-cursor";
+  panel._recentDecisions = Array.from({ length: 200 }, (_, index) => ({ id: `decision-${index}` }));
+  panel._renderHome();
+  assert.doesNotMatch(rendered.body, /id="recent-decisions-more"/);
+
   panel._recentDecisions = [];
   panel._renderHome();
   assert.match(rendered.body, /No recent Decisions\./);
@@ -1301,6 +1315,42 @@ test("homepage renders configured devices and live runtime status", () => {
   panel._applyRuntimeStatus({ state: "connected", disconnected_at: null });
   assert.match(statusNode.innerHTML, /Connected to fluks/);
   assert.doesNotMatch(statusNode.innerHTML, /Reconnecting/);
+});
+
+test("recent Decisions load more with cursor, append unique rows, and stop at 200", async () => {
+  const panel = new Panel();
+  panel._view = { name: "home" };
+  panel._entryId = "entry-id";
+  panel._recentDecisions = Array.from({ length: 10 }, (_, index) => ({ id: `decision-${index}` }));
+  panel._recentDecisionsNextCursor = "cursor-1";
+  panel._renderHome = () => {};
+  let request;
+  panel._call = async (_type, payload) => {
+    request = payload;
+    return {
+      decisions: [
+        { id: "decision-9" },
+        ...Array.from({ length: 10 }, (_, index) => ({ id: `older-${index}` })),
+      ],
+      next_cursor: "cursor-2",
+    };
+  };
+
+  await panel._loadMoreRecentDecisions();
+  assert.deepEqual(request, { cursor: "cursor-1" });
+  assert.equal(panel._recentDecisions.length, 20);
+  assert.equal(panel._recentDecisions.filter((decision) => decision.id === "decision-9").length, 1);
+  assert.equal(panel._recentDecisionsNextCursor, "cursor-2");
+
+  panel._recentDecisions = Array.from({ length: 199 }, (_, index) => ({ id: `existing-${index}` }));
+  panel._recentDecisionsNextCursor = "cursor-2";
+  panel._call = async () => ({
+    decisions: [{ id: "existing-198" }, { id: "last-slot" }, { id: "over-limit" }],
+    next_cursor: "cursor-3",
+  });
+  await panel._loadMoreRecentDecisions();
+  assert.equal(panel._recentDecisions.length, 200);
+  assert.equal(panel._recentDecisions.at(-1).id, "last-slot");
 });
 
 test("overview rows show compact complete and incomplete configuration indicators", () => {

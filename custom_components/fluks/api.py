@@ -275,18 +275,24 @@ class FluksApiClient:
         return data
 
     async def list_site_decision_explanations(
-        self, site_id: str, *, limit: int = 10
+        self, site_id: str, *, limit: int = 10, cursor: str | None = None
     ) -> dict[str, Any]:
         """List recent Decisions and their deterministic explanations."""
         response = await self._request(
             "GET",
             f"/sites/{site_id}/decisions/explanations",
-            params={"limit": str(limit)},
+            params={
+                "limit": str(limit),
+                **({"cursor": cursor} if cursor is not None else {}),
+            },
             expected_status=200,
             auth=AuthContext.INTEGRATION,
         )
         if not isinstance(response.get("data"), list) or not isinstance(
             response.get("currentDecisions"), list
+        ) or "nextCursor" not in response or (
+            response.get("nextCursor") is not None
+            and not isinstance(response.get("nextCursor"), str)
         ):
             raise FluksApiError("INVALID_RESPONSE")
         return response

@@ -150,11 +150,15 @@ async def test_recent_decision_explanations_use_integration_auth():
     response = {
         "data": [{"decision": {"id": "decision-1"}, "deterministicText": "Saved energy."}],
         "currentDecisions": [],
+        "nextCursor": "cursor-1",
     }
-    session = FakeSession(FakeResponse(200, response))
+    session = FakeSession(FakeResponse(200, response), FakeResponse(200, response))
     client = FluksApiClient(session, integration_key=INTEGRATION_KEY)
 
     assert await client.list_site_decision_explanations("site-id", limit=10) == response
+    assert await client.list_site_decision_explanations(
+        "site-id", limit=10, cursor="cursor-1"
+    ) == response
     method, url, kwargs = session.requests[0]
     assert (method, url) == (
         "GET",
@@ -162,6 +166,10 @@ async def test_recent_decision_explanations_use_integration_auth():
     )
     assert kwargs["params"] == {"limit": "10"}
     assert kwargs["headers"] == {"Authorization": f"Bearer {INTEGRATION_KEY}"}
+    assert session.requests[1][2]["params"] == {
+        "limit": "10",
+        "cursor": "cursor-1",
+    }
 
 
 @pytest.mark.asyncio

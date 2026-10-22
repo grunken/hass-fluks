@@ -26,6 +26,8 @@
   "recent_decisions": "Seneste beslutninger",
   "loading_decisions": "Indlæser beslutninger…",
   "no_recent_decisions": "Ingen nylige beslutninger.",
+  "show_more": "Vis flere",
+  "loading_more_decisions": "Indlæser…",
   "decisions_unavailable": "Seneste beslutninger er ikke tilgængelige lige nu.",
   "unknown_device": "Ukendt enhed",
   "add_device": "Tilføj enhed",

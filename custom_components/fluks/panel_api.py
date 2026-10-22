@@ -980,7 +980,11 @@ def _decision_timestamp(value: Any) -> float:
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): COMMAND_RECENT_DECISIONS, **BASE_SCHEMA}
+    {
+        vol.Required("type"): COMMAND_RECENT_DECISIONS,
+        **BASE_SCHEMA,
+        vol.Optional("cursor"): str,
+    }
 )
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -991,7 +995,10 @@ async def websocket_recent_decisions(hass, connection, msg):
         entry = _entry(hass, msg["entry_id"])
         api = _api(hass, entry)
         site_id = entry.data[CONF_SITE_ID]
-        response = await api.list_site_decision_explanations(site_id, limit=10)
+        cursor = msg.get("cursor")
+        response = await api.list_site_decision_explanations(
+            site_id, limit=10, cursor=cursor
+        )
         devices = await api.list_devices(site_id)
         translations = await _panel_translations(hass)
         site_device = next(
@@ -1022,7 +1029,7 @@ async def websocket_recent_decisions(hass, connection, msg):
             if isinstance(explanation, str) and explanation.strip():
                 item["explanation"] = explanation
             item["explanation_created_at"] = record.get("createdAt")
-        for record in response["currentDecisions"]:
+        for record in response["currentDecisions"] if cursor is None else ():
             if not isinstance(record, dict) or not isinstance(
                 record.get("decision"), dict
             ):
@@ -1083,7 +1090,13 @@ async def websocket_recent_decisions(hass, connection, msg):
         presented.sort(key=lambda item: (item["_sort"], item["id"]), reverse=True)
         for item in presented:
             item.pop("_sort", None)
-        connection.send_result(msg["id"], {"decisions": presented[:10]})
+        connection.send_result(
+            msg["id"],
+            {
+                "decisions": presented[:10],
+                "next_cursor": response.get("nextCursor"),
+            },
+        )
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)
 
