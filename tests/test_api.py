@@ -550,8 +550,8 @@ async def test_battery_property_patch_preserves_exact_names_values_and_response(
     """Battery physical configuration crosses the real HTTP client boundary losslessly."""
     properties = {
         "capacityKwh": 18.5,
-        "battery.socMinimum": 12.5,
-        "battery.socMaximum": 94.5,
+        "socMinimum": 12.5,
+        "socMaximum": 94.5,
     }
     updated = {
         "id": "battery-internal",

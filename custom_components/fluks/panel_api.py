@@ -425,7 +425,7 @@ def _forecast_solar_prefill(
         values["tiltDegrees"] = tilt
     modules_power = _forecast_solar_number(source.get("modules_power"))
     if modules_power is not None and modules_power > 0:
-        values["installedKWp"] = modules_power / 1000
+        values["installedKwp"] = modules_power / 1000
     current = existing or {}
     return {
         key: value
@@ -1358,14 +1358,14 @@ def _editable_property_keys(device_type: str) -> set[str]:
     """Return the documented writable properties exposed by this panel."""
     keys = {"displayName", "vendor", "model"}
     if device_type == "solar":
-        keys.update({"installedKWp", "azimuthDegrees", "tiltDegrees"})
+        keys.update({"installedKwp", "azimuthDegrees", "tiltDegrees"})
     elif device_type == "spaceHeater":
         keys.add("ratedPowerW")
     elif device_type == "battery":
         keys.update({
             "capacityKwh",
-            "battery.socMinimum",
-            "battery.socMaximum",
+            "socMinimum",
+            "socMaximum",
             "maxChargePowerW",
             "maxDischargePowerW",
         })
@@ -1394,10 +1394,10 @@ def _device_properties(
 
 def _validate_solar_properties(device_type: str, properties: dict[str, Any]) -> None:
     if device_type != "solar" and any(
-        key in properties for key in ("installedKWp", "azimuthDegrees", "tiltDegrees")
+        key in properties for key in ("installedKwp", "azimuthDegrees", "tiltDegrees")
     ):
         raise PanelCommandError("validation_error")
-    installed = properties.get("installedKWp")
+    installed = properties.get("installedKwp")
     azimuth = properties.get("azimuthDegrees")
     tilt = properties.get("tiltDegrees")
     if installed is not None and (
@@ -1420,8 +1420,8 @@ def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -
     """Validate only the backend-documented Battery physical constraints."""
     battery_keys = {
         "capacityKwh",
-        "battery.socMinimum",
-        "battery.socMaximum",
+        "socMinimum",
+        "socMaximum",
         "maxChargePowerW",
         "maxDischargePowerW",
     }
@@ -1432,7 +1432,7 @@ def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -
         not isinstance(capacity, (int, float)) or isinstance(capacity, bool) or capacity <= 0
     ):
         raise PanelCommandError("validation_error")
-    for key in ("battery.socMinimum", "battery.socMaximum"):
+    for key in ("socMinimum", "socMaximum"):
         value = properties.get(key)
         if value is not None and (
             not isinstance(value, (int, float))

@@ -1152,12 +1152,12 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
                 },
                 "properties": {
                     "capacityKwh": 15.8,
-                    "battery.socMinimum": 15,
-                    "battery.socMaximum": 97,
+                    "socMinimum": 15,
+                    "socMaximum": 97,
                     "maxChargePowerW": 4200,
                     "maxDischargePowerW": 3800,
-                    "battery.maxChargePowerWObserved": 9999,
-                    "battery.maxDischargePowerWObserved": 9999,
+                    "maxChargePowerWObserved": 9999,
+                    "maxDischargePowerWObserved": 9999,
                 },
             },
         )
@@ -1168,8 +1168,8 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
     assert api.create_device.await_args.args[:3] == ("site-a", expected_id, "battery")
     assert api.create_device.await_args.args[3] == {
         "capacityKwh": 15.8,
-        "battery.socMinimum": 15,
-        "battery.socMaximum": 97,
+        "socMinimum": 15,
+        "socMaximum": 97,
         "maxChargePowerW": 4200,
         "maxDischargePowerW": 3800,
     }
@@ -1789,23 +1789,23 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
     api = MagicMock(spec=FluksApiClient)
     api.get_device = AsyncMock(return_value={
         "id": "device-a", "type": "battery", "properties": {
-            "battery.capacityKwhEstimated": 15.8,
-            "battery.socMinimumObserved": 15,
-            "battery.socMaximumObserved": 97,
-            "battery.maxChargePowerWObserved": 4200,
-            "battery.maxDischargePowerWObserved": 3800,
+            "capacityKwhEstimated": 15.8,
+            "socMinimumObserved": 15,
+            "socMaximumObserved": 97,
+            "maxChargePowerWObserved": 7468,
+            "maxDischargePowerWObserved": 7201,
         },
     })
     api.list_mappings = AsyncMock(return_value=[])
     updated_properties = {
         "capacityKwh": 20,
-        "battery.socMinimum": 10,
-        "battery.socMaximum": 90,
-        "battery.capacityKwhEstimated": 15.8,
-        "battery.socMinimumObserved": 15,
-        "battery.socMaximumObserved": 97,
-        "battery.maxChargePowerWObserved": 4200,
-        "battery.maxDischargePowerWObserved": 3800,
+        "socMinimum": 10,
+        "socMaximum": 90,
+        "capacityKwhEstimated": 15.8,
+        "socMinimumObserved": 15,
+        "socMaximumObserved": 97,
+        "maxChargePowerWObserved": 7468,
+        "maxDischargePowerWObserved": 7201,
         "maxChargePowerW": 5000,
         "maxDischargePowerW": 4500,
     }
@@ -1823,30 +1823,30 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
             "id": 70, "type": COMMAND_DEVICE_SAVE, "entry_id": entry.entry_id,
             "device_id": "device-a", "mappings": {}, "properties": {
                 "capacityKwh": 20,
-                "battery.socMinimum": 10,
-                "battery.socMaximum": 90,
+                "socMinimum": 10,
+                "socMaximum": 90,
                 "maxChargePowerW": 5000,
                 "maxDischargePowerW": 4500,
-                "battery.capacityKwhEstimated": 999,
-                "battery.socMinimumObserved": 1,
-                "battery.socMaximumObserved": 100,
-                "battery.maxChargePowerWObserved": 1,
-                "battery.maxDischargePowerWObserved": 1,
+                "capacityKwhEstimated": 999,
+                "socMinimumObserved": 1,
+                "socMaximumObserved": 100,
+                "maxChargePowerWObserved": 1,
+                "maxDischargePowerWObserved": 1,
             },
         })
         await hass.async_block_till_done()
 
     api.update_device_properties.assert_awaited_once_with("site-a", "device-a", {
         "capacityKwh": 20,
-        "battery.socMinimum": 10,
-        "battery.socMaximum": 90,
+        "socMinimum": 10,
+        "socMaximum": 90,
         "maxChargePowerW": 5000,
         "maxDischargePowerW": 4500,
     })
     assert "maxChargePowerW" in _editable_property_keys("battery")
     assert "maxDischargePowerW" in _editable_property_keys("battery")
-    assert "battery.maxChargePowerWObserved" not in _editable_property_keys("battery")
-    assert "battery.maxDischargePowerWObserved" not in _editable_property_keys("battery")
+    assert "maxChargePowerWObserved" not in _editable_property_keys("battery")
+    assert "maxDischargePowerWObserved" not in _editable_property_keys("battery")
     conn.send_result.assert_called_once_with(70, {"properties": updated_properties})
 
 
@@ -1907,7 +1907,7 @@ async def test_ev_target_soc_property_mapping_saves_attribute_without_manual_ove
     }
     assert "batteryCapacity" in _editable_property_keys("electricVehicle")
     assert "targetSocMaximum" in _editable_property_keys("electricVehicle")
-    assert "battery.socMinimum" not in _editable_property_keys("electricVehicle")
+    assert "socMinimum" not in _editable_property_keys("electricVehicle")
     conn.send_result.assert_called_once()
 
 
@@ -1915,15 +1915,15 @@ async def test_battery_suggestions_are_noop_and_configured_values_can_be_cleared
     """Suggestion-only Save is inert; null removes only manual configuration."""
     entry = make_entry(hass)
     learned = {
-        "battery.capacityKwhEstimated": 15.8,
-        "battery.socMinimumObserved": 15,
-        "battery.socMaximumObserved": 97,
+        "capacityKwhEstimated": 15.8,
+        "socMinimumObserved": 15,
+        "socMaximumObserved": 97,
     }
     configured = {
         **learned,
         "capacityKwh": 20,
-        "battery.socMinimum": 10,
-        "battery.socMaximum": 90,
+        "socMinimum": 10,
+        "socMaximum": 90,
     }
     api = MagicMock(spec=FluksApiClient)
     api.get_device = AsyncMock(side_effect=[
@@ -1946,24 +1946,24 @@ async def test_battery_suggestions_are_noop_and_configured_values_can_be_cleared
                 "entry_id": entry.entry_id, "device_id": "device-a", "mappings": {},
                 "properties": {
                     "capacityKwh": None,
-                    "battery.socMinimum": None,
-                    "battery.socMaximum": None,
+                    "socMinimum": None,
+                    "socMaximum": None,
                 },
             })
             await hass.async_block_till_done()
 
     api.update_device_properties.assert_awaited_once_with("site-a", "device-a", {
         "capacityKwh": None,
-        "battery.socMinimum": None,
-        "battery.socMaximum": None,
+        "socMinimum": None,
+        "socMaximum": None,
     })
 
 
 async def test_solar_installed_capacity_uses_existing_patch_and_keeps_estimate_read_only(hass):
-    """Solar configuration writes only installedKWp and supports explicit clearing."""
+    """Solar configuration writes only installedKwp and supports explicit clearing."""
     entry = make_entry(hass)
-    learned = {"solar.installedKwpEstimated": 14.038032}
-    configured = {**learned, "installedKWp": 16.75}
+    learned = {"installedKwpEstimated": 14.038032}
+    configured = {**learned, "installedKwp": 16.75}
     api = MagicMock(spec=FluksApiClient)
     api.get_device = AsyncMock(side_effect=[
         {"id": "solar-a", "type": "solar", "properties": learned},
@@ -1982,8 +1982,8 @@ async def test_solar_installed_capacity_uses_existing_patch_and_keeps_estimate_r
         patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
     ):
         for msg_id, properties, conn in (
-            (73, {"installedKWp": 16.75, "solar.installedKwpEstimated": 999}, connections[0]),
-            (74, {"installedKWp": None, "solar.installedKwpEstimated": 999}, connections[1]),
+            (73, {"installedKwp": 16.75, "installedKwpEstimated": 999}, connections[0]),
+            (74, {"installedKwp": None, "installedKwpEstimated": 999}, connections[1]),
         ):
             websocket_device_save(hass, conn, {
                 "id": msg_id, "type": COMMAND_DEVICE_SAVE,
@@ -1993,8 +1993,8 @@ async def test_solar_installed_capacity_uses_existing_patch_and_keeps_estimate_r
             await hass.async_block_till_done()
 
     assert [call.args for call in api.update_device_properties.await_args_list] == [
-        ("site-a", "solar-a", {"installedKWp": 16.75}),
-        ("site-a", "solar-a", {"installedKWp": None}),
+        ("site-a", "solar-a", {"installedKwp": 16.75}),
+        ("site-a", "solar-a", {"installedKwp": None}),
     ]
     connections[0].send_result.assert_called_once_with(73, {"properties": configured})
     connections[1].send_result.assert_called_once_with(74, {"properties": learned})
@@ -2023,7 +2023,7 @@ def test_forecast_solar_prefill_uses_supported_plane_fields_and_converts_power(h
         assert _forecast_solar_prefill(hass) == {
             "azimuthDegrees": 182.0,
             "tiltDegrees": 37.0,
-            "installedKWp": 8.45,
+            "installedKwp": 8.45,
         }
 
 
@@ -2037,10 +2037,10 @@ def test_forecast_solar_prefill_is_optional_and_never_overwrites_values(hass):
     )
     with patch.object(hass.config_entries, "async_entries", return_value=[entry]):
         assert _forecast_solar_prefill(
-            hass, {"azimuthDegrees": 90, "installedKWp": 3.2}
+            hass, {"azimuthDegrees": 90, "installedKwp": 3.2}
         ) == {}
         assert _forecast_solar_prefill(hass, {"azimuthDegrees": 90}) == {
-            "installedKWp": 8.45
+            "installedKwp": 8.45
         }
 
 
@@ -2100,7 +2100,7 @@ async def test_solar_add_review_exposes_forecast_prefill_as_editable_properties(
         "model": "PV",
         "azimuthDegrees": 182.0,
         "tiltDegrees": 37.0,
-        "installedKWp": 8.45,
+        "installedKwp": 8.45,
     }
 
 
