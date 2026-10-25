@@ -126,6 +126,8 @@
   "battery_capacity": "Batterikapacitet",
   "minimum_soc": "Minimum-SOC",
   "maximum_soc": "Maksimum-SOC",
+  "maximum_charge_power": "Maksimal ladeeffekt",
+  "maximum_discharge_power": "Maksimal afladeeffekt",
   "estimated_by_fluks": "Estimeret af fluks",
   "lowest_observed_by_fluks": "Laveste observerede værdi i fluks",
   "highest_observed_by_fluks": "Højeste observerede værdi i fluks",

@@ -1974,7 +1974,8 @@ test("Battery physical fields keep learned knowledge separate from editable valu
   panel._context = { translations: {
     edit_mappings: "Edit mappings and properties", device_information: "Device information",
     battery_configuration: "Battery configuration", battery_capacity: "Battery capacity",
-    minimum_soc: "Minimum SOC", maximum_soc: "Maximum SOC", estimated_by_fluks: "Estimated by fluks",
+    minimum_soc: "Minimum SOC", maximum_soc: "Maximum SOC", maximum_charge_power: "Maximum charge power",
+    maximum_discharge_power: "Maximum discharge power", estimated_by_fluks: "Estimated by fluks",
     lowest_observed_by_fluks: "Lowest observed by fluks", highest_observed_by_fluks: "Highest observed by fluks",
     name: "Name", vendor: "Vendor", model: "Model", save_mapping: "Save mapping", cancel: "Cancel",
   }, entities: [] };
@@ -1985,6 +1986,8 @@ test("Battery physical fields keep learned knowledge separate from editable valu
       "battery.capacityKwhEstimated": 15.8,
       "battery.socMinimumObserved": 15,
       "battery.socMaximumObserved": 97,
+      "battery.maxChargePowerWObserved": 4200,
+      "battery.maxDischargePowerWObserved": 3800,
     }, concepts: [], mappings: {}, proposals: {}, controls: [], output_mappings: {},
   };
   let body;
@@ -1996,9 +1999,14 @@ test("Battery physical fields keep learned knowledge separate from editable valu
   assert.match(body, /data-property="capacityKwh" value="" placeholder="~15\.8"/);
   assert.match(body, /data-property="battery\.socMinimum" value="" placeholder="~15"/);
   assert.match(body, /data-property="battery\.socMaximum" value="" placeholder="~97"/);
+  assert.match(body, /data-property="maxChargePowerW" value="" placeholder="~4200"/);
+  assert.match(body, /data-property="maxDischargePowerW" value="" placeholder="~3800"/);
   assert.match(body, /Estimated by fluks: 15\.8 kWh/);
   assert.match(body, /Lowest observed by fluks: 15 %/);
   assert.match(body, /Highest observed by fluks: 97 %/);
+  assert.match(body, /Highest observed by fluks: 4200 W/);
+  assert.match(body, /Highest observed by fluks: 3800 W/);
+  assert.doesNotMatch(body, /data-property="battery\.max(?:Charge|Discharge)PowerWObserved"/);
   assert.deepEqual(panel._editProperties, {});
 
   panel._inputDraft = {};
@@ -2006,9 +2014,12 @@ test("Battery physical fields keep learned knowledge separate from editable valu
     { dataset: { property: "capacityKwh" }, value: "", type: "number" },
     { dataset: { property: "battery.socMinimum" }, value: "", type: "number" },
     { dataset: { property: "battery.socMaximum" }, value: "", type: "number" },
+    { dataset: { property: "maxChargePowerW" }, value: "", type: "number" },
+    { dataset: { property: "maxDischargePowerW" }, value: "", type: "number" },
   ] : [];
   assert.deepEqual(panel._collectForm(true).properties, {
     capacityKwh: null, "battery.socMinimum": null, "battery.socMaximum": null,
+    maxChargePowerW: null, maxDischargePowerW: null,
   });
 });
 
@@ -2018,23 +2029,37 @@ test("configured Battery values take precedence, clear to hints, and remain Batt
     "battery.capacityKwhEstimated": 14.038032,
     "battery.socMinimumObserved": 15.129,
     "battery.socMaximumObserved": 97.987,
+    "battery.maxChargePowerWObserved": 4200.129,
+    "battery.maxDischargePowerWObserved": 3800.987,
   };
-  const configured = { capacityKwh: 20, "battery.socMinimum": 10, "battery.socMaximum": 90 };
+  const configured = { capacityKwh: 20, "battery.socMinimum": 10, "battery.socMaximum": 90, maxChargePowerW: 5000, maxDischargePowerW: 4500 };
   const body = panel._propertiesForm(configured, "battery", learned);
   assert.match(body, /data-property="capacityKwh" value="20"/);
   assert.match(body, /data-property="battery\.socMinimum" value="10"/);
   assert.match(body, /data-property="battery\.socMaximum" value="90"/);
+  assert.match(body, /data-property="maxChargePowerW" value="5000" placeholder="~4200\.12"/);
+  assert.match(body, /data-property="maxDischargePowerW" value="4500" placeholder="~3800\.98"/);
+  assert.match(body, /data-property="maxChargePowerW" value="5000"[^>]*><span>W<\/span>/);
+  assert.match(body, /data-property="maxDischargePowerW" value="4500"[^>]*><span>W<\/span>/);
   assert.match(body, /data-property="capacityKwh" value="20" placeholder="~14\.03"/);
 
   const cleared = panel._propertiesForm({}, "battery", learned);
   assert.match(cleared, /placeholder="~14\.03"/);
   assert.match(cleared, /placeholder="~15\.12"/);
   assert.match(cleared, /placeholder="~97\.98"/);
+  assert.match(cleared, /placeholder="~4200\.12"/);
+  assert.match(cleared, /placeholder="~3800\.98"/);
   assert.match(cleared, /estimated by fluks: 14\.03 kWh/i);
   assert.doesNotMatch(cleared, /14\.038032|15\.129|97\.987/);
-  const unknown = panel._propertiesForm({}, "battery", {});
+  const unknown = panel._propertiesForm({}, "battery", {
+    "battery.maxChargePowerWObserved": null,
+    "battery.maxDischargePowerWObserved": null,
+  });
   assert.doesNotMatch(unknown, /placeholder="~/);
-  assert.doesNotMatch(panel._propertiesForm({}, "heatPump"), /Battery configuration|capacityKwh|socMinimum|socMaximum/);
+  assert.doesNotMatch(panel._propertiesForm({}, "heatPump"), /Battery configuration|capacityKwh|socMinimum|socMaximum|maxChargePowerW|maxDischargePowerW/);
+  assert.deepEqual(panel._editableDeviceProperties({ maxChargePowerW: 5000, maxDischargePowerW: 4500, "battery.maxChargePowerWObserved": 4200 }, "battery"), {
+    maxChargePowerW: 5000, maxDischargePowerW: 4500,
+  });
 });
 
 test("EV configuration uses observed values and locks maximum SOC when mapped", () => {

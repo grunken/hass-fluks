@@ -1051,7 +1051,7 @@ class FluksControlEditorPanel extends HTMLElement {
     return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(displayName)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
   }
   _editableDeviceProperties(properties, deviceType) {
-    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum"] : []), ...(deviceType === "electricVehicle" ? ["batteryCapacity", "targetSocMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
+    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKWp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "battery.socMinimum", "battery.socMaximum", "maxChargePowerW", "maxDischargePowerW"] : []), ...(deviceType === "electricVehicle" ? ["batteryCapacity", "targetSocMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
     return Object.fromEntries(keys.filter((key) => Object.hasOwn(properties, key)).map((key) => [key, properties[key]]));
   }
   _spaceHeaterNeedsRatedPower(deviceType, mappings, properties) {
@@ -1079,6 +1079,8 @@ class FluksControlEditorPanel extends HTMLElement {
       ${physicalField("capacityKwh", "battery.capacityKwhEstimated", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}
       ${physicalField("battery.socMinimum", "battery.socMinimumObserved", "minimum_soc", "lowest_observed_by_fluks", "%", 'min="0" max="100"')}
       ${physicalField("battery.socMaximum", "battery.socMaximumObserved", "maximum_soc", "highest_observed_by_fluks", "%", 'min="0" max="100"')}
+      ${physicalField("maxChargePowerW", "battery.maxChargePowerWObserved", "maximum_charge_power", "highest_observed_by_fluks", "W", 'min="0"')}
+      ${physicalField("maxDischargePowerW", "battery.maxDischargePowerWObserved", "maximum_discharge_power", "highest_observed_by_fluks", "W", 'min="0"')}
       </div></section>` : ""}
       ${deviceType === "electricVehicle" ? `<section class="card"><h2>${esc(this._t("electric_vehicle_configuration"))}</h2><div class="fields three">
       ${physicalField("batteryCapacity", "batteryCapacityObserved", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}

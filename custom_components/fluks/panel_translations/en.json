@@ -126,6 +126,8 @@
   "battery_capacity": "Battery capacity",
   "minimum_soc": "Minimum SOC",
   "maximum_soc": "Maximum SOC",
+  "maximum_charge_power": "Maximum charge power",
+  "maximum_discharge_power": "Maximum discharge power",
   "estimated_by_fluks": "Estimated by fluks",
   "lowest_observed_by_fluks": "Lowest observed by fluks",
   "highest_observed_by_fluks": "Highest observed by fluks",

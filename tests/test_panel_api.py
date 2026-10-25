@@ -1154,6 +1154,10 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
                     "capacityKwh": 15.8,
                     "battery.socMinimum": 15,
                     "battery.socMaximum": 97,
+                    "maxChargePowerW": 4200,
+                    "maxDischargePowerW": 3800,
+                    "battery.maxChargePowerWObserved": 9999,
+                    "battery.maxDischargePowerWObserved": 9999,
                 },
             },
         )
@@ -1166,6 +1170,8 @@ async def test_add_save_uses_deterministic_identity_and_only_confirmed_mappings(
         "capacityKwh": 15.8,
         "battery.socMinimum": 15,
         "battery.socMaximum": 97,
+        "maxChargePowerW": 4200,
+        "maxDischargePowerW": 3800,
     }
     payload = api.create_mapping.await_args.args[1]
     assert payload["concept"] == "battery.soc"
@@ -1786,6 +1792,8 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
             "battery.capacityKwhEstimated": 15.8,
             "battery.socMinimumObserved": 15,
             "battery.socMaximumObserved": 97,
+            "battery.maxChargePowerWObserved": 4200,
+            "battery.maxDischargePowerWObserved": 3800,
         },
     })
     api.list_mappings = AsyncMock(return_value=[])
@@ -1796,6 +1804,10 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
         "battery.capacityKwhEstimated": 15.8,
         "battery.socMinimumObserved": 15,
         "battery.socMaximumObserved": 97,
+        "battery.maxChargePowerWObserved": 4200,
+        "battery.maxDischargePowerWObserved": 3800,
+        "maxChargePowerW": 5000,
+        "maxDischargePowerW": 4500,
     }
     api.update_device_properties = AsyncMock(return_value={
         "id": "device-a", "type": "battery", "properties": updated_properties,
@@ -1813,9 +1825,13 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
                 "capacityKwh": 20,
                 "battery.socMinimum": 10,
                 "battery.socMaximum": 90,
+                "maxChargePowerW": 5000,
+                "maxDischargePowerW": 4500,
                 "battery.capacityKwhEstimated": 999,
                 "battery.socMinimumObserved": 1,
                 "battery.socMaximumObserved": 100,
+                "battery.maxChargePowerWObserved": 1,
+                "battery.maxDischargePowerWObserved": 1,
             },
         })
         await hass.async_block_till_done()
@@ -1824,7 +1840,13 @@ async def test_battery_physical_properties_patch_without_writing_learned_values(
         "capacityKwh": 20,
         "battery.socMinimum": 10,
         "battery.socMaximum": 90,
+        "maxChargePowerW": 5000,
+        "maxDischargePowerW": 4500,
     })
+    assert "maxChargePowerW" in _editable_property_keys("battery")
+    assert "maxDischargePowerW" in _editable_property_keys("battery")
+    assert "battery.maxChargePowerWObserved" not in _editable_property_keys("battery")
+    assert "battery.maxDischargePowerWObserved" not in _editable_property_keys("battery")
     conn.send_result.assert_called_once_with(70, {"properties": updated_properties})
 
 

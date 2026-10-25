@@ -1362,7 +1362,13 @@ def _editable_property_keys(device_type: str) -> set[str]:
     elif device_type == "spaceHeater":
         keys.add("ratedPowerW")
     elif device_type == "battery":
-        keys.update({"capacityKwh", "battery.socMinimum", "battery.socMaximum"})
+        keys.update({
+            "capacityKwh",
+            "battery.socMinimum",
+            "battery.socMaximum",
+            "maxChargePowerW",
+            "maxDischargePowerW",
+        })
     elif device_type == "electricVehicle":
         keys.update({"batteryCapacity", "targetSocMaximum"})
     elif device_type == SITE_DEVICE_TYPE:
@@ -1412,7 +1418,13 @@ def _validate_solar_properties(device_type: str, properties: dict[str, Any]) -> 
 
 def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -> None:
     """Validate only the backend-documented Battery physical constraints."""
-    battery_keys = {"capacityKwh", "battery.socMinimum", "battery.socMaximum"}
+    battery_keys = {
+        "capacityKwh",
+        "battery.socMinimum",
+        "battery.socMaximum",
+        "maxChargePowerW",
+        "maxDischargePowerW",
+    }
     if device_type != "battery" and any(key in properties for key in battery_keys):
         raise PanelCommandError("validation_error")
     capacity = properties.get("capacityKwh")
@@ -1426,6 +1438,14 @@ def _validate_battery_properties(device_type: str, properties: dict[str, Any]) -
             not isinstance(value, (int, float))
             or isinstance(value, bool)
             or not 0 <= value <= 100
+        ):
+            raise PanelCommandError("validation_error")
+    for key in ("maxChargePowerW", "maxDischargePowerW"):
+        value = properties.get(key)
+        if value is not None and (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value <= 0
         ):
             raise PanelCommandError("validation_error")
 
