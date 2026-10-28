@@ -9,8 +9,10 @@ from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from homeassistant.components.logbook import async_log_entry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.translation import async_get_translations
 
 from .api import FluksApiClient
 from .output_mapping import (
@@ -96,6 +98,22 @@ class RuntimeOutputExecutor:
         )
         self._temperature_ownership: dict[str, dict[str, int | float]] = {}
         self._temperature_loaded = False
+
+    async def _async_log(self, key: str, *, entity_id: str | None = None, **values: Any) -> None:
+        """Write a localized native Logbook entry for an execution result."""
+        try:
+            translations = await async_get_translations(
+                self._hass, self._hass.config.language, "common", {DOMAIN}
+            )
+            async_log_entry(
+                self._hass,
+                "fluks",
+                translations[f"component.{DOMAIN}.common.{key}"].format(**values),
+                domain=DOMAIN,
+                entity_id=entity_id,
+            )
+        except Exception:  # noqa: BLE001 - Logbook must not interrupt control execution
+            _LOGGER.debug("Unable to write fluks Decision to Logbook", exc_info=True)
 
     async def _async_load_temperature_ownership(self) -> None:
         if self._temperature_loaded:
@@ -194,7 +212,13 @@ class RuntimeOutputExecutor:
             devices = await self._api.list_devices(self._site_id)
             mappings = await self._api.list_mappings(self._site_id)
             catalog = await self._api.get_device_type_catalog()
-        except Exception:  # noqa: BLE001 - runtime discovery must not end transport
+        except Exception as err:  # noqa: BLE001 - runtime discovery must not end transport
+            for decision in payload["decisions"]:
+                if isinstance(decision, dict):
+                    await self._async_log(
+                        "decision_resolution_failed", device=decision.get("deviceId"),
+                        error=str(err) or type(err).__name__,
+                    )
             _LOGGER.warning("Unable to resolve fluks output Mappings")
             return
 
@@ -220,15 +244,20 @@ class RuntimeOutputExecutor:
             device = device_by_external_id.get(str(decision.get("deviceId")))
             device_type = decision.get("deviceType")
             if device is None or device.get("type") != device_type:
+                await self._async_log("decision_device_missing", device=decision.get("deviceId"))
                 continue
+            if not set(decision) - _DECISION_FIELDS:
+                await self._async_log("decision_no_controls", device=decision.get("deviceId"))
             for field, raw_value in decision.items():
                 if field in _DECISION_FIELDS:
                     continue
                 concept = f"{device_type}.{field}"
                 definition = definitions.get(str(device_type), {}).get(concept)
                 if definition is None or "control" not in definition.get("usages", []):
+                    await self._async_log("decision_unsupported", concept=concept)
                     continue
                 if self._balance_active and concept == "battery.power":
+                    await self._async_log("decision_balance_suppressed", concept=concept)
                     continue
                 mapping_modes = [decision.get("mode")]
                 if concept == "battery.power" and decision.get("mode") != "release":
@@ -271,6 +300,9 @@ class RuntimeOutputExecutor:
                     if mapping is not None:
                         break
                 if mapping is None:
+                    await self._async_log(
+                        "decision_no_mapping", concept=concept, mode=decision.get("mode"),
+                    )
                     if concept in _TEMPERATURE_CONTROLS and decision.get("mode") == "release":
                         self._temperature_ownership.pop(
                             self._temperature_key(device, concept), None
@@ -293,12 +325,15 @@ class RuntimeOutputExecutor:
                         )
                     else:
                         value = _canonical_value(raw_value, str(definition.get("datatype")))
-                        await self._async_execute(configuration, value)
+                        await self._async_execute(configuration, value, concept=concept)
                     if concept == "site.power" and decision.get("mode") == "balance":
                         self._balance_active = True
                     elif concept == "site.power" and decision.get("mode") == "release":
                         self._balance_active = False
-                except Exception:  # noqa: BLE001 - one action must not end runtime transport
+                except Exception as err:  # noqa: BLE001 - one action must not end runtime transport
+                    await self._async_log(
+                        "decision_failed", concept=concept, error=str(err) or type(err).__name__,
+                    )
                     _LOGGER.warning("Unable to execute fluks output Mapping for %s", concept)
 
     async def _async_temperature_decision(
@@ -309,10 +344,15 @@ class RuntimeOutputExecutor:
         mode: Any,
     ) -> None:
         """Apply or safely release one temporary temperature override."""
+        concept = ownership_key.split("|", 1)[1]
         if mode == "release":
             ownership = self._temperature_ownership.get(ownership_key)
             current = self._temperature_setpoint(configuration)
             if not ownership or current is None:
+                await self._async_log(
+                    "decision_release_unavailable" if current is None else "decision_release_unowned",
+                    concept=concept,
+                )
                 self._temperature_ownership.pop(ownership_key, None)
                 await self._async_save_temperature_ownership()
                 return
@@ -321,13 +361,16 @@ class RuntimeOutputExecutor:
                     configuration,
                     ownership["previous"],
                     apply_transforms=False,
+                    concept=concept,
                 )
+            else:
+                await self._async_log("decision_release_manual", concept=concept)
             self._temperature_ownership.pop(ownership_key, None)
             await self._async_save_temperature_ownership()
             return
 
         if mode != "target":
-            await self._async_execute(configuration, requested_value)
+            await self._async_execute(configuration, requested_value, concept=concept)
             return
         current = self._temperature_setpoint(configuration)
         if current is None:
@@ -339,7 +382,7 @@ class RuntimeOutputExecutor:
         elif ownership:
             self._temperature_ownership.pop(ownership_key, None)
             await self._async_save_temperature_ownership()
-        await self._async_execute(configuration, requested_value)
+        await self._async_execute(configuration, requested_value, concept=concept)
         await self._hass.async_block_till_done()
         applied = self._temperature_setpoint(configuration)
         if applied is None:
@@ -365,23 +408,46 @@ class RuntimeOutputExecutor:
         requested_value: Any,
         *,
         apply_transforms: bool = True,
+        concept: str = "",
     ) -> None:
         """Execute service calls sequentially so configured order is preserved."""
-        for action in configuration["actions"]:
+        for index, action in enumerate(configuration["actions"]):
             data: dict[str, Any] = {}
-            for field, source in action.get("data", {}).items():
-                if source["kind"] == "literal":
-                    data[field] = source["value"]
-                elif not apply_transforms:
-                    data[field] = requested_value
-                else:
-                    data[field] = apply_output_transforms(
-                        requested_value,
-                        source.get("transforms", []),
-                        reference_resolver=self._output_reference,
+            try:
+                for field, source in action.get("data", {}).items():
+                    if source["kind"] == "literal":
+                        data[field] = source["value"]
+                    elif not apply_transforms:
+                        data[field] = requested_value
+                    else:
+                        data[field] = apply_output_transforms(
+                            requested_value,
+                            source.get("transforms", []),
+                            reference_resolver=self._output_reference,
+                        )
+                domain, service = action["service"].split(".", 1)
+                await self._async_execute_action(action, domain, service, data, concept=concept)
+            except Exception as err:
+                await self._async_log(
+                    "decision_action_failed" if data else "decision_action_failed_no_values",
+                    concept=concept, values=", ".join(f"{field}: {value}" for field, value in data.items()),
+                    entity_id=action["target"]["entityId"],
+                    entity=action["target"]["entityId"], service=action["service"],
+                    error=str(err) or type(err).__name__,
+                )
+                for skipped in configuration["actions"][index + 1:]:
+                    await self._async_log(
+                        "decision_action_skipped", concept=concept,
+                        entity_id=skipped["target"]["entityId"],
+                        entity=skipped["target"]["entityId"], service=skipped["service"],
                     )
-            domain, service = action["service"].split(".", 1)
-            await self._async_execute_action(action, domain, service, data)
+                raise
+            await self._async_log(
+                "decision_action_executed" if data else "decision_action_executed_no_values",
+                concept=concept, entity_id=action["target"]["entityId"],
+                entity=action["target"]["entityId"], service=action["service"],
+                values=", ".join(f"{field}: {value}" for field, value in data.items()),
+            )
 
     async def _async_execute_action(
         self,
@@ -389,6 +455,8 @@ class RuntimeOutputExecutor:
         domain: str,
         service: str,
         data: dict[str, Any],
+        *,
+        concept: str = "",
     ) -> None:
         """Call one resolved Home Assistant action with bounded retries."""
         target = {"entity_id": action["target"]["entityId"]}
@@ -402,7 +470,7 @@ class RuntimeOutputExecutor:
                     blocking=True,
                     target=target,
                 )
-            except Exception:  # noqa: BLE001 - retry the failed HA call
+            except Exception as err:  # noqa: BLE001 - retry the failed HA call
                 if attempt == _ACTION_ATTEMPTS:
                     _LOGGER.error(
                         "Home Assistant action %s targeting %s failed after %s attempts",
@@ -417,6 +485,12 @@ class RuntimeOutputExecutor:
                     attempt,
                     _ACTION_ATTEMPTS,
                     action["service"],
+                )
+                await self._async_log(
+                    "decision_action_retry", concept=concept,
+                    entity_id=action["target"]["entityId"], entity=action["target"]["entityId"],
+                    service=action["service"], error=str(err) or type(err).__name__,
+                    attempt=attempt, values=", ".join(f"{field}: {value}" for field, value in data.items()),
                 )
                 await self._sleep(_ACTION_RETRY_DELAY)
                 continue
@@ -437,6 +511,12 @@ class RuntimeOutputExecutor:
                     data,
                 )
                 raise RuntimeError("Home Assistant action result verification failed")
+            await self._async_log(
+                "decision_action_verification_retry", concept=concept,
+                entity_id=action["target"]["entityId"], entity=action["target"]["entityId"],
+                service=action["service"], attempt=attempt,
+                values=", ".join(f"{field}: {value}" for field, value in data.items()),
+            )
             _LOGGER.debug(
                 "Home Assistant action %s targeting %s did not reach its expected value "
                 "on attempt %s/%s; retrying",

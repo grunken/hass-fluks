@@ -1,0 +1,123 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Your energy. Decides together.",
+        "description": "Koble Home Assistant til fluks og velg hvordan du vil komme i gang.",
+        "menu_options": {
+          "login": "Logg inn",
+          "register": "Opprett konto"
+        },
+        "menu_option_descriptions": {
+          "login": "Bruk din eksisterende fluks-konto.",
+          "register": "Opprett en ny konto og bekreft e-postadressen din."
+        }
+      },
+      "login": {
+        "title": "Velkommen tilbake",
+        "description": "Logg inn for å koble Home Assistant til fluks-kontoen din.",
+        "data": {
+          "email": "E-post",
+          "password": "Passord"
+        }
+      },
+      "register": {
+        "title": "Opprett kontoen din",
+        "description": "Opprett en fluks-konto. Deretter sender vi deg en sekssifret bekreftelseskode på e-post.",
+        "data": {
+          "email": "E-post",
+          "password": "Passord",
+          "first_name": "Fornavn (valgfritt)",
+          "last_name": "Etternavn (valgfritt)"
+        },
+        "data_description": {
+          "password": "Bruk minst 12 tegn."
+        }
+      },
+      "verify": {
+        "title": "Bekreft e-postadressen din",
+        "description": "Skriv inn den sekssifrede bekreftelseskoden som ble sendt til {email}.",
+        "data": {
+          "code": "Bekreftelseskode"
+        }
+      },
+      "site_choice": {
+        "title": "Velg hvor du vil koble til",
+        "description": "Velg et eksisterende fluks-sted eller opprett et nytt.",
+        "menu_options": {
+          "site": "Velg et eksisterende sted",
+          "create_site": "Opprett et nytt sted"
+        },
+        "menu_option_descriptions": {
+          "site": "Koble denne Home Assistant-installasjonen til ett av stedene dine.",
+          "create_site": "Opprett et nytt sted for energienhetene dine."
+        }
+      },
+      "site": {
+        "title": "Velg et sted",
+        "description": "Velg fluks-stedet denne Home Assistant-installasjonen tilhører.",
+        "data": {
+          "site": "Sted"
+        }
+      },
+      "create_site": {
+        "title": "Gi stedet ditt et navn",
+        "description": "Gi dette stedet et tydelig navn, for eksempel Hjem.",
+        "data": {
+          "site_name": "Stedsnavn"
+        },
+        "data_description": {
+          "site_name": "Home Assistant fyller automatisk inn nødvendig stedsinformasjon."
+        }
+      },
+      "register_integration": {
+        "title": "Fullfør tilkoblingen",
+        "description": "fluks kunne ikke fullføre tilkoblingen til denne Home Assistant-installasjonen. Send inn for å prøve igjen på en trygg måte."
+      },
+      "reauth_confirm": {
+        "title": "Koble til fluks på nytt",
+        "description": "Logg inn for å gjenopprette denne Home Assistant-tilkoblingen uten å opprette et nytt sted eller en ny integrasjon.",
+        "data": {
+          "email": "E-post",
+          "password": "Passord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Vi kunne ikke nå fluks. Kontroller tilkoblingen og prøv igjen.",
+      "invalid_auth": "E-postadressen eller passordet er feil.",
+      "invalid_input": "Kontroller de uthevede opplysningene og prøv igjen.",
+      "invalid_verification_code": "Koden er ugyldig eller ikke lenger tilgjengelig. Kontroller e-posten og prøv igjen.",
+      "invalid_verification_code_format": "Skriv inn de seks sifrene fra e-posten.",
+      "unauthorized": "Innloggingen din har utløpt. Lukk dette vinduet og start på nytt for å logge inn.",
+      "unknown": "Noe uventet skjedde under tilkoblingen til fluks. Prøv igjen."
+    },
+    "abort": {
+      "already_configured": "Dette fluks-stedet er allerede konfigurert.",
+      "cannot_connect": "Kan ikke koble til fluks. Start oppsettet på nytt for å prøve igjen.",
+      "missing_registration": "Start opprettelsen av kontoen på nytt før du bekrefter e-postadressen.",
+      "unauthorized": "Autentiseringen har utløpt eller er ikke lenger gyldig. Start oppsettet på nytt for å prøve igjen.",
+      "unknown": "fluks ga et uventet svar. Start oppsettet på nytt for å prøve igjen.",
+      "reauth_successful": "Tilkoblingen til fluks er gjenopprettet."
+    }
+  },
+  "common": {
+    "decision_action_executed": "Utførte {service} på {entity} for {concept} med {values}.",
+    "decision_action_executed_no_values": "Utførte {service} på {entity} for {concept}.",
+    "decision_action_failed": "Kunne ikke utføre {service} på {entity} for {concept} med {values}: {error}.",
+    "decision_action_skipped": "Hoppet over {service} på {entity} for {concept} fordi en tidligere handling feilet.",
+    "decision_resolution_failed": "Ingen handlinger utført for beslutningen på {device}: kunne ikke finne utgående tilknytninger: {error}.",
+    "decision_device_missing": "Ingen handlinger utført for beslutningen på {device}: enheten ble ikke funnet, eller enhetstypen stemte ikke overens.",
+    "decision_no_controls": "Ingen handlinger utført for beslutningen på {device}: ingen styringer var inkludert.",
+    "decision_unsupported": "Ingen handlinger utført for {concept}: dette er ikke en støttet styring.",
+    "decision_balance_suppressed": "Ingen handlinger utført for {concept}: batteristyring er undertrykt mens balansering av stedet er aktiv.",
+    "decision_no_mapping": "Ingen handlinger utført for {concept}: ingen kjørbar utgående tilknytning matchet modusen {mode} og beslutningsverdien.",
+    "decision_failed": "Stoppet utførelsen av beslutningen for {concept}: {error}.",
+    "decision_release_unavailable": "Ingen handlinger utført for {concept}: det skrivbare temperatursettpunktet er utilgjengelig.",
+    "decision_release_unowned": "Ingen handlinger utført for {concept}: fluks har ingen temperaturoverstyring å frigi.",
+    "decision_release_manual": "Ingen handlinger utført for {concept}: temperaturen ble endret manuelt, så gjeldende settpunkt ble beholdt.",
+    "decision_action_failed_no_values": "Kunne ikke utføre {service} på {entity} for {concept}: {error}.",
+    "decision_action_retry": "Forsøk {attempt} feilet for {service} på {entity} for {concept} med {values}: {error}. Prøver på nytt.",
+    "decision_action_verification_retry": "Kunne ikke bekrefte forsøk {attempt} med {service} på {entity} for {concept} med {values}. Prøver på nytt."
+  }
+}

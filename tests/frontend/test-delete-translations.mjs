@@ -22,10 +22,10 @@ const Panel = customElements.get("fluks-control-editor-panel-unversioned");
 
 const translations = async (locale) => {
   const parsed = JSON.parse(await readFile(
-    new URL(`../../custom_components/fluks/translations/${locale}.json`, import.meta.url),
+    new URL(`../../custom_components/fluks/panel_translations/${locale}.json`, import.meta.url),
     "utf8",
   ));
-  return parsed.panel;
+  return parsed;
 };
 
 const panelFor = (strings) => {
@@ -73,3 +73,21 @@ test("production render path resolves Danish resource names", async () => {
   assert.match(panel.rendered.body, /Bekræft din identitet/);
   assert.match(panel.rendered.body, /fluks-konto, der ejer enhedens site/);
 });
+
+
+for (const [language, title, identity] of [
+  ["nb", "Slette Batteri · Test?", "Bekreft identitet"],
+  ["sv", "Ta bort Batteri · Test?", "Bekräfta identitet"],
+  ["de", "Batteri · Test löschen?", "Identität bestätigen"],
+]) {
+  test(`production deletion and confirmation messages render in ${language}`, async () => {
+    const panel = panelFor(await translations(language));
+    panel._detail = { id: "device", label: "Batteri · Test" };
+    panel._view = { name: "delete-device", stage: "confirm" };
+    panel._renderDeleteDevice();
+    assert.ok(panel.rendered.body.includes(title));
+    panel._view = { name: "delete-device", stage: "login" };
+    panel._renderDeleteDevice();
+    assert.ok(panel.rendered.body.includes(identity));
+  });
+}

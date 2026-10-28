@@ -54,7 +54,18 @@ class FluksControlEditorPanel extends HTMLElement {
   }
 
   set hass(value) {
+    const languageChanged = this._hass && this._hass.language !== value.language;
     this._hass = value;
+    if (languageChanged && this.isConnected && this._entryId && this._context) {
+      if (["edit", "add"].includes(this._view.name)) this._captureInputProperties();
+      const editor = this.shadowRoot.querySelector(CONTROL_ACTION_EDITOR_TAG);
+      if (this._view.name === "control" && editor) this._pendingControl = { key: `${this._detail.id}:${this._view.concept}`, behaviors: editor.behaviors };
+      this._recentDecisionsLoaded = false;
+      this._viewToken += 1;
+      this._outputSuggestions.clear();
+      this._loadContext();
+      return;
+    }
     this._observePowerSigns();
     if (this.isConnected && this._entryId && !this._context) this._loadContext();
   }
@@ -111,7 +122,7 @@ class FluksControlEditorPanel extends HTMLElement {
   async _call(type, data = {}) {
     try {
       this._error = undefined;
-      return await this._hass.callWS({ type, entry_id: this._entryId, ...data });
+      return await this._hass.callWS({ type, entry_id: this._entryId, ...(this._hass.language ? { language: this._hass.language } : {}), ...data });
     } catch (err) {
       this._error = this._t(`error_${err?.code || "unknown"}`);
       throw err;
@@ -266,6 +277,9 @@ class FluksControlEditorPanel extends HTMLElement {
       try {
         await this._ensureControlActionEditor();
         this._controlCapabilities = (await this._call("fluks/config/control_capabilities")).actions;
+        try {
+          await this._hass.loadBackendTranslation?.("services", [...new Set(this._controlCapabilities.map((action) => action.service.split(".")[0]))]);
+        } catch (_) { /* Keep HA-provided labels when translations are unavailable. */ }
       }
       catch (_) { return this._message(this._error); }
       if (!this._isCurrentView(token)) return;
@@ -1441,6 +1455,7 @@ class FluksControlEditorPanel extends HTMLElement {
       "action_intro", "no_actions", "add_action", "save_control", "up", "down", "edit", "remove",
       "edit_action", "action", "search_actions", "action_fields", "target_only", "required",
       "save_action", "choose_entity", "clear_selection", "entity", "value_source", "yes", "no",
+      "search_entities", "entity_state", "not_configured",
       "control_value", "fixed_value", "fixed", "choose_entity_error", "fixed_value_error", "cancel",
       "choose_action_error", "required_field_error", "value_adjustments", "transform_order_help", "no_transforms",
       "adjustment_type", "power_to_current", "difference", "round", "clamp", "nearest", "value_map", "invert", "scale", "offset",
@@ -1466,7 +1481,21 @@ class FluksControlEditorPanel extends HTMLElement {
       "suggested_action_intro", "suggested_action_reason", "uses_control_value",
       "uses_fixed_value",
     ].map((key) => [key, this._t(key)]));
-    editor.capabilities = this._controlCapabilities ?? [];
+    editor.capabilities = (this._controlCapabilities ?? []).map((capability) => {
+      const [domain, service] = capability.service.split(".");
+      const prefix = `component.${domain}.services.${service}`;
+      const translated = (key) => {
+        const value = this._hass?.localize?.(`${prefix}.${key}`);
+        return value ? { [key.split(".").at(-1)]: value } : {};
+      };
+      return {
+        ...capability,
+        ...translated("name"), ...translated("description"),
+        entities: capability.entities.map((entity) => ({ ...entity, fields: entity.fields.map((field) => ({
+          ...field, ...translated(`fields.${field.id}.name`), ...translated(`fields.${field.id}.description`),
+        })) })),
+      };
+    });
     editor.selectedDeviceId = this._detail?.ha_device_id || this._view.haDeviceId || null;
     editor.entityDeviceIds = Object.fromEntries((this._context?.entities ?? []).filter((item) => item.entity_id && item.device_id).map((item) => [item.entity_id, item.device_id]));
     editor.referenceEntities = this._referenceEntities();

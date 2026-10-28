@@ -1,15 +1,21 @@
-"""Tests for fluks milestone 1 translations."""
+"""Tests for fluks translation coverage and Home Assistant locale selection."""
 
 from __future__ import annotations
 
 import ast
 import json
+import re
+from string import Formatter
+
+import pytest
 from pathlib import Path
 
 from custom_components.fluks.const import DOMAIN
 from custom_components.fluks.panel_api import _load_panel_translations
 
 TRANSLATIONS = Path("custom_components") / DOMAIN / "translations"
+LANGUAGES = ("en", "da", "nb", "sv", "de")
+
 PANEL_TRANSLATIONS = Path("custom_components") / DOMAIN / "panel_translations"
 
 
@@ -45,11 +51,12 @@ def string_literals(path: Path) -> set[str]:
 
 
 def test_translation_files_are_valid_and_have_key_parity():
-    """English and Danish contain identical translation structures."""
+    """Supported languages contain identical native translation structures."""
     english = load_translation("en")
     danish = load_translation("da")
 
-    assert key_structure(english) == key_structure(danish)
+    for language in LANGUAGES:
+        assert key_structure(load_translation(language)) == key_structure(english)
     assert "panel" not in english
     assert "panel" not in danish
     assert english["config"]["step"]["user"]["title"] == (
@@ -191,3 +198,54 @@ def test_panel_device_and_concept_presentation_is_translated():
         } == expected_heat_pump_concepts
     assert "options" not in load_translation("en")
     assert "options" not in load_translation("da")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_all_messages_and_placeholders_are_complete(language):
+    """Every locale covers both existing namespaces without losing substitutions."""
+    def leaves(value, prefix=()):
+        if isinstance(value, dict):
+            return {path: text for key, child in value.items() for path, text in leaves(child, (*prefix, key)).items()}
+        return {prefix: value}
+
+    for load in (load_translation, load_panel_translation):
+        english = leaves(load("en"))
+        localized = leaves(load(language))
+        assert localized.keys() == english.keys()
+        for key, text in localized.items():
+            assert isinstance(text, str) and text.strip(), (language, key)
+            placeholders = lambda value: {field for _, field, _, _ in Formatter().parse(value) if field}
+            assert placeholders(text) == placeholders(english[key]), (language, key)
+    assert load_translation(language)["config"]["step"]["user"]["title"] == "Your energy. Decides together."
+    assert load_panel_translation(language)["title"] == "fluks"
+    assert load_panel_translation(language)["tagline"] == "Your energy. Decides together."
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+async def test_ha_translation_lookup_and_panel_language_switch(hass, language):
+    """The real HA translation loader selects config and Logbook messages per locale."""
+    from homeassistant.helpers.translation import async_get_translations
+    from custom_components.fluks.panel_api import _panel_translations
+
+    native = load_translation(language)
+    for category in ("config", "common"):
+        strings = await async_get_translations(hass, language, category, {DOMAIN})
+        if category == "config":
+            assert strings["component.fluks.config.step.login.title"] == native["config"]["step"]["login"]["title"]
+        else:
+            assert strings["component.fluks.common.decision_action_executed"] == native["common"]["decision_action_executed"]
+    hass.config.language = "en"
+    assert await _panel_translations(hass, language) == load_panel_translation(language)
+    hass.config.language = language
+    assert await _panel_translations(hass) == load_panel_translation(language)
+
+
+@pytest.mark.parametrize("language,locale", [("nb-NO", "nb"), ("sv-SE", "sv"), ("de-DE", "de"), ("da-DK", "da"), ("en-GB", "en"), ("fr", "en")])
+def test_panel_locale_selection_and_fallback(language, locale):
+    assert _load_panel_translations(language) == load_panel_translation(locale)
+
+
+def test_all_literal_frontend_translation_keys_exist():
+    keys = set(load_panel_translation("en"))
+    for path in (Path("custom_components") / DOMAIN / "frontend").glob("*.js"):
+        assert set(re.findall(r'_t\("([a-z_]+)"', path.read_text())) <= keys

@@ -2465,3 +2465,40 @@ test("clearing a persisted Input Mapping remains cleared until Save or Cancel", 
   assert.ok(backCount >= 2);
   history.back = originalBack;
 });
+
+
+test("panel requests use the active Home Assistant frontend language", async () => {
+  const panel = new Panel(); const requests = [];
+  panel._entryId = "entry";
+  panel._hass = { language: "nb", callWS: async (message) => { requests.push(message); return {}; } };
+  await panel._call("fluks/config/context");
+  panel._hass.language = "de";
+  await panel._call("fluks/config/device", { device_id: "device" });
+  assert.deepEqual(requests.map((item) => item.language), ["nb", "de"]);
+});
+
+test("changing the frontend language refreshes existing panel translations", () => {
+  const panel = new Panel(); let refreshed = 0;
+  panel.isConnected = true;
+  panel._entryId = "entry"; panel._context = { translations: {} };
+  panel._hass = { language: "en" };
+  panel._loadContext = () => { refreshed++; };
+  panel._observePowerSigns = () => {};
+  panel.hass = { language: "sv" };
+  panel.hass = { language: "sv" };
+  assert.equal(refreshed, 1);
+  assert.equal(panel._recentDecisionsLoaded, false);
+});
+
+
+test("native service translation failures keep the existing Controls page usable", async () => {
+  const panel = new Panel(); let rendered = false;
+  panel._context = {}; panel._view = { name: "control", deviceId: "device", concept: "battery.power" };
+  panel._hass = { loadBackendTranslation: async () => { throw new Error("unavailable"); } };
+  panel._ensureControlActionEditor = async () => {};
+  panel._call = async (type) => type === "fluks/config/device" ? { id: "device" } : { actions: [] };
+  panel._render = () => { rendered = true; };
+  await panel._loadView();
+  assert.equal(rendered, true);
+  assert.deepEqual(panel._controlCapabilities, []);
+});

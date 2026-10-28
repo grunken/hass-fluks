@@ -100,5 +100,24 @@
       "unknown": "fluks returned an unexpected response. Start the flow again to retry.",
       "reauth_successful": "The fluks connection has been restored."
     }
+  },
+  "common": {
+    "decision_action_executed": "Executed {service} on {entity} for {concept} with {values}.",
+    "decision_action_executed_no_values": "Executed {service} on {entity} for {concept}.",
+    "decision_action_failed": "Failed to execute {service} on {entity} for {concept} with {values}: {error}.",
+    "decision_action_skipped": "Skipped {service} on {entity} for {concept} because an earlier action failed.",
+    "decision_resolution_failed": "No actions performed for Decision on {device}: could not resolve output Mappings: {error}.",
+    "decision_device_missing": "No actions performed for Decision on {device}: the Device was not found or its type did not match.",
+    "decision_no_controls": "No actions performed for Decision on {device}: no controls were included.",
+    "decision_unsupported": "No actions performed for {concept}: this is not a supported control.",
+    "decision_balance_suppressed": "No actions performed for {concept}: Battery control is suppressed while Site balance is active.",
+    "decision_no_mapping": "No actions performed for {concept}: no executable output Mapping matched mode {mode} and the Decision value.",
+    "decision_failed": "Stopped executing the Decision for {concept}: {error}.",
+    "decision_release_unavailable": "No actions performed for {concept}: the writable temperature setpoint is unavailable.",
+    "decision_release_unowned": "No actions performed for {concept}: fluks has no temperature override to release.",
+    "decision_release_manual": "No actions performed for {concept}: the temperature was changed manually, so the current setpoint was preserved.",
+    "decision_action_failed_no_values": "Failed to execute {service} on {entity} for {concept}: {error}.",
+    "decision_action_retry": "Attempt {attempt} failed for {service} on {entity} for {concept} with {values}: {error}. Retrying.",
+    "decision_action_verification_retry": "Could not verify attempt {attempt} of {service} on {entity} for {concept} with {values}. Retrying."
   }
 }

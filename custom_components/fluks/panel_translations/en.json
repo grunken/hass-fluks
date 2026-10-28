@@ -278,5 +278,6 @@
   "error_not_found": "The requested configuration is no longer available.",
   "error_invalid_mapping": "One or more measurement selections are invalid.",
   "error_invalid_auth": "The email address or password is incorrect.",
-  "error_unknown": "The operation could not be completed. Try again."
+  "error_unknown": "The operation could not be completed. Try again.",
+  "add_conversion": "Add conversion"
 }

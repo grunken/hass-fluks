@@ -278,5 +278,6 @@
   "error_not_found": "Den valgte konfiguration er ikke længere tilgængelig.",
   "error_invalid_mapping": "Et eller flere valgte målepunkter er ugyldige.",
   "error_invalid_auth": "E-mailadressen eller adgangskoden er forkert.",
-  "error_unknown": "Handlingen kunne ikke gennemføres. Prøv igen."
+  "error_unknown": "Handlingen kunne ikke gennemføres. Prøv igen.",
+  "add_conversion": "Tilføj konvertering"
 }

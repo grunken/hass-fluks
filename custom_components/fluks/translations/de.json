@@ -1,0 +1,123 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Your energy. Decides together.",
+        "description": "Verbinde Home Assistant mit fluks und wähle aus, wie du beginnen möchtest.",
+        "menu_options": {
+          "login": "Anmelden",
+          "register": "Konto erstellen"
+        },
+        "menu_option_descriptions": {
+          "login": "Verwende dein bestehendes fluks-Konto.",
+          "register": "Erstelle ein neues Konto und bestätige deine E-Mail-Adresse."
+        }
+      },
+      "login": {
+        "title": "Willkommen zurück",
+        "description": "Melde dich an, um Home Assistant mit deinem fluks-Konto zu verbinden.",
+        "data": {
+          "email": "E-Mail",
+          "password": "Passwort"
+        }
+      },
+      "register": {
+        "title": "Erstelle dein Konto",
+        "description": "Erstelle ein fluks-Konto. Anschließend senden wir dir einen sechsstelligen Bestätigungscode per E-Mail.",
+        "data": {
+          "email": "E-Mail",
+          "password": "Passwort",
+          "first_name": "Vorname (optional)",
+          "last_name": "Nachname (optional)"
+        },
+        "data_description": {
+          "password": "Verwende mindestens 12 Zeichen."
+        }
+      },
+      "verify": {
+        "title": "Bestätige deine E-Mail-Adresse",
+        "description": "Gib den sechsstelligen Bestätigungscode ein, der an {email} gesendet wurde.",
+        "data": {
+          "code": "Bestätigungscode"
+        }
+      },
+      "site_choice": {
+        "title": "Wähle aus, wo du die Verbindung herstellen möchtest",
+        "description": "Wähle einen bestehenden fluks-Standort aus oder erstelle einen neuen.",
+        "menu_options": {
+          "site": "Bestehenden Standort auswählen",
+          "create_site": "Neuen Standort erstellen"
+        },
+        "menu_option_descriptions": {
+          "site": "Verbinde diese Home Assistant-Installation mit einem deiner Standorte.",
+          "create_site": "Richte einen neuen Standort für deine Energiegeräte ein."
+        }
+      },
+      "site": {
+        "title": "Standort auswählen",
+        "description": "Wähle den fluks-Standort aus, zu dem diese Home Assistant-Installation gehört.",
+        "data": {
+          "site": "Standort"
+        }
+      },
+      "create_site": {
+        "title": "Benenne deinen Standort",
+        "description": "Gib diesem Standort einen eindeutigen Namen, zum Beispiel Zuhause.",
+        "data": {
+          "site_name": "Standortname"
+        },
+        "data_description": {
+          "site_name": "Home Assistant stellt die erforderlichen Standortdaten automatisch bereit."
+        }
+      },
+      "register_integration": {
+        "title": "Verbindung abschließen",
+        "description": "fluks konnte die Verbindung zu dieser Home Assistant-Installation nicht abschließen. Sende das Formular ab, um es sicher erneut zu versuchen."
+      },
+      "reauth_confirm": {
+        "title": "Erneut mit fluks verbinden",
+        "description": "Melde dich an, um diese Home Assistant-Verbindung wiederherzustellen, ohne einen weiteren Standort oder eine weitere Integration zu erstellen.",
+        "data": {
+          "email": "E-Mail",
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "fluks konnte nicht erreicht werden. Prüfe deine Verbindung und versuche es erneut.",
+      "invalid_auth": "Die E-Mail-Adresse oder das Passwort ist falsch.",
+      "invalid_input": "Prüfe die markierten Angaben und versuche es erneut.",
+      "invalid_verification_code": "Dieser Code ist ungültig oder nicht mehr verfügbar. Prüfe die E-Mail und versuche es erneut.",
+      "invalid_verification_code_format": "Gib die sechs Ziffern aus deiner E-Mail ein.",
+      "unauthorized": "Deine Anmeldung ist abgelaufen. Schließe dieses Fenster und beginne erneut, um dich anzumelden.",
+      "unknown": "Beim Verbinden mit fluks ist ein unerwarteter Fehler aufgetreten. Versuche es erneut."
+    },
+    "abort": {
+      "already_configured": "Dieser fluks-Standort ist bereits konfiguriert.",
+      "cannot_connect": "Verbindung zu fluks nicht möglich. Starte die Einrichtung erneut, um es noch einmal zu versuchen.",
+      "missing_registration": "Beginne erneut mit der Kontoerstellung, bevor du deine E-Mail-Adresse bestätigst.",
+      "unauthorized": "Die Authentifizierung ist abgelaufen oder nicht mehr gültig. Starte die Einrichtung erneut, um es noch einmal zu versuchen.",
+      "unknown": "fluks hat eine unerwartete Antwort zurückgegeben. Starte die Einrichtung erneut, um es noch einmal zu versuchen.",
+      "reauth_successful": "Die Verbindung zu fluks wurde wiederhergestellt."
+    }
+  },
+  "common": {
+    "decision_action_executed": "{service} auf {entity} für {concept} mit {values} ausgeführt.",
+    "decision_action_executed_no_values": "{service} auf {entity} für {concept} ausgeführt.",
+    "decision_action_failed": "{service} auf {entity} für {concept} mit {values} konnte nicht ausgeführt werden: {error}.",
+    "decision_action_skipped": "{service} auf {entity} für {concept} übersprungen, da eine vorherige Aktion fehlgeschlagen ist.",
+    "decision_resolution_failed": "Keine Aktionen für die Entscheidung auf {device} ausgeführt: Ausgangszuordnungen konnten nicht ermittelt werden: {error}.",
+    "decision_device_missing": "Keine Aktionen für die Entscheidung auf {device} ausgeführt: Das Gerät wurde nicht gefunden oder sein Typ stimmte nicht überein.",
+    "decision_no_controls": "Keine Aktionen für die Entscheidung auf {device} ausgeführt: Es waren keine Steuerungen enthalten.",
+    "decision_unsupported": "Keine Aktionen für {concept} ausgeführt: Diese Steuerung wird nicht unterstützt.",
+    "decision_balance_suppressed": "Keine Aktionen für {concept} ausgeführt: Die Batteriesteuerung wird unterdrückt, während der Standortausgleich aktiv ist.",
+    "decision_no_mapping": "Keine Aktionen für {concept} ausgeführt: Keine ausführbare Ausgangszuordnung passte zum Modus {mode} und zum Entscheidungswert.",
+    "decision_failed": "Ausführung der Entscheidung für {concept} abgebrochen: {error}.",
+    "decision_release_unavailable": "Keine Aktionen für {concept} ausgeführt: Der schreibbare Temperatursollwert ist nicht verfügbar.",
+    "decision_release_unowned": "Keine Aktionen für {concept} ausgeführt: fluks hat keine Temperaturübersteuerung freizugeben.",
+    "decision_release_manual": "Keine Aktionen für {concept} ausgeführt: Die Temperatur wurde manuell geändert, daher wurde der aktuelle Sollwert beibehalten.",
+    "decision_action_failed_no_values": "{service} auf {entity} für {concept} konnte nicht ausgeführt werden: {error}.",
+    "decision_action_retry": "Versuch {attempt} für {service} auf {entity} für {concept} mit {values} fehlgeschlagen: {error}. Erneuter Versuch.",
+    "decision_action_verification_retry": "Versuch {attempt} von {service} auf {entity} für {concept} mit {values} konnte nicht bestätigt werden. Erneuter Versuch."
+  }
+}

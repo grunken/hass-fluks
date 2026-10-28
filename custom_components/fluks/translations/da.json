@@ -100,5 +100,24 @@
       "unknown": "fluks returnerede et uventet svar. Start forløbet igen for at prøve på ny.",
       "reauth_successful": "Forbindelsen til fluks er genoprettet."
     }
+  },
+  "common": {
+    "decision_action_executed": "Udførte {service} på {entity} for {concept} med {values}.",
+    "decision_action_executed_no_values": "Udførte {service} på {entity} for {concept}.",
+    "decision_action_failed": "Kunne ikke udføre {service} på {entity} for {concept} med {values}: {error}.",
+    "decision_action_skipped": "Sprang {service} på {entity} over for {concept}, fordi en tidligere handling fejlede.",
+    "decision_resolution_failed": "Ingen handlinger udført for beslutningen på {device}: kunne ikke finde outputtilknytninger: {error}.",
+    "decision_device_missing": "Ingen handlinger udført for beslutningen på {device}: enheden blev ikke fundet, eller dens type stemte ikke overens.",
+    "decision_no_controls": "Ingen handlinger udført for beslutningen på {device}: ingen styringer var inkluderet.",
+    "decision_unsupported": "Ingen handlinger udført for {concept}: dette er ikke en understøttet styring.",
+    "decision_balance_suppressed": "Ingen handlinger udført for {concept}: batteristyring er undertrykt, mens balancering af stedet er aktiv.",
+    "decision_no_mapping": "Ingen handlinger udført for {concept}: ingen outputtilknytning matchede tilstanden {mode} og beslutningens værdi.",
+    "decision_failed": "Stoppede udførelsen af beslutningen for {concept}: {error}.",
+    "decision_release_unavailable": "Ingen handlinger udført for {concept}: temperaturens skrivbare setpunkt er utilgængeligt.",
+    "decision_release_unowned": "Ingen handlinger udført for {concept}: fluks har ingen temperaturændring at frigive.",
+    "decision_release_manual": "Ingen handlinger udført for {concept}: temperaturen blev ændret manuelt, så det aktuelle setpunkt blev bevaret.",
+    "decision_action_failed_no_values": "Kunne ikke udføre {service} på {entity} for {concept}: {error}.",
+    "decision_action_retry": "Forsøg {attempt} fejlede for {service} på {entity} for {concept} med {values}: {error}. Prøver igen.",
+    "decision_action_verification_retry": "Kunne ikke bekræfte forsøg {attempt} med {service} på {entity} for {concept} med {values}. Prøver igen."
   }
 }

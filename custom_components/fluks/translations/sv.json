@@ -1,0 +1,123 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Your energy. Decides together.",
+        "description": "Anslut Home Assistant till fluks och välj hur du vill komma igång.",
+        "menu_options": {
+          "login": "Logga in",
+          "register": "Skapa konto"
+        },
+        "menu_option_descriptions": {
+          "login": "Använd ditt befintliga fluks-konto.",
+          "register": "Skapa ett nytt konto och verifiera din e-postadress."
+        }
+      },
+      "login": {
+        "title": "Välkommen tillbaka",
+        "description": "Logga in för att ansluta Home Assistant till ditt fluks-konto.",
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord"
+        }
+      },
+      "register": {
+        "title": "Skapa ditt konto",
+        "description": "Skapa ett fluks-konto. Vi skickar sedan en sexsiffrig verifieringskod via e-post.",
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord",
+          "first_name": "Förnamn (valfritt)",
+          "last_name": "Efternamn (valfritt)"
+        },
+        "data_description": {
+          "password": "Använd minst 12 tecken."
+        }
+      },
+      "verify": {
+        "title": "Verifiera din e-postadress",
+        "description": "Ange den sexsiffriga verifieringskoden som skickades till {email}.",
+        "data": {
+          "code": "Verifieringskod"
+        }
+      },
+      "site_choice": {
+        "title": "Välj var du vill ansluta",
+        "description": "Välj en befintlig fluks-plats eller skapa en ny.",
+        "menu_options": {
+          "site": "Välj en befintlig plats",
+          "create_site": "Skapa en ny plats"
+        },
+        "menu_option_descriptions": {
+          "site": "Anslut denna Home Assistant-installation till en av dina platser.",
+          "create_site": "Skapa en ny plats för dina energienheter."
+        }
+      },
+      "site": {
+        "title": "Välj en plats",
+        "description": "Välj den fluks-plats som denna Home Assistant-installation tillhör.",
+        "data": {
+          "site": "Plats"
+        }
+      },
+      "create_site": {
+        "title": "Ge din plats ett namn",
+        "description": "Ge platsen ett tydligt namn, till exempel Hemma.",
+        "data": {
+          "site_name": "Platsnamn"
+        },
+        "data_description": {
+          "site_name": "Home Assistant fyller automatiskt i den platsinformation som behövs."
+        }
+      },
+      "register_integration": {
+        "title": "Slutför anslutningen",
+        "description": "fluks kunde inte slutföra anslutningen till denna Home Assistant-installation. Skicka in för att försöka igen på ett säkert sätt."
+      },
+      "reauth_confirm": {
+        "title": "Återanslut fluks",
+        "description": "Logga in för att återställa denna Home Assistant-anslutning utan att skapa en ny plats eller integration.",
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Det gick inte att nå fluks. Kontrollera anslutningen och försök igen.",
+      "invalid_auth": "E-postadressen eller lösenordet är felaktigt.",
+      "invalid_input": "Kontrollera de markerade uppgifterna och försök igen.",
+      "invalid_verification_code": "Koden är ogiltig eller inte längre tillgänglig. Kontrollera e-postmeddelandet och försök igen.",
+      "invalid_verification_code_format": "Ange de sex siffrorna från e-postmeddelandet.",
+      "unauthorized": "Din inloggning har gått ut. Stäng fönstret och börja om för att logga in.",
+      "unknown": "Något oväntat inträffade vid anslutningen till fluks. Försök igen."
+    },
+    "abort": {
+      "already_configured": "Den här fluks-platsen är redan konfigurerad.",
+      "cannot_connect": "Det går inte att ansluta till fluks. Starta konfigurationen på nytt för att försöka igen.",
+      "missing_registration": "Börja om med att skapa kontot innan du verifierar e-postadressen.",
+      "unauthorized": "Autentiseringen har gått ut eller är inte längre giltig. Starta konfigurationen på nytt för att försöka igen.",
+      "unknown": "fluks returnerade ett oväntat svar. Starta konfigurationen på nytt för att försöka igen.",
+      "reauth_successful": "Anslutningen till fluks har återställts."
+    }
+  },
+  "common": {
+    "decision_action_executed": "Utförde {service} på {entity} för {concept} med {values}.",
+    "decision_action_executed_no_values": "Utförde {service} på {entity} för {concept}.",
+    "decision_action_failed": "Kunde inte utföra {service} på {entity} för {concept} med {values}: {error}.",
+    "decision_action_skipped": "Hoppade över {service} på {entity} för {concept} eftersom en tidigare åtgärd misslyckades.",
+    "decision_resolution_failed": "Inga åtgärder utförda för beslutet på {device}: kunde inte hitta utgående kopplingar: {error}.",
+    "decision_device_missing": "Inga åtgärder utförda för beslutet på {device}: enheten hittades inte eller enhetstypen stämde inte överens.",
+    "decision_no_controls": "Inga åtgärder utförda för beslutet på {device}: inga styrfunktioner ingick.",
+    "decision_unsupported": "Inga åtgärder utförda för {concept}: denna styrning stöds inte.",
+    "decision_balance_suppressed": "Inga åtgärder utförda för {concept}: batteristyrning undertrycks medan platsbalansering är aktiv.",
+    "decision_no_mapping": "Inga åtgärder utförda för {concept}: ingen körbar utgående koppling matchade läget {mode} och beslutets värde.",
+    "decision_failed": "Avbröt utförandet av beslutet för {concept}: {error}.",
+    "decision_release_unavailable": "Inga åtgärder utförda för {concept}: det skrivbara temperaturbörvärdet är inte tillgängligt.",
+    "decision_release_unowned": "Inga åtgärder utförda för {concept}: fluks har ingen temperaturåsidosättning att släppa.",
+    "decision_release_manual": "Inga åtgärder utförda för {concept}: temperaturen ändrades manuellt, så det aktuella börvärdet behölls.",
+    "decision_action_failed_no_values": "Kunde inte utföra {service} på {entity} för {concept}: {error}.",
+    "decision_action_retry": "Försök {attempt} misslyckades för {service} på {entity} för {concept} med {values}: {error}. Försöker igen.",
+    "decision_action_verification_retry": "Kunde inte verifiera försök {attempt} med {service} på {entity} för {concept} med {values}. Försöker igen."
+  }
+}

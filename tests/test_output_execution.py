@@ -1024,3 +1024,130 @@ async def test_site_balance_null_value_condition_preserves_unrestricted_behavior
     await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", -8)]})
 
     assert calls == [{"value": -8, "entity_id": "number.unrestricted"}]
+
+
+async def _logbook_events(hass):
+    """Collect native Logbook events on HA's bus, without replacing Logbook."""
+    from homeassistant.core import callback
+
+    events = []
+
+    @callback
+    def received(event):
+        if event.data.get("domain") == "fluks":
+            events.append(dict(event.data))
+
+    hass.bus.async_listen("logbook_entry", received)
+    return events
+
+
+async def test_logbook_records_each_completed_action_with_transformed_values(hass):
+    events = await _logbook_events(hass)
+    received = []
+    hass.services.async_register("select", "select_option", lambda call: received.append(call.data))
+    hass.services.async_register("number", "set_value", lambda call: received.append(call.data))
+    await RuntimeOutputExecutor(hass, _retry_api(_mapping()), "site-a").async_handle({
+        "type": "decision.snapshot", "decisions": [{
+            "deviceId": "external-battery", "deviceType": "battery", "power": "3000", "mode": None,
+        }],
+    })
+    await hass.async_block_till_done()
+
+    assert received[1]["value"] == -1500
+    assert len(events) == 2
+    assert [event["entity_id"] for event in events] == ["select.inverter_mode", "number.battery_power"]
+    assert all(event["name"] == "fluks" for event in events)
+    assert "select.select_option" in events[0]["message"]
+    assert "option: eco" in events[0]["message"]
+    assert "number.set_value" in events[1]["message"]
+    assert "value: -1500" in events[1]["message"]
+
+
+async def test_logbook_reports_real_failure_and_remaining_skipped_action(hass):
+    events = await _logbook_events(hass)
+    attempts = []
+
+    async def fail(call):
+        attempts.append(call)
+        raise RuntimeError("The inverter rejected eco mode")
+
+    hass.services.async_register("select", "select_option", fail)
+    await RuntimeOutputExecutor(
+        hass, _retry_api(_mapping()), "site-a", sleep=lambda _: asyncio.sleep(0)
+    ).async_handle({"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": "battery", "power": 3000, "mode": None,
+    }]})
+    await hass.async_block_till_done()
+
+    assert len(attempts) == 3
+    assert "The inverter rejected eco mode" in events[0]["message"]
+    assert events[0]["entity_id"] == "select.inverter_mode"
+    assert "Attempt 1 failed" in events[0]["message"]
+    assert "Attempt 2 failed" in events[1]["message"]
+    assert "Failed to execute" in events[2]["message"]
+    assert "option: eco" in events[2]["message"]
+    assert "Skipped number.set_value" in events[3]["message"]
+    assert "earlier action failed" in events[3]["message"]
+    assert not any(event["message"].startswith("Executed") for event in events)
+
+
+async def test_logbook_explains_unmapped_and_balance_suppressed_decisions(hass):
+    events = await _logbook_events(hass)
+    executor = RuntimeOutputExecutor(hass, _battery_signed_api([]), "site-a")
+    payload = {"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": "battery", "power": 0, "mode": "hold",
+    }]}
+    await executor.async_handle(payload)
+    executor._balance_active = True
+    await executor.async_handle(payload)
+    await hass.async_block_till_done()
+
+    assert len(events) == 2
+    assert "No actions performed" in events[0]["message"]
+    assert "no executable output Mapping matched mode hold" in events[0]["message"]
+    assert "Site balance is active" in events[1]["message"]
+
+
+async def test_logbook_temperature_release_explains_preserved_manual_setpoint(hass):
+    events = await _logbook_events(hass)
+    hass.states.async_set("climate.zone", "heat", {"temperature": 25})
+    store = MemoryStore({"controls": {"temperature-external|heatPump.temperature": {"previous": 20, "applied": 22}}})
+    await RuntimeOutputExecutor(
+        hass, temperature_api(temperature_mapping()), "site-a", ownership_store=store
+    ).async_handle({"type": "decision.snapshot", "decisions": [temperature_decision(mode="release", value=None)]})
+    await hass.async_block_till_done()
+
+    assert len(events) == 1
+    assert "changed manually" in events[0]["message"]
+    assert hass.states.get("climate.zone").attributes["temperature"] == 25
+
+
+async def test_logbook_uses_home_assistant_language(hass):
+    events = await _logbook_events(hass)
+    hass.config.language = "da"
+    hass.services.async_register("test", "execute", lambda call: None)
+    await RuntimeOutputExecutor(hass, _battery_signed_api([
+        _battery_signed_mapping("hold", "button.hold"),
+    ]), "site-a").async_handle({"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": "battery", "power": 0, "mode": "hold",
+    }]})
+    await hass.async_block_till_done()
+
+    assert len(events) == 1
+    assert events[0]["message"].startswith("Udførte test.execute")
+
+
+async def test_logbook_failure_does_not_stop_configured_actions(hass):
+    from unittest.mock import patch
+
+    received = []
+    hass.services.async_register("select", "select_option", lambda call: received.append(call.data))
+    hass.services.async_register("number", "set_value", lambda call: received.append(call.data))
+    with patch("custom_components.fluks.output_execution.async_get_translations", side_effect=RuntimeError("translation unavailable")):
+        await RuntimeOutputExecutor(hass, _retry_api(_mapping()), "site-a").async_handle({
+            "type": "decision.snapshot", "decisions": [{
+                "deviceId": "external-battery", "deviceType": "battery", "power": 3000, "mode": None,
+            }],
+        })
+    assert len(received) == 2
+    assert received[1]["value"] == -1500

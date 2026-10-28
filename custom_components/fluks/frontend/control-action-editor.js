@@ -206,7 +206,13 @@ export class FluksControlActionEditor extends HTMLElement {
     if (state.datatype === "number" && state.unit === "W") available.unshift("powerToCurrent");
     return available;
   }
-  _pipelineMessage(result) { return `${this._t("invalid_pipeline")} ${result.index + 1}: ${this._t(result.transform?.type === "powerToCurrent" ? "power_to_current" : result.transform?.type ?? "invalid_adjustment")} (${result.datatype}${result.unit ? ` / ${result.unit}` : ""})`; }
+  _pipelineMessage(result) {
+    const type = result.transform?.type;
+    const label = type === "powerToCurrent" ? "power_to_current" : type === "valueMap" ? "value_map" : type ?? "invalid_adjustment";
+    const datatype = ["number", "string", "boolean", "null"].includes(result.datatype)
+      ? this._t(`${result.datatype === "string" ? "text" : result.datatype}_type`) : result.datatype;
+    return `${this._t("invalid_pipeline")} ${result.index + 1}: ${this._t(label)} (${datatype}${result.unit ? ` / ${result.unit}` : ""})`;
+  }
   _configurationPipelineError(actions = this._behaviorMode ? this._workingBehaviors.flatMap((item) => item.actions) : this._working) {
     for (const action of actions) for (const binding of Object.values(action.data ?? {})) if (binding?.kind === "requestedValue") { const result = this._pipeline(binding.transforms ?? []); if (!result.valid) return this._pipelineMessage(result); }
     return "";

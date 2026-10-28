@@ -81,6 +81,7 @@ COMMAND_SITE_DELETE = f"{DOMAIN}/config/site_delete"
 
 BASE_SCHEMA = {
     vol.Required("entry_id"): str,
+    vol.Optional("language"): str,
 }
 PANEL_TRANSLATIONS_DIRECTORY = Path(__file__).parent / "panel_translations"
 
@@ -434,10 +435,12 @@ def _forecast_solar_prefill(
     }
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=5)
 def _load_panel_translations(language: str) -> dict[str, str]:
     """Load the custom panel namespace, which HA does not expose via localize()."""
-    locale = "da" if language.lower().split("-", 1)[0] == "da" else "en"
+    locale = language.lower().replace("_", "-").split("-", 1)[0]
+    if locale not in {"en", "da", "nb", "sv", "de"}:
+        locale = "en"
     with (PANEL_TRANSLATIONS_DIRECTORY / f"{locale}.json").open(
         encoding="utf-8"
     ) as file:
@@ -445,10 +448,12 @@ def _load_panel_translations(language: str) -> dict[str, str]:
     return {str(key): str(value) for key, value in panel.items() if isinstance(value, str)}
 
 
-async def _panel_translations(hass: HomeAssistant) -> dict[str, str]:
+async def _panel_translations(
+    hass: HomeAssistant, language: str | None = None
+) -> dict[str, str]:
     """Return safe UI strings for the authenticated embedded panel."""
     return await hass.async_add_executor_job(
-        _load_panel_translations, hass.config.language
+        _load_panel_translations, language or hass.config.language
     )
 
 
@@ -722,8 +727,9 @@ async def _present_devices(
     hass: HomeAssistant,
     devices: list[dict[str, Any]],
     configuration_statuses: dict[str, dict[str, Any]] | None = None,
+    language: str | None = None,
 ) -> list[dict[str, Any]]:
-    translations = await _panel_translations(hass)
+    translations = await _panel_translations(hass, language)
     physical = [item for item in devices if item.get("type") != SITE_DEVICE_TYPE]
     names = _present_device_names(physical, translations)
     physical.sort(
@@ -919,7 +925,7 @@ async def websocket_context(hass, connection, msg):
             for device in devices
             if isinstance(device.get("id"), str) and str(device.get("type")) in catalog
         }
-        translations = await _panel_translations(hass)
+        translations = await _panel_translations(hass, msg.get("language"))
         site_device = next(
             item
             for item in devices
@@ -949,14 +955,14 @@ async def websocket_context(hass, connection, msg):
             msg["id"],
             {
                 "entry_id": entry.entry_id,
-                "translations": await _panel_translations(hass),
+                "translations": await _panel_translations(hass, msg.get("language")),
                 "site": _present_device(
                     site_device,
                     translations,
                     name=entry.title.strip() or "Site",
                     configuration_status=configuration_statuses.get(str(site_device["id"])),
                 ),
-                "devices": await _present_devices(hass, devices, configuration_statuses),
+                "devices": await _present_devices(hass, devices, configuration_statuses, msg.get("language")),
                 "device_types": sorted(types, key=lambda item: item["name"].casefold()),
                 "ha_devices": sorted(ha_devices, key=lambda item: item["name"].casefold()),
                 "entities": _present_entities(hass, entity_registry),
@@ -1000,7 +1006,7 @@ async def websocket_recent_decisions(hass, connection, msg):
             site_id, limit=10, cursor=cursor
         )
         devices = await api.list_devices(site_id)
-        translations = await _panel_translations(hass)
+        translations = await _panel_translations(hass, msg.get("language"))
         site_device = next(
             (device for device in devices if device.get("type") == SITE_DEVICE_TYPE),
             None,
@@ -1199,7 +1205,7 @@ async def websocket_device_detail(hass, connection, msg):
             if msg.get("suggestions") and (ha_device_id or additional_ha_device_ids)
             else {}
         )
-        translations = await _panel_translations(hass)
+        translations = await _panel_translations(hass, msg.get("language"))
         properties = dict(device.get("properties") or {})
         display_identity = device_identity(device) or ""
         if device_type != SITE_DEVICE_TYPE:
@@ -1285,7 +1291,7 @@ async def websocket_add_review(hass, connection, msg):
         }
         if msg["device_type"] == "solar":
             properties.update(_forecast_solar_prefill(hass))
-        translations = await _panel_translations(hass)
+        translations = await _panel_translations(hass, msg.get("language"))
         connection.send_result(
             msg["id"],
             {
