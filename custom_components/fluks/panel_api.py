@@ -109,10 +109,30 @@ def _entry(hass: HomeAssistant, entry_id: str) -> ConfigEntry:
 
 
 def _api(hass: HomeAssistant, entry: ConfigEntry) -> FluksApiClient:
+    runtime = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {}).get(entry.entry_id)
+    plan = getattr(runtime, "plan", None)
     return FluksApiClient(
         async_get_clientsession(hass),
         integration_key=entry.data[CONF_INTEGRATION_KEY],
+        response_callback=plan.async_cache_response if plan is not None else None,
     )
+
+
+async def _offline_context(hass, entry, language, plan):
+    """Present only local data using the same Site page contract."""
+    translations = await _panel_translations(hass, language)
+    saved = plan.data["panel"] if plan is not None else {}
+    devices = plan.data["cache"].get("devices", []) if plan is not None else []
+    site = dict(saved.get("site") or {"id": entry.data[CONF_SITE_ID], "type": "site"})
+    site["name"] = entry.title.strip() or translations.get("site", "Site")
+    return {
+        "entry_id": entry.entry_id, "translations": translations,
+        "site": site, "devices": saved.get("devices", []) or await _present_devices(hass, devices, language=language),
+        "device_types": saved.get("device_types", []),
+        "plan_devices": saved.get("plan_devices", {}),
+        "ha_devices": [], "entities": _present_entities(hass, er.async_get(hass)),
+        "offline": True,
+    }
 
 
 @websocket_api.websocket_command(
@@ -913,6 +933,11 @@ async def websocket_context(hass, connection, msg):
     entry = None
     try:
         entry = _entry(hass, msg["entry_id"])
+        runtime = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {}).get(entry.entry_id)
+        plan = getattr(runtime, "plan", None)
+        if runtime is not None and runtime.status.get("state") != "connected":
+            connection.send_result(msg["id"], await _offline_context(hass, entry, msg.get("language"), plan))
+            return
         api = _api(hass, entry)
         devices, catalog = await api.list_devices(entry.data[CONF_SITE_ID]), await _catalog(api)
         mappings = await api.list_mappings(entry.data[CONF_SITE_ID])
@@ -956,9 +981,7 @@ async def websocket_context(hass, connection, msg):
             }
             for item in registry.devices.values()
         ]
-        connection.send_result(
-            msg["id"],
-            {
+        result = {
                 "entry_id": entry.entry_id,
                 "translations": await _panel_translations(hass, msg.get("language")),
                 "site": _present_device(
@@ -971,8 +994,23 @@ async def websocket_context(hass, connection, msg):
                 "device_types": sorted(types, key=lambda item: item["name"].casefold()),
                 "ha_devices": sorted(ha_devices, key=lambda item: item["name"].casefold()),
                 "entities": _present_entities(hass, entity_registry),
-            },
-        )
+            }
+        names = _present_device_names(devices, translations)
+        result["plan_devices"] = {
+            d["deviceId"]: entry.title if d.get("type") == SITE_DEVICE_TYPE else
+            _present_device(d, translations, name=names.get(d["id"]))["label"]
+            for d in devices if isinstance(d.get("deviceId"), str)
+        }
+        if plan is not None:
+            try:
+                await plan.async_cache_panel(result)
+            except OSError:
+                _LOGGER.exception("Unable to save the fluks Site presentation locally")
+        connection.send_result(msg["id"], result)
+    except FluksCannotConnect:
+        if entry is not None:
+            runtime = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {}).get(entry.entry_id)
+            connection.send_result(msg["id"], await _offline_context(hass, entry, msg.get("language"), getattr(runtime, "plan", None)))
     except (PanelCommandError, FluksApiError) as err:
         _send_error(hass, entry, connection, msg["id"], err)
 

@@ -107,11 +107,13 @@ class FluksApiClient:
         human_access_token: str | None = None,
         integration_key: str | None = None,
         base_url: str = API_BASE_URL,
+        response_callback=None,
     ) -> None:
         self._session = session
         self._human_access_token = human_access_token
         self._integration_key = integration_key
         self._base_url = base_url.rstrip("/")
+        self._response_callback = response_callback
 
     def set_human_access_token(self, access_token: str | None) -> None:
         """Set or discard the temporary human JWT."""
@@ -681,6 +683,12 @@ class FluksApiClient:
         if response.status == expected_status:
             if not isinstance(body, dict):
                 raise FluksApiError("INVALID_RESPONSE")
+            if self._response_callback is not None:
+                try:
+                    await self._response_callback(method, path, body, params)
+                except Exception:
+                    # A local cache failure must not change successful online I/O.
+                    _LOGGER.exception("Unable to cache fluks execution configuration")
             return body
 
         code = self._error_code(body)

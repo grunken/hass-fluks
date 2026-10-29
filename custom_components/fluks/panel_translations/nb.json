@@ -279,5 +279,17 @@
   "error_invalid_mapping": "Ett eller flere målingsvalg er ugyldige.",
   "error_invalid_auth": "E-postadressen eller passordet er feil.",
   "error_unknown": "Handlingen kunne ikke fullføres. Prøv igjen.",
-  "add_conversion": "Legg til konvertering"
+  "add_conversion": "Legg til konvertering",
+  "plan": "Plan",
+  "plan_description": "Planlagte Decisions fra den siste planen mottatt fra fluks.",
+  "no_plan": "Ingen lagret plan er tilgjengelig.",
+  "offline": "Frakoblet",
+  "offline_no_plan": "fluks er frakoblet. Ingen lagret plan er tilgjengelig for lokal kjøring.",
+  "offline_plan_executing": "fluks er frakoblet og kjører den sist mottatte planen lokalt.",
+  "offline_plan_expired": "Den lagrede planen har utløpt. Frakoblet kjøring er avsluttet.",
+  "offline_plan_unavailable": "fluks er frakoblet. Planen er lagret, men Mapping-konfigurasjonen er ikke tilgjengelig lokalt.",
+  "plan_not_updating": "Sist mottatte plan. Planen oppdateres ikke mens fluks er frakoblet.",
+  "plan_generated": "Mottatt plan opprettet {time}",
+  "plan_expires": "Utløper {time}",
+  "plan_empty": "Ingen planlagte Decisions."
 }

@@ -1246,7 +1246,7 @@ test("homepage renders configured devices and live runtime status", () => {
     translations: {
       site: "Site", devices: "Devices", add_device: "Add device", site_actions: "Site actions",
       delete_site: "Delete site", connection: "Connection", connected_to_fluks: "Connected to fluks",
-      reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
+      offline: "Offline", reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
       configured_devices: "{count} configured", configuration: "Configuration",
       configuration_description: "Manage devices and mappings",
       recent_decisions: "Recent Decisions", no_recent_decisions: "No recent Decisions.",
@@ -1311,7 +1311,7 @@ test("homepage renders configured devices and live runtime status", () => {
   assert.match(rendered.body, /No recent Decisions\./);
 
   panel._applyRuntimeStatus({ state: "reconnecting", disconnected_at: Date.now() - 61000 });
-  assert.match(statusNode.innerHTML, /Reconnecting · 01:01/);
+  assert.match(statusNode.innerHTML, /Offline · 01:01/);
   panel._applyRuntimeStatus({ state: "connected", disconnected_at: null });
   assert.match(statusNode.innerHTML, /Connected to fluks/);
   assert.doesNotMatch(statusNode.innerHTML, /Reconnecting/);
@@ -1359,7 +1359,7 @@ test("overview rows show compact complete and incomplete configuration indicator
     translations: {
       site: "Site", devices: "Devices", add_device: "Add device", site_actions: "Site actions",
       delete_site: "Delete site", connection: "Connection", connected_to_fluks: "Connected to fluks",
-      reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
+      offline: "Offline", reconnecting: "Reconnecting", disconnected: "Disconnected", connection_description: "Live connection",
       configured_devices: "{count} configured", configuration: "Configuration", configuration_description: "Manage configuration",
       configuration_complete: "Configured", configuration_needs_attention: "Needs attention",
     },
@@ -2519,3 +2519,41 @@ for (const concept of ["battery.power", "electricVehicle.power", "site.power", "
     assert.equal(editor.behaviors.some((item) => item.mode === "limit"), !signed);
   });
 }
+
+
+test("plan visualization groups simultaneous Decisions chronologically and preserves values", () => {
+  const panel = new Panel();
+  panel._context = { translations: { plan: "Plan", plan_description: "Scheduled Decisions", plan_generated: "Generated {time}", plan_expires: "Expires {time}", concept_battery_power: "Power" }, site: { name: "Eventyrhaven 1" }, plan_devices: { battery: "Battery · GoodWe", site: "Eventyrhaven 1" } };
+  panel._hass = { language: "da", localize: () => undefined };
+  const now = Date.now(), at = new Date(now + 3600000).toISOString(), expires = new Date(now + 7200000).toISOString();
+  panel._plan = { generatedAt: new Date(now).toISOString(), expiresAt: expires, decisions: [
+    { at: expires, "battery.power": { deviceId: "battery", mode: "release", value: null } },
+    { at, "battery.power": { deviceId: "battery", mode: "target", value: "-556" } },
+    { at, "site.power": { deviceId: "site", mode: "balance", value: "0" } },
+  ] };
+  const html = panel._renderPlan();
+  assert.equal((html.match(/class="plan-slot"/g) ?? []).length, 2);
+  assert.ok(html.indexOf("target") < html.indexOf("release"));
+  assert.match(html, /Battery · GoodWe/); assert.match(html, /Eventyrhaven 1/);
+  assert.match(html, /-556/); assert.match(html, /balance · 0/); assert.match(html, /release · —/);
+  assert.ok(html.includes(panel._decisionTime(at)));
+});
+
+test("offline Site keeps Connection, cached names and plan while hiding Core-only actions", () => {
+  const panel = new Panel();
+  panel._context = { translations: { offline: "Offline", offline_plan_executing: "Executing the last plan locally", offline_plan_expired: "Offline execution has ended", plan_not_updating: "Not being updated", connection: "Connection" }, site: { name: "Eventyrhaven 1" }, devices: [{ id: "battery", type: "battery", label: "Battery · GoodWe" }], plan_devices: {} };
+  panel._plan = { generatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(), decisions: [] };
+  panel._runtimeStatusKnown = true; panel._runtimeStatus = { state: "reconnecting", disconnected_at: null, plan_state: "executing" };
+  let rendered; panel._frame = (title, body) => { rendered = { title, body }; };
+  panel._renderHome();
+  assert.equal(rendered.title, "Eventyrhaven 1");
+  assert.match(rendered.body, /connection-card/); assert.match(rendered.body, /Offline/);
+  assert.match(rendered.body, /Executing the last plan locally/); assert.match(rendered.body, /Not being updated/);
+  assert.match(rendered.body, /Battery · GoodWe/); assert.match(rendered.body, /id="plan"/);
+  assert.doesNotMatch(rendered.body, /id="add"|id="home-configuration"|id="site-menu"|data-device=/);
+  panel._plan.expiresAt = new Date(Date.now() - 1000).toISOString();
+  panel._renderHome(); assert.match(rendered.body, /Offline execution has ended/);
+  let reloaded = 0; panel._loadContext = () => { reloaded++; };
+  try { panel._applyRuntimeStatus({ state: "connected", disconnected_at: null, plan: panel._plan }); assert.equal(reloaded, 1); }
+  finally { panel._unsubscribeRuntimeStatus(); }
+});

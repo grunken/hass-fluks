@@ -279,5 +279,17 @@
   "error_invalid_mapping": "Ett eller flera mätval är ogiltiga.",
   "error_invalid_auth": "E-postadressen eller lösenordet är felaktigt.",
   "error_unknown": "Åtgärden kunde inte slutföras. Försök igen.",
-  "add_conversion": "Lägg till omvandling"
+  "add_conversion": "Lägg till omvandling",
+  "plan": "Plan",
+  "plan_description": "Schemalagda Decisions från den senaste planen som tagits emot från fluks.",
+  "no_plan": "Ingen sparad plan är tillgänglig.",
+  "offline": "Frånkopplad",
+  "offline_no_plan": "fluks är frånkopplad. Ingen sparad plan är tillgänglig för lokal körning.",
+  "offline_plan_executing": "fluks är frånkopplad och kör den senast mottagna planen lokalt.",
+  "offline_plan_expired": "Den sparade planen har löpt ut. Frånkopplad körning har avslutats.",
+  "offline_plan_unavailable": "fluks är frånkopplad. Planen är sparad, men Mapping-konfigurationen är inte tillgänglig lokalt.",
+  "plan_not_updating": "Senast mottagna plan. Planen uppdateras inte medan fluks är frånkopplad.",
+  "plan_generated": "Mottagen plan skapad {time}",
+  "plan_expires": "Löper ut {time}",
+  "plan_empty": "Inga schemalagda Decisions."
 }

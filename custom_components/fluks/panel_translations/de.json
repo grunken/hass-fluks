@@ -279,5 +279,17 @@
   "error_invalid_mapping": "Eine oder mehrere Messwertauswahlen sind ungültig.",
   "error_invalid_auth": "Die E-Mail-Adresse oder das Passwort ist falsch.",
   "error_unknown": "Der Vorgang konnte nicht abgeschlossen werden. Versuche es erneut.",
-  "add_conversion": "Umrechnung hinzufügen"
+  "add_conversion": "Umrechnung hinzufügen",
+  "plan": "Plan",
+  "plan_description": "Geplante Decisions aus dem zuletzt von fluks empfangenen Plan.",
+  "no_plan": "Es ist kein gespeicherter Plan verfügbar.",
+  "offline": "Offline",
+  "offline_no_plan": "fluks ist offline. Es ist kein gespeicherter Plan für die lokale Ausführung verfügbar.",
+  "offline_plan_executing": "fluks ist offline und führt den zuletzt empfangenen Plan lokal aus.",
+  "offline_plan_expired": "Der gespeicherte Plan ist abgelaufen. Die Offline-Ausführung ist beendet.",
+  "offline_plan_unavailable": "fluks ist offline. Der Plan ist gespeichert, aber seine Mapping-Konfiguration ist lokal nicht verfügbar.",
+  "plan_not_updating": "Zuletzt empfangener Plan. Dieser Plan wird offline nicht aktualisiert.",
+  "plan_generated": "Empfangener Plan erstellt am {time}",
+  "plan_expires": "Läuft ab am {time}",
+  "plan_empty": "Keine geplanten Decisions."
 }

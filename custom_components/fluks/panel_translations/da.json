@@ -279,5 +279,17 @@
   "error_invalid_mapping": "Et eller flere valgte målepunkter er ugyldige.",
   "error_invalid_auth": "E-mailadressen eller adgangskoden er forkert.",
   "error_unknown": "Handlingen kunne ikke gennemføres. Prøv igen.",
-  "add_conversion": "Tilføj konvertering"
+  "add_conversion": "Tilføj konvertering",
+  "plan": "Plan",
+  "plan_description": "Planlagte Decisions fra den seneste plan modtaget fra fluks.",
+  "no_plan": "Der er ingen gemt plan.",
+  "offline": "Offline",
+  "offline_no_plan": "fluks er offline. Der er ingen gemt plan til lokal udførelse.",
+  "offline_plan_executing": "fluks er offline og udfører den senest modtagne plan lokalt.",
+  "offline_plan_expired": "Den gemte plan er udløbet. Offline udførelse er afsluttet.",
+  "offline_plan_unavailable": "fluks er offline. Planen er gemt, men dens Mapping-konfiguration er ikke tilgængelig lokalt.",
+  "plan_not_updating": "Senest modtagne plan. Planen opdateres ikke, mens fluks er offline.",
+  "plan_generated": "Modtaget plan oprettet {time}",
+  "plan_expires": "Udløber {time}",
+  "plan_empty": "Ingen planlagte Decisions."
 }

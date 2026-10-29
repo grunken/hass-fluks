@@ -39,6 +39,8 @@ class FluksControlEditorPanel extends HTMLElement {
     this._powerSignSamples = new Map();
     this._powerSignResolved = new Set();
     this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
+    this._runtimeStatusKnown = false;
+    this._plan = null;
     this._recentDecisions = [];
     this._recentDecisionsLoading = false;
     this._recentDecisionsLoaded = false;
@@ -96,6 +98,8 @@ class FluksControlEditorPanel extends HTMLElement {
       this._powerSignResolved.clear();
       this._unsubscribeRuntimeStatus();
       this._runtimeStatus = { state: "reconnecting", disconnected_at: null };
+      this._runtimeStatusKnown = false;
+      this._plan = null;
       this._beginView({ name: "home" });
     }
     if (this.isConnected) this._loadContext();
@@ -132,13 +136,16 @@ class FluksControlEditorPanel extends HTMLElement {
   async _loadContext() {
     if (!this.shadowRoot || !this._hass) return;
     if (!this._entryId) return this._message(this._t("context_missing"));
+    if (!this._runtimeStatusUnsubscribe && !this._runtimeSubscriptionPending) {
+      this._runtimeSubscriptionPending = true;
+      void this._subscribeRuntimeStatus().finally(() => { this._runtimeSubscriptionPending = false; });
+    }
     const loadToken = ++this._contextLoadToken;
     this._message(this._t("loading"));
     try {
       const context = await this._call("fluks/config/context");
       if (loadToken !== this._contextLoadToken) return;
       this._context = context;
-      this._subscribeRuntimeStatus();
       if (loadToken !== this._contextLoadToken) return;
       await this._loadView();
     } catch (_) {
@@ -175,11 +182,16 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _applyRuntimeStatus(status) {
     if (!status || typeof status.state !== "string") return;
+    const previous = this._runtimeStatus.state;
+    const known = this._runtimeStatusKnown;
+    this._runtimeStatusKnown = true;
+    if (Object.hasOwn(status, "plan")) this._plan = status.plan;
     this._runtimeStatus = {
       state: status.state,
-      disconnected_at: Number.isFinite(Number(status.disconnected_at)) ? Number(status.disconnected_at) : null,
+      disconnected_at: status.disconnected_at != null && Number.isFinite(Number(status.disconnected_at)) ? Number(status.disconnected_at) : null,
+      plan_state: status.plan_state,
     };
-    if (this._runtimeStatus.state === "reconnecting" && this._runtimeStatus.disconnected_at !== null) {
+    if (this._plan || this._runtimeStatus.state === "reconnecting" && this._runtimeStatus.disconnected_at !== null) {
       if (this._runtimeStatusTimer === undefined) {
         this._runtimeStatusTimer = setInterval(() => this._updateRuntimeStatus(), 1000);
       }
@@ -187,7 +199,25 @@ class FluksControlEditorPanel extends HTMLElement {
       clearInterval(this._runtimeStatusTimer);
       this._runtimeStatusTimer = undefined;
     }
+    if ((known ? previous !== "connected" : this._context?.offline) && status.state === "connected") {
+      this._recentDecisionsLoaded = false;
+      void this._loadContext();
+    } else if (this._context && this._view.name === "home" && (previous !== status.state || Object.hasOwn(status, "plan"))) {
+      this._renderHome();
+    }
     this._updateRuntimeStatus();
+  }
+  _offline() {
+    return this._runtimeStatusKnown ? this._runtimeStatus.state !== "connected" : this._context?.offline === true;
+  }
+  _planExpired() {
+    return Boolean(this._plan && Date.parse(this._plan.expiresAt) <= Date.now());
+  }
+  _offlineMessage() {
+    if (!this._plan) return this._t("offline_no_plan");
+    if (this._planExpired()) return this._t("offline_plan_expired");
+    if (this._runtimeStatus.plan_state === "unavailable") return this._t("offline_plan_unavailable");
+    return this._t("offline_plan_executing");
   }
   _runtimeElapsed() {
     const disconnectedAt = this._runtimeStatus.disconnected_at;
@@ -203,7 +233,7 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _runtimeStatusMarkup() {
     const state = this._runtimeStatus.state;
-    const label = state === "connected"
+    const label = this._offline() ? this._t("offline") : state === "connected"
       ? this._t("connected_to_fluks")
       : state === "reconnecting"
         ? this._t("reconnecting")
@@ -217,6 +247,12 @@ class FluksControlEditorPanel extends HTMLElement {
       const node = this.shadowRoot?.querySelector(selector);
       if (node) node.innerHTML = this._runtimeStatusMarkup();
     }
+    const description = this.shadowRoot?.querySelector("#connection-description");
+    if (description) description.textContent = this._offline() ? this._offlineMessage() : this._t("connection_description");
+    const planStatus = this.shadowRoot?.querySelector("#plan-status");
+    if (planStatus) planStatus.textContent = this._offline() ? this._offlineMessage() : this._t("plan_description");
+    const note = this.shadowRoot?.querySelector("#plan-update-note");
+    if (note) note.hidden = !this._offline();
   }
   async _ensureControlActionEditor() {
     const { FluksControlActionEditor } = await loadControlActionEditor();
@@ -287,7 +323,7 @@ class FluksControlEditorPanel extends HTMLElement {
     }
     this._render();
     this._scrollToPendingTarget(token);
-    if (view.name === "home") void this._loadRecentDecisions();
+    if (view.name === "home" && !this._offline()) void this._loadRecentDecisions();
     if (view.name === "edit") this._observePowerSigns(true);
     if (view.name === "edit" && this._isCurrentView(token) && this._hasUnmappedInputConcepts(this._detail)) {
       this._loadInputSuggestions(view.deviceId, token).catch(() => {});
@@ -531,30 +567,32 @@ class FluksControlEditorPanel extends HTMLElement {
   }
 
   _renderHome() {
+    const offline = this._offline();
     const contextDevices = this._context.devices || [];
-    const devices = contextDevices.map((d) => `<button class="row device-row" data-device="${esc(d.id)}">
-      ${this._typeIcon(d.type)}<span class="row-copy"><strong>${esc(d.label)}</strong><span>${esc(d.metadata || d.type_name || d.name)}</span></span>${this._configurationIndicator(d.configuration_status)}<span class="chevron">›</span></button>`).join("");
+    const devices = contextDevices.map((d) => `<${offline ? "div" : "button"} class="row device-row" ${offline ? "" : `data-device="${esc(d.id)}"`}>
+      ${this._typeIcon(d.type)}<span class="row-copy"><strong>${esc(d.label)}</strong><span>${esc(d.metadata || d.type_name || d.name)}</span></span>${this._configurationIndicator(d.configuration_status)}${offline ? "" : '<span class="chevron">›</span>'}</${offline ? "div" : "button"}>`).join("");
     const site = this._context.site || {};
     const devicesStatus = { complete: !contextDevices.some((device) => device.configuration_status?.complete === false) };
     this._frame(site.name || this._t("site"), `<div class="home-status-line" id="runtime-status" role="status" aria-live="polite">${this._runtimeStatusMarkup()}</div>
       <div class="home-shortcuts">
-        <section class="card home-card connection-card"><ha-icon icon="mdi:lan-connect"></ha-icon><div><h2>${esc(this._t("connection"))}</h2><div class="home-card-status" id="runtime-status-card">${this._runtimeStatusMarkup()}</div><p>${esc(this._t("connection_description"))}</p></div></section>
+        <section class="card home-card connection-card"><ha-icon icon="${offline ? "mdi:lan-disconnect" : "mdi:lan-connect"}"></ha-icon><div><h2>${esc(this._t("connection"))}</h2><div class="home-card-status" id="runtime-status-card">${this._runtimeStatusMarkup()}</div><p id="connection-description">${esc(offline ? this._offlineMessage() : this._t("connection_description"))}</p>${offline && this._plan ? `<small>${esc(this._t("plan_expires", { time: this._decisionTime(this._plan.expiresAt) }))}</small>` : ""}</div></section>
         <button class="card home-card home-card-button" id="home-devices-card" type="button"><ha-icon icon="mdi:devices"></ha-icon><div><h2>${esc(this._t("devices"))}</h2><p class="configuration-count">${this._configurationDot(devicesStatus)}<span>${esc(this._t("configured_devices", { count: contextDevices.length }))}</span></p></div><span class="chevron">›</span></button>
-        <button class="card home-card home-card-button" id="home-configuration" type="button"><ha-icon icon="mdi:file-document-edit-outline"></ha-icon><div><h2>${esc(this._t("configuration"))}</h2><p class="configuration-count">${this._configurationDot(site.configuration_status)}<span>${esc(this._t("configuration_description"))}</span></p></div><span class="chevron">›</span></button>
+        ${offline ? "" : `<button class="card home-card home-card-button" id="home-configuration" type="button"><ha-icon icon="mdi:file-document-edit-outline"></ha-icon><div><h2>${esc(this._t("configuration"))}</h2><p class="configuration-count">${this._configurationDot(site.configuration_status)}<span>${esc(this._t("configuration_description"))}</span></p></div><span class="chevron">›</span></button>`}
       </div>
-      <section id="configured-devices"><div class="section-title"><h2>${esc(this._t("devices"))}</h2><button class="primary" id="add">＋ ${esc(this._t("add_device"))}</button></div>
+      <section id="configured-devices"><div class="section-title"><h2>${esc(this._t("devices"))}</h2>${offline ? "" : `<button class="primary" id="add">＋ ${esc(this._t("add_device"))}</button>`}</div>
       <div class="card list">${devices || `<p>${esc(this._t("no_devices"))}</p>`}</div></section>
-      <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><button class="site-link" id="site-detail">${this._typeIcon("site")}
-      <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span><span class="chevron">›</span></button><button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>${this._configurationIndicator(site.configuration_status)}
-      <div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div></div></section>
-      <section id="recent-decisions"><h2>${esc(this._t("recent_decisions"))}</h2><div class="card list">
+      <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><${offline ? "div" : "button"} class="site-link"${offline ? "" : ' id="site-detail"'}>${this._typeIcon("site")}
+      <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span>${offline ? "" : '<span class="chevron">›</span>'}</${offline ? "div" : "button"}>${offline ? "" : `<button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>`}${this._configurationIndicator(site.configuration_status)}
+      ${offline ? "" : `<div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div>`}</div></section>
+      ${this._renderPlan()}
+      <section id="recent-decisions" ${offline && !this._recentDecisions.length ? "hidden" : ""}><h2>${esc(this._t("recent_decisions"))}</h2><div class="card list">
       ${this._recentDecisionsLoading ? `<p class="decision-feed-message">${esc(this._t("loading_decisions"))}</p>` : this._recentDecisionsError ? `<p class="decision-feed-message">${esc(this._t("decisions_unavailable"))}</p>` : this._recentDecisions.length ? this._recentDecisions.map((decision) => {
         const details = [this._decisionTime(decision.time), decision.action, decision.mode, decision.value].filter((value) => value !== undefined && value !== null && value !== "").join(" · ");
         return `<div class="row decision-row"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon><span class="row-copy"><strong>${esc(decision.device)}</strong><span>${esc(details)}</span>${decision.explanation ? `<small class="decision-explanation">${esc(decision.explanation)}</small>` : ""}</span></div>`;
-      }).join("") : `<p class="decision-feed-message">${esc(this._t("no_recent_decisions"))}</p>`}</div>${this._recentDecisionsLoaded && this._recentDecisionsNextCursor && this._recentDecisions.length < 200 ? `<button class="decision-show-more" id="recent-decisions-more" type="button" ${this._recentDecisionsLoadingMore ? "disabled" : ""}>${esc(this._t(this._recentDecisionsLoadingMore ? "loading_more_decisions" : "show_more"))}</button>` : ""}</section>`);
+      }).join("") : `<p class="decision-feed-message">${esc(this._t("no_recent_decisions"))}</p>`}</div>${!offline && this._recentDecisionsLoaded && this._recentDecisionsNextCursor && this._recentDecisions.length < 200 ? `<button class="decision-show-more" id="recent-decisions-more" type="button" ${this._recentDecisionsLoadingMore ? "disabled" : ""}>${esc(this._t(this._recentDecisionsLoadingMore ? "loading_more_decisions" : "show_more"))}</button>` : ""}</section>`);
     const add = this.shadowRoot.querySelector("#add");
     if (add) add.onclick = () => this._go({ name: "add" });
-    this._wireMenu("site-menu", "site-actions");
+    if (!offline) this._wireMenu("site-menu", "site-actions");
     const deleteSite = this.shadowRoot.querySelector("#delete-site");
     if (deleteSite) deleteSite.onclick = () => this._go({ name: "delete-site", stage: "confirm" });
     const siteDetail = this.shadowRoot.querySelector("#site-detail");
@@ -573,8 +611,27 @@ class FluksControlEditorPanel extends HTMLElement {
     if (Number.isNaN(date.getTime())) return String(value);
     return date.toLocaleString(this._hass?.language || undefined, { dateStyle: "short", timeStyle: "short" });
   }
+  _renderPlan() {
+    const plan = this._plan;
+    const groups = new Map();
+    for (const slot of plan?.decisions ?? []) {
+      const at = Date.parse(slot.at);
+      if (!Number.isFinite(at)) continue;
+      const rows = groups.get(at) ?? [];
+      for (const [concept, decision] of Object.entries(slot)) {
+        if (concept === "at" || !decision || typeof decision !== "object") continue;
+        const device = this._context.plan_devices?.[decision.deviceId]
+          ?? (concept.startsWith("site.") ? this._context.site?.name : null)
+          ?? this._t(`device_type_${concept.split(".")[0]}`);
+        const value = decision.value === null ? "—" : String(decision.value);
+        rows.push(`<div class="row decision-row"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon><span class="row-copy"><strong>${esc(device)}</strong><span>${esc(this._t(`concept_${concept}`))} · ${esc(decision.mode ?? this._t("default_behavior"))} · ${esc(value)}</span></span></div>`);
+      }
+      groups.set(at, rows);
+    }
+    return `<section id="plan"><h2>${esc(this._t("plan"))}</h2><div class="card"><p id="plan-status" role="status" aria-live="polite">${esc(this._offline() ? this._offlineMessage() : this._t("plan_description"))}</p><small id="plan-update-note" ${this._offline() ? "" : "hidden"}>${esc(this._t("plan_not_updating"))}</small>${plan ? `<p class="plan-metadata">${esc(this._t("plan_generated", { time: this._decisionTime(plan.generatedAt) }))} · ${esc(this._t("plan_expires", { time: this._decisionTime(plan.expiresAt) }))}</p>` : ""}</div>${[...groups].sort(([a], [b]) => a - b).map(([at, rows]) => `<div class="plan-slot"><h3><time datetime="${new Date(at).toISOString()}">${esc(this._decisionTime(at))}</time></h3><div class="card list">${rows.join("")}</div></div>`).join("") || `<div class="card"><p>${esc(this._t(plan ? "plan_empty" : "no_plan"))}</p></div>`}</section>`;
+  }
   async _loadRecentDecisions() {
-    if (this._recentDecisionsLoaded || this._recentDecisionsLoading || this._view.name !== "home") return;
+    if (this._offline() || this._recentDecisionsLoaded || this._recentDecisionsLoading || this._view.name !== "home") return;
     const entryId = this._entryId;
     this._recentDecisionsLoading = true;
     this._renderHome();
@@ -598,7 +655,7 @@ class FluksControlEditorPanel extends HTMLElement {
     }
   }
   async _loadMoreRecentDecisions() {
-    if (this._recentDecisionsLoadingMore || !this._recentDecisionsNextCursor || this._recentDecisions.length >= 200 || this._view.name !== "home") return;
+    if (this._offline() || this._recentDecisionsLoadingMore || !this._recentDecisionsNextCursor || this._recentDecisions.length >= 200 || this._view.name !== "home") return;
     const entryId = this._entryId;
     this._recentDecisionsLoadingMore = true;
     this._renderHome();

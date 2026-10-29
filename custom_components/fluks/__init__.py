@@ -20,6 +20,7 @@ from .control_editor_panel import async_register_control_editor_panel
 from .observations import RealtimeObservationPublisher
 from .output_execution import RuntimeOutputExecutor
 from .panel_api import async_register_panel_commands
+from .plan import LocalPlan
 from .runtime import FluksRuntimeWebSocket
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -37,22 +38,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not (integration_key := entry.data.get(CONF_INTEGRATION_KEY)):
         raise ConfigEntryAuthFailed("The fluks Integration credential is missing")
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.BINARY_SENSOR])
-    api = FluksApiClient(
-        async_get_clientsession(hass), integration_key=integration_key
-    )
+    # The callback only observes existing HTTP responses; it makes no requests.
+    api = FluksApiClient(async_get_clientsession(hass), integration_key=integration_key)
     output = RuntimeOutputExecutor(
         hass,
         api,
         entry.data[CONF_SITE_ID],
         entry.entry_id,
     )
+    plan = LocalPlan(hass, entry.entry_id, entry.data[CONF_SITE_ID], output)
+    api._response_callback = plan.async_cache_response
     runtime = FluksRuntimeWebSocket(
         async_get_clientsession(hass), integration_key, API_BASE_URL,
         message_handler=output.async_handle,
+        plan=plan,
     )
     runtimes = hass.data.setdefault(DOMAIN, {}).setdefault(DATA_RUNTIME, {})
     if (previous := runtimes.pop(entry.entry_id, None)) is not None:
         await previous.async_stop()
+    await plan.async_load()
     runtimes[entry.entry_id] = runtime
     runtime.start(
         lambda coroutine: entry.async_create_background_task(

@@ -314,6 +314,59 @@ async def test_action_retry_does_not_repeat_successful_actions(hass):
     assert calls == ["select.inverter_mode", "number.battery_power", "number.battery_power"]
 
 
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize("verification_failure", [False, True])
+async def test_decision_shares_retry_limit_and_continues_after_failure(
+    hass, offline, verification_failure, caplog,
+):
+    """Retries across ordered actions cannot multiply the Decision budget."""
+    events = await _logbook_events(hass)
+    received = []
+    attempts = {}
+
+    def execute(call):
+        entity = call.data["entity_id"]
+        received.append(dict(call.data))
+        attempts[entity] = attempts.get(entity, 0) + 1
+        if (entity == "number.first" and attempts[entity] == 1) or entity == "number.second":
+            if verification_failure:
+                return  # HA accepted the call, but its result did not change.
+            raise RuntimeError("service refused value")
+        hass.states.async_set(entity, str(call.data["value"]))
+
+    hass.services.async_register("number", "set_value", execute)
+    for entity in ("first", "second", "skipped"):
+        hass.states.async_set(f"number.{entity}", "0")
+    mapping = _retry_mapping(actions=[{
+        "type": "serviceCall", "service": "number.set_value",
+        "target": {"entityId": f"number.{entity}"},
+        "data": {"value": {"kind": "requestedValue"}},
+    } for entity in ("first", "second", "skipped")])
+    api = _retry_api(mapping)
+    context = {
+        "devices": api.list_devices.return_value,
+        "mappings": api.list_mappings.return_value,
+        "catalog": api.get_device_type_catalog.return_value,
+    } if offline else None
+    executor = RuntimeOutputExecutor(hass, api, "site-a", sleep=AsyncMock())
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": "battery", "power": value,
+    } for value in (3000, 4000)]}, context=context)
+    await hass.async_block_till_done()
+
+    # First Decision: first action succeeds on attempt 2; second fails on 2 and 3.
+    # Next Decision gets a fresh budget, without repeating any completed action.
+    assert received == [{"entity_id": f"number.{entity}", "value": value}
+                        for value, entities in [(3000, ["first"]*2+["second"]*2),
+                                                (4000, ["first"]+["second"]*3)]
+                        for entity in entities]
+    assert "after 3 attempts" in caplog.text
+    assert any("number.skipped" in event["message"] for event in events)
+    error = "verification failed" if verification_failure else "service refused value"
+    assert any(error in event["message"] for event in events)
+    assert api.list_devices.await_count == (0 if offline else 1)
+
+
 async def test_action_retry_wait_does_not_block_an_unrelated_action(hass):
     retry_started = asyncio.Event()
     release_retry = asyncio.Event()

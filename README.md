@@ -156,6 +156,14 @@ Found something that doesn't work?
 
 **[Report an issue on GitHub →](https://github.com/grunken/hass-fluks/issues)**
 
+## Offline plans
+
+The Site page shows the latest `fluks.plan`, including scheduled Decisions and expiry in local time. The integration saves the complete plan and the configuration received through its normal Core requests locally. The Site name remains available after a Home Assistant restart.
+
+Core controls execution while connected. When disconnected, future plan Decisions use the same configured Home Assistant Mappings. Past targets are not replayed after restart. At expiry, release Decisions end local control through those Mappings; temperature controls retain their existing restoration and manual-override behavior. Reconnection stops local scheduling immediately.
+
+Offline batches are durably claimed before dispatch. Online and offline Decisions use the same limit of three execution attempts, including the initial attempt, retrying failed calls or verification without repeating completed actions. The persisted claim prevents replay after a restart without preventing retries during that execution. A crash after a claim can therefore leave an action incomplete rather than replay it. Release actions still depend on working configured Mappings and Home Assistant services; failures appear in the native Logbook, and subsequent Decisions continue.
+
 ## Troubleshooting
 
 **Fluks doesn't appear in Home Assistant**

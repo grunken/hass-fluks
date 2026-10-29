@@ -29,7 +29,7 @@ _TEMPERATURE_CONTROLS = {
     "waterHeater.temperature",
     "spaceHeater.temperature",
 }
-_ACTION_ATTEMPTS = 3
+_DECISION_ATTEMPTS = 3
 _ACTION_RETRY_DELAY = 1.0
 _TEMPERATURE_VERIFICATION_TOLERANCE = Decimal("0.5")
 
@@ -89,6 +89,8 @@ class RuntimeOutputExecutor:
         self._api = api
         self._site_id = site_id
         self._entry_id = entry_id
+        self._execution_lock = asyncio.Lock()
+        self._execution_guard = None
         self._sleep = sleep
         self._balance_active = False
         self._temperature_store = ownership_store or Store(
@@ -123,6 +125,8 @@ class RuntimeOutputExecutor:
         if self._temperature_loaded:
             return
         stored = await self._temperature_store.async_load()
+        if isinstance(stored, dict):
+            self._balance_active = bool(stored.get("balance_active", False))
         records = stored.get("controls", {}) if isinstance(stored, dict) else {}
         if isinstance(records, dict):
             self._temperature_ownership = {
@@ -137,7 +141,10 @@ class RuntimeOutputExecutor:
         self._temperature_loaded = True
 
     async def _async_save_temperature_ownership(self) -> None:
-        await self._temperature_store.async_save({"controls": self._temperature_ownership})
+        data = {"controls": self._temperature_ownership}
+        if self._balance_active:
+            data["balance_active"] = True
+        await self._temperature_store.async_save(data)
 
     @staticmethod
     def _numeric(value: Any) -> int | float | None:
@@ -205,7 +212,21 @@ class RuntimeOutputExecutor:
     def _temperature_key(device: dict[str, Any], concept: str) -> str:
         return f"{device['deviceId']}|{concept}"
 
-    async def async_handle(self, payload: dict[str, Any]) -> None:
+    async def async_handle(self, payload: dict[str, Any], *, context=None, guard=None) -> None:
+        """Serialize online and offline use of the same Mapping executor."""
+        async with self._execution_lock:
+            self._execution_guard = guard
+            try:
+                self._check_authority()
+                await self._async_handle(payload, context=context)
+            finally:
+                self._execution_guard = None
+
+    def _check_authority(self) -> None:
+        if self._execution_guard is not None and not self._execution_guard():
+            raise asyncio.CancelledError
+
+    async def _async_handle(self, payload: dict[str, Any], *, context=None) -> None:
         """Execute a supported Decision snapshot without disrupting transport."""
         if payload.get("type") != "decision.snapshot" or not isinstance(
             payload.get("decisions"), list
@@ -213,9 +234,12 @@ class RuntimeOutputExecutor:
             return
         await self._async_load_temperature_ownership()
         try:
-            devices = await self._api.list_devices(self._site_id)
-            mappings = await self._api.list_mappings(self._site_id)
-            catalog = await self._api.get_device_type_catalog()
+            if context is None:
+                devices = await self._api.list_devices(self._site_id)
+                mappings = await self._api.list_mappings(self._site_id)
+                catalog = await self._api.get_device_type_catalog()
+            else:
+                devices, mappings, catalog = (context[key] for key in ("devices", "mappings", "catalog"))
         except Exception as err:  # noqa: BLE001 - runtime discovery must not end transport
             for decision in payload["decisions"]:
                 if isinstance(decision, dict):
@@ -245,6 +269,7 @@ class RuntimeOutputExecutor:
         ownership = [item for item in decisions if self._is_balance_ownership(item)]
         remaining = [item for item in decisions if not self._is_balance_ownership(item)]
         for decision in ownership + remaining:
+            self._check_authority()
             device = device_by_external_id.get(str(decision.get("deviceId")))
             device_type = decision.get("deviceType")
             if device is None or device.get("type") != device_type:
@@ -339,12 +364,14 @@ class RuntimeOutputExecutor:
                             decision.get("mode"),
                         )
                     else:
-                        value = _canonical_value(raw_value, str(definition.get("datatype")))
+                        value = None if decision.get("mode") == "release" and raw_value is None else _canonical_value(raw_value, str(definition.get("datatype")))
                         await self._async_execute(configuration, value, concept=concept)
                     if concept == "site.power" and decision.get("mode") == "balance":
                         self._balance_active = True
+                        await self._async_save_temperature_ownership()
                     elif concept == "site.power" and decision.get("mode") == "release":
                         self._balance_active = False
+                        await self._async_save_temperature_ownership()
                 except Exception as err:  # noqa: BLE001 - one action must not end runtime transport
                     await self._async_log(
                         "decision_failed", concept=concept, error=str(err) or type(err).__name__,
@@ -426,7 +453,9 @@ class RuntimeOutputExecutor:
         concept: str = "",
     ) -> None:
         """Execute service calls sequentially so configured order is preserved."""
+        attempt = 1
         for index, action in enumerate(configuration["actions"]):
+            self._check_authority()
             data: dict[str, Any] = {}
             try:
                 for field, source in action.get("data", {}).items():
@@ -441,7 +470,9 @@ class RuntimeOutputExecutor:
                             reference_resolver=self._output_reference,
                         )
                 domain, service = action["service"].split(".", 1)
-                await self._async_execute_action(action, domain, service, data, concept=concept)
+                attempt = await self._async_execute_action(
+                    action, domain, service, data, concept=concept, attempt=attempt,
+                )
             except Exception as err:
                 await self._async_log(
                     "decision_action_failed" if data else "decision_action_failed_no_values",
@@ -472,11 +503,13 @@ class RuntimeOutputExecutor:
         data: dict[str, Any],
         *,
         concept: str = "",
-    ) -> None:
-        """Call one resolved Home Assistant action with bounded retries."""
+        attempt: int = 1,
+    ) -> int:
+        """Retry the current action within the shared Decision attempt budget."""
         target = {"entity_id": action["target"]["entityId"]}
         verifiable = self._can_verify_action(action, data)
-        for attempt in range(1, _ACTION_ATTEMPTS + 1):
+        for attempt in range(attempt, _DECISION_ATTEMPTS + 1):
+            self._check_authority()
             try:
                 await self._hass.services.async_call(
                     domain,
@@ -486,7 +519,7 @@ class RuntimeOutputExecutor:
                     target=target,
                 )
             except Exception as err:  # noqa: BLE001 - retry the failed HA call
-                if attempt == _ACTION_ATTEMPTS:
+                if attempt == _DECISION_ATTEMPTS:
                     _LOGGER.error(
                         "Home Assistant action %s targeting %s failed after %s attempts",
                         action["service"],
@@ -498,7 +531,7 @@ class RuntimeOutputExecutor:
                 _LOGGER.debug(
                     "Home Assistant action failed on attempt %s/%s; retrying: %s",
                     attempt,
-                    _ACTION_ATTEMPTS,
+                    _DECISION_ATTEMPTS,
                     action["service"],
                 )
                 await self._async_log(
@@ -511,12 +544,12 @@ class RuntimeOutputExecutor:
                 continue
 
             if not verifiable:
-                return
+                return attempt
             await self._sleep(_ACTION_RETRY_DELAY)
             verification = self._verify_action_result(action, data)
             if verification is True:
-                return
-            if attempt == _ACTION_ATTEMPTS:
+                return attempt
+            if attempt == _DECISION_ATTEMPTS:
                 _LOGGER.error(
                     "Home Assistant action %s targeting %s did not reach its expected value "
                     "after %s attempts (expected=%r)",
@@ -538,7 +571,7 @@ class RuntimeOutputExecutor:
                 action["service"],
                 action["target"]["entityId"],
                 attempt,
-                _ACTION_ATTEMPTS,
+                _DECISION_ATTEMPTS,
             )
 
     def _verify_action_result(

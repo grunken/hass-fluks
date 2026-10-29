@@ -42,6 +42,7 @@ class FluksRuntimeWebSocket:
         reconnect_delays: tuple[float, ...] = RECONNECT_DELAYS,
         message_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         now_ms: Callable[[], int] | None = None,
+        plan=None,
     ) -> None:
         self._session = session
         self._integration_key = integration_key
@@ -49,6 +50,9 @@ class FluksRuntimeWebSocket:
         self._sleep = sleep
         self._reconnect_delays = reconnect_delays
         self._message_handler = message_handler
+        self.plan = plan
+        if plan is not None:
+            plan.notify = self._notify_status
         self._now_ms = now_ms or (lambda: int(time.time() * 1000))
         self._stopping = False
         self._task: asyncio.Task[None] | None = None
@@ -65,10 +69,13 @@ class FluksRuntimeWebSocket:
     @property
     def status(self) -> dict[str, Any]:
         """Return the current connection status for the local panel."""
-        return {
+        status = {
             "state": self._status,
             "disconnected_at": self._disconnected_at,
         }
+        if self.plan is not None:
+            status.update(plan=self.plan.plan, plan_state=self.plan.state)
+        return status
 
     def add_status_listener(
         self, listener: Callable[[dict[str, Any]], None]
@@ -82,10 +89,15 @@ class FluksRuntimeWebSocket:
         return unsubscribe
 
     def _set_status(self, state: str, disconnected_at: int | None = None) -> None:
+        if self.plan is not None:
+            self.plan.set_connected(state == "connected")
         if self._status == state and self._disconnected_at == disconnected_at:
             return
         self._status = state
         self._disconnected_at = disconnected_at
+        self._notify_status()
+
+    def _notify_status(self) -> None:
         snapshot = self.status
         for listener in tuple(self._status_listeners):
             try:
@@ -102,6 +114,8 @@ class FluksRuntimeWebSocket:
     async def async_stop(self) -> None:
         """Close the socket and permanently stop this manager."""
         self._stopping = True
+        if self.plan is not None:
+            await self.plan.async_stop()
         self._set_status(
             "disconnected",
             self._now_ms() if self._socket else self._disconnected_at,
@@ -141,6 +155,8 @@ class FluksRuntimeWebSocket:
                 self._socket = socket
                 attempt = 0
                 self._set_status("connected")
+                if self.plan is not None:
+                    await self.plan.async_core_authority()
                 await self._receive(socket)
             except asyncio.CancelledError:
                 raise
@@ -151,7 +167,6 @@ class FluksRuntimeWebSocket:
                     "Unexpected fluks runtime WebSocket transport failure; reconnecting"
                 )
             finally:
-                was_connected = self._socket is not None
                 socket = self._socket
                 self._socket = None
                 if socket is not None and not socket.closed:
@@ -159,7 +174,7 @@ class FluksRuntimeWebSocket:
                         await socket.close()
                 if self._stopping:
                     self._set_status("disconnected", self._disconnected_at)
-                elif was_connected:
+                else:
                     self._set_status(
                         "reconnecting",
                         self._disconnected_at
@@ -199,7 +214,14 @@ class FluksRuntimeWebSocket:
             return
 
         decisions = []
+        if "fluks.plan" in payload and self.plan is not None:
+            try:
+                await self.plan.async_receive(payload["fluks.plan"])
+            except Exception:  # Local storage failure must not disconnect Core.
+                _LOGGER.warning("Unable to accept fluks plan", exc_info=True)
         for concept, decision in payload.items():
+            if concept == "fluks.plan":
+                continue
             device_type, separator, field = concept.partition(".")
             if (
                 not separator or not device_type or not field

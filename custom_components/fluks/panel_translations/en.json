@@ -279,5 +279,17 @@
   "error_invalid_mapping": "One or more measurement selections are invalid.",
   "error_invalid_auth": "The email address or password is incorrect.",
   "error_unknown": "The operation could not be completed. Try again.",
-  "add_conversion": "Add conversion"
+  "add_conversion": "Add conversion",
+  "plan": "Plan",
+  "plan_description": "Scheduled Decisions from the latest plan received from fluks.",
+  "no_plan": "No saved plan is available.",
+  "offline": "Offline",
+  "offline_no_plan": "fluks is offline. No saved plan is available for local execution.",
+  "offline_plan_executing": "fluks is offline and executing its last received plan locally.",
+  "offline_plan_expired": "The saved plan has expired. Offline execution has ended.",
+  "offline_plan_unavailable": "fluks is offline. The plan is saved, but its Mapping configuration is not available locally.",
+  "plan_not_updating": "Last received plan. This plan is not being updated while offline.",
+  "plan_generated": "Received plan generated {time}",
+  "plan_expires": "Expires {time}",
+  "plan_empty": "No scheduled Decisions."
 }
