@@ -1,6 +1,7 @@
 """Constants for the fluks integration."""
 
 DOMAIN = "fluks"
+EVENT_DECISION_LOG = "fluks_decision_log"
 API_BASE_URL = "https://app.fluks.one"
 API_TIMEOUT_SECONDS = 10
 DATA_RUNTIME = "runtime"

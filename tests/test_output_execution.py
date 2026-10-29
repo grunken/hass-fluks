@@ -1033,6 +1033,7 @@ async def test_site_balance_null_value_condition_preserves_unrestricted_behavior
 async def _logbook_events(hass):
     """Collect native Logbook events on HA's bus, without replacing Logbook."""
     from homeassistant.core import callback
+    from custom_components.fluks.const import EVENT_DECISION_LOG
 
     events = []
 
@@ -1041,7 +1042,7 @@ async def _logbook_events(hass):
         if event.data.get("domain") == "fluks":
             events.append(dict(event.data))
 
-    hass.bus.async_listen("logbook_entry", received)
+    hass.bus.async_listen(EVENT_DECISION_LOG, received)
     return events
 
 

@@ -3,13 +3,20 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.fluks.const import CONF_INTEGRATION_KEY, DOMAIN
 
 
-async def test_setup_unload_and_reload_have_no_backend_side_effects(hass):
+@pytest.fixture
+def mock_recorder_before_hass(recorder_db_url):
+    """Prepare Recorder before the Logbook dependency is initialized."""
+
+
+async def test_setup_unload_and_reload_have_no_backend_side_effects(hass, recorder_mock):
     """Load, unload, and reload never register backend resources."""
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -64,7 +71,7 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass):
     assert entry.data["integration_id"] == "external-id"
 
 
-async def test_legacy_entry_missing_integration_key_starts_reauth(hass):
+async def test_legacy_entry_missing_integration_key_starts_reauth(hass, recorder_mock):
     """A legacy entry uses Home Assistant's native authentication recovery."""
     entry = MockConfigEntry(
         domain=DOMAIN,

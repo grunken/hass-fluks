@@ -1,7 +1,7 @@
 """The fluks Home Assistant integration."""
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import config_validation as cv
@@ -36,6 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a fluks config entry and start its background runtime transport."""
     if not (integration_key := entry.data.get(CONF_INTEGRATION_KEY)):
         raise ConfigEntryAuthFailed("The fluks Integration credential is missing")
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.BINARY_SENSOR])
     api = FluksApiClient(
         async_get_clientsession(hass), integration_key=integration_key
     )
@@ -86,6 +87,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a fluks config entry and stop its runtime transport."""
+    if not await hass.config_entries.async_unload_platforms(entry, [Platform.BINARY_SENSOR]):
+        return False
     runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME, {})
     publishers = hass.data.get(DOMAIN, {}).get(DATA_OBSERVATIONS, {})
     if (publisher := publishers.pop(entry.entry_id, None)) is not None:

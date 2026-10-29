@@ -9,8 +9,8 @@ from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from homeassistant.components.logbook import async_log_entry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.translation import async_get_translations
 
@@ -19,7 +19,7 @@ from .output_mapping import (
     apply_output_transforms,
     validate_output_configuration,
 )
-from .const import DOMAIN, SIGNED_POWER_CONTROLS, TEMPERATURE_OWNERSHIP_STORAGE_VERSION
+from .const import DOMAIN, EVENT_DECISION_LOG, SIGNED_POWER_CONTROLS, TEMPERATURE_OWNERSHIP_STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
 _DECISION_FIELDS = {"deviceId", "deviceType", "mode"}
@@ -88,6 +88,7 @@ class RuntimeOutputExecutor:
         self._hass = hass
         self._api = api
         self._site_id = site_id
+        self._entry_id = entry_id
         self._sleep = sleep
         self._balance_active = False
         self._temperature_store = ownership_store or Store(
@@ -105,13 +106,16 @@ class RuntimeOutputExecutor:
             translations = await async_get_translations(
                 self._hass, self._hass.config.language, "common", {DOMAIN}
             )
-            async_log_entry(
-                self._hass,
-                "fluks",
-                translations[f"component.{DOMAIN}.common.{key}"].format(**values),
-                domain=DOMAIN,
-                entity_id=entity_id,
+            source_id = er.async_get(self._hass).async_get_entity_id(
+                "binary_sensor", DOMAIN, f"{self._entry_id}_decision_log"
             )
+            self._hass.bus.async_fire(EVENT_DECISION_LOG, {
+                "name": "fluks",
+                "message": translations[f"component.{DOMAIN}.common.{key}"].format(**values),
+                "domain": DOMAIN,
+                "entity_id": source_id or entity_id,
+                "target_entity_id": entity_id,
+            })
         except Exception:  # noqa: BLE001 - Logbook must not interrupt control execution
             _LOGGER.debug("Unable to write fluks Decision to Logbook", exc_info=True)
 
