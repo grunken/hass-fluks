@@ -291,5 +291,6 @@
   "plan_not_updating": "Last received plan. This plan is not being updated while offline.",
   "plan_generated": "Received plan generated {time}",
   "plan_expires": "Expires {time}",
-  "plan_empty": "No scheduled Decisions."
+  "plan_empty": "No upcoming Decisions.",
+  "plan_scheduled": "Scheduled"
 }

@@ -158,7 +158,7 @@ Found something that doesn't work?
 
 ## Offline plans
 
-The Site page shows the latest `fluks.plan`, including scheduled Decisions and expiry in local time. The integration saves the complete plan and the configuration received through its normal Core requests locally. The Site name remains available after a Home Assistant restart.
+While offline, the Site page shows the latest `fluks.plan`, including upcoming scheduled Decisions and expiry in local time. Elapsed entries disappear automatically; this does not indicate whether their actions executed. The integration saves the complete plan and the configuration received through its normal Core requests locally. The Site name remains available after a Home Assistant restart.
 
 Core controls execution while connected. When disconnected, future plan Decisions use the same configured Home Assistant Mappings. Past targets are not replayed after restart. At expiry, release Decisions end local control through those Mappings; temperature controls retain their existing restoration and manual-override behavior. Reconnection stops local scheduling immediately.
 

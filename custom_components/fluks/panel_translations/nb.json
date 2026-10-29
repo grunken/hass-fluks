@@ -291,5 +291,6 @@
   "plan_not_updating": "Sist mottatte plan. Planen oppdateres ikke mens fluks er frakoblet.",
   "plan_generated": "Mottatt plan opprettet {time}",
   "plan_expires": "Utløper {time}",
-  "plan_empty": "Ingen planlagte Decisions."
+  "plan_empty": "Ingen kommende Decisions.",
+  "plan_scheduled": "Planlagt"
 }

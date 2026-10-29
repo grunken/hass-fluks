@@ -2521,22 +2521,105 @@ for (const concept of ["battery.power", "electricVehicle.power", "site.power", "
 }
 
 
-test("plan visualization groups simultaneous Decisions chronologically and preserves values", () => {
+test("plan visualization shows only future Decisions with local times and scheduled power values", () => {
   const panel = new Panel();
-  panel._context = { translations: { plan: "Plan", plan_description: "Scheduled Decisions", plan_generated: "Generated {time}", plan_expires: "Expires {time}", concept_battery_power: "Power" }, site: { name: "Eventyrhaven 1" }, plan_devices: { battery: "Battery · GoodWe", site: "Eventyrhaven 1" } };
+  panel._context = { translations: { plan: "Plan", plan_scheduled: "Scheduled", plan_description: "Scheduled Decisions", plan_generated: "Generated {time}", plan_expires: "Expires {time}", "concept_battery.power": "Power" }, site: { name: "Eventyrhaven 1" }, plan_devices: { battery: "Battery · GoodWe", site: "Eventyrhaven 1" } };
   panel._hass = { language: "da", localize: () => undefined };
   const now = Date.now(), at = new Date(now + 3600000).toISOString(), expires = new Date(now + 7200000).toISOString();
   panel._plan = { generatedAt: new Date(now).toISOString(), expiresAt: expires, decisions: [
+    { at: new Date(now - 1000).toISOString(), "battery.power": { deviceId: "battery", mode: "target", value: "9999" } },
+    { at: new Date(now).toISOString(), "battery.power": { deviceId: "battery", mode: "target", value: "8888" } },
+    { at: "invalid", "battery.power": { deviceId: "battery", mode: "target", value: "7777" } },
     { at: expires, "battery.power": { deviceId: "battery", mode: "release", value: null } },
     { at, "battery.power": { deviceId: "battery", mode: "target", value: "-556" } },
     { at, "site.power": { deviceId: "site", mode: "balance", value: "0" } },
+    { at, "heatPump.temperature": { deviceId: "heat-pump", mode: "target", value: "21" } },
   ] };
   const html = panel._renderPlan();
   assert.equal((html.match(/class="plan-slot"/g) ?? []).length, 2);
   assert.ok(html.indexOf("target") < html.indexOf("release"));
   assert.match(html, /Battery · GoodWe/); assert.match(html, /Eventyrhaven 1/);
-  assert.match(html, /-556/); assert.match(html, /balance · 0/); assert.match(html, /release · —/);
+  assert.match(html, /Scheduled · Power · target · -556 W/);
+  assert.match(html, /balance · 0 W/); assert.match(html, /release · —/);
+  assert.match(html, /target · 21<\/span>/); assert.doesNotMatch(html, /21 W|— W/);
+  assert.match(html, /mdi:clock-outline/);
+  assert.doesNotMatch(html, /9999|8888|7777|executed|completed/i);
   assert.ok(html.includes(panel._decisionTime(at)));
+});
+
+test("offline plan removes elapsed actions automatically using the existing status timer", (t) => {
+  const now = Date.parse("2026-10-29T16:00:00Z");
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now });
+  const panel = new Panel();
+  panel._context = { translations: { plan_scheduled: "Scheduled", plan_empty: "No upcoming Decisions." }, site: { name: "Home" } };
+  const stamp = (offset) => new Date(now + offset).toISOString();
+  const plan = { generatedAt: stamp(0), expiresAt: stamp(6000), decisions: [
+    { at: stamp(2000), "battery.power": { deviceId: "battery", mode: "target", value: "3000" } },
+    { at: stamp(5000), "battery.power": { deviceId: "battery", mode: "target", value: "1500" } },
+    { at: stamp(6000), "battery.power": { deviceId: "battery", mode: "release", value: null } },
+  ] };
+  const original = structuredClone(plan);
+  let html, updates = 0;
+  const node = {
+    dataset: {},
+    set outerHTML(value) {
+      html = value;
+      this.dataset.nextAt = value.match(/data-next-at="(\d+)"/)?.[1];
+      updates++;
+    },
+  };
+  panel.shadowRoot.querySelector = (selector) => selector === "#plan" ? node : null;
+  panel._renderHome = () => { node.outerHTML = panel._renderPlan(); };
+  try {
+    panel._applyRuntimeStatus({ state: "reconnecting", plan, plan_state: "executing" });
+    assert.match(html, /3000 W/); assert.match(html, /1500 W/);
+    t.mock.timers.tick(1000);
+    assert.equal(updates, 1); // Do not redraw until a displayed timestamp passes.
+    t.mock.timers.tick(1000);
+    assert.doesNotMatch(html, /3000 W/); assert.match(html, /1500 W/);
+    t.mock.timers.tick(4000);
+    assert.doesNotMatch(html, /plan-slot|1500 W|release ·|executed|completed/i);
+    assert.match(html, /No upcoming Decisions/);
+    const emptyUpdates = updates;
+    t.mock.timers.tick(1000);
+    assert.equal(updates, emptyUpdates);
+    assert.deepEqual(plan, original); // Display filtering never modifies the cached wire plan.
+  } finally {
+    panel._unsubscribeRuntimeStatus();
+  }
+});
+
+test("Site shows its cached plan only offline and hides it again on reconnect", () => {
+  const panel = new Panel();
+  panel._context = { translations: { plan_expires: "Expires {time}" }, site: { name: "Eventyrhaven 1" }, devices: [], plan_devices: {} };
+  const expires = new Date(Date.now() + 60000).toISOString();
+  const plan = { generatedAt: new Date().toISOString(), expiresAt: expires, decisions: [] };
+  panel._runtimeStatusKnown = true;
+  panel._runtimeStatus = { state: "connected", disconnected_at: null };
+  let body;
+  panel._frame = (_title, html) => { body = html; };
+  panel._wireMenu = () => {};
+  panel._loadContext = () => panel._renderHome();
+  try {
+    panel._applyRuntimeStatus({ state: "connected", plan });
+    assert.doesNotMatch(body, /id="plan"|plan-metadata/);
+    assert.match(body, /connection-card/);
+    assert.match(body, /id="home-configuration"/);
+    assert.strictEqual(panel._plan, plan);
+
+    panel._applyRuntimeStatus({ state: "reconnecting", disconnected_at: Date.now() });
+    assert.match(body, /id="plan"/);
+    assert.match(body, /connection-card/);
+    assert.ok(body.includes(`Expires ${panel._decisionTime(expires)}`));
+    assert.strictEqual(panel._plan, plan);
+
+    panel._applyRuntimeStatus({ state: "connected", disconnected_at: null });
+    assert.doesNotMatch(body, /id="plan"|plan-metadata/);
+    assert.match(body, /id="home-configuration"/);
+    assert.strictEqual(panel._plan, plan);
+  } finally {
+    panel._unsubscribeRuntimeStatus();
+  }
 });
 
 test("offline Site keeps Connection, cached names and plan while hiding Core-only actions", () => {

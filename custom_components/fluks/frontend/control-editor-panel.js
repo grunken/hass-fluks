@@ -253,6 +253,10 @@ class FluksControlEditorPanel extends HTMLElement {
     if (planStatus) planStatus.textContent = this._offline() ? this._offlineMessage() : this._t("plan_description");
     const note = this.shadowRoot?.querySelector("#plan-update-note");
     if (note) note.hidden = !this._offline();
+    const plan = this.shadowRoot?.querySelector("#plan");
+    if (plan && this._offline() && Number(plan.dataset.nextAt) <= Date.now()) {
+      plan.outerHTML = this._renderPlan();
+    }
   }
   async _ensureControlActionEditor() {
     const { FluksControlActionEditor } = await loadControlActionEditor();
@@ -584,7 +588,7 @@ class FluksControlEditorPanel extends HTMLElement {
       <section><h2>${esc(this._t("site"))}</h2><div class="card site-row"><${offline ? "div" : "button"} class="site-link"${offline ? "" : ' id="site-detail"'}>${this._typeIcon("site")}
       <span class="row-copy"><strong>${esc(site.name || this._t("site"))}</strong></span>${offline ? "" : '<span class="chevron">›</span>'}</${offline ? "div" : "button"}>${offline ? "" : `<button class="icon overflow" id="site-menu" aria-label="${esc(this._t("site_actions"))}" aria-haspopup="menu">⋮</button>`}${this._configurationIndicator(site.configuration_status)}
       ${offline ? "" : `<div class="context-menu" id="site-actions" role="menu" hidden><button class="menu-danger" id="delete-site" role="menuitem">${esc(this._t("delete_site"))}</button></div>`}</div></section>
-      ${this._renderPlan()}
+      ${offline ? this._renderPlan() : ""}
       <section id="recent-decisions" ${offline && !this._recentDecisions.length ? "hidden" : ""}><h2>${esc(this._t("recent_decisions"))}</h2><div class="card list">
       ${this._recentDecisionsLoading ? `<p class="decision-feed-message">${esc(this._t("loading_decisions"))}</p>` : this._recentDecisionsError ? `<p class="decision-feed-message">${esc(this._t("decisions_unavailable"))}</p>` : this._recentDecisions.length ? this._recentDecisions.map((decision) => {
         const details = [this._decisionTime(decision.time), decision.action, decision.mode, decision.value].filter((value) => value !== undefined && value !== null && value !== "").join(" · ");
@@ -613,22 +617,24 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _renderPlan() {
     const plan = this._plan;
+    const now = Date.now();
     const groups = new Map();
     for (const slot of plan?.decisions ?? []) {
       const at = Date.parse(slot.at);
-      if (!Number.isFinite(at)) continue;
+      if (!Number.isFinite(at) || at <= now) continue;
       const rows = groups.get(at) ?? [];
       for (const [concept, decision] of Object.entries(slot)) {
         if (concept === "at" || !decision || typeof decision !== "object") continue;
         const device = this._context.plan_devices?.[decision.deviceId]
           ?? (concept.startsWith("site.") ? this._context.site?.name : null)
           ?? this._t(`device_type_${concept.split(".")[0]}`);
-        const value = decision.value === null ? "—" : String(decision.value);
-        rows.push(`<div class="row decision-row"><ha-icon icon="mdi:lightning-bolt-outline"></ha-icon><span class="row-copy"><strong>${esc(device)}</strong><span>${esc(this._t(`concept_${concept}`))} · ${esc(decision.mode ?? this._t("default_behavior"))} · ${esc(value)}</span></span></div>`);
+        const value = decision.value === null ? "—" : `${decision.value}${concept.endsWith(".power") ? " W" : ""}`;
+        rows.push(`<div class="row decision-row"><ha-icon icon="mdi:clock-outline"></ha-icon><span class="row-copy"><strong>${esc(device)}</strong><span>${esc(this._t("plan_scheduled"))} · ${esc(this._t(`concept_${concept}`))} · ${esc(decision.mode ?? this._t("default_behavior"))} · ${esc(value)}</span></span></div>`);
       }
       groups.set(at, rows);
     }
-    return `<section id="plan"><h2>${esc(this._t("plan"))}</h2><div class="card"><p id="plan-status" role="status" aria-live="polite">${esc(this._offline() ? this._offlineMessage() : this._t("plan_description"))}</p><small id="plan-update-note" ${this._offline() ? "" : "hidden"}>${esc(this._t("plan_not_updating"))}</small>${plan ? `<p class="plan-metadata">${esc(this._t("plan_generated", { time: this._decisionTime(plan.generatedAt) }))} · ${esc(this._t("plan_expires", { time: this._decisionTime(plan.expiresAt) }))}</p>` : ""}</div>${[...groups].sort(([a], [b]) => a - b).map(([at, rows]) => `<div class="plan-slot"><h3><time datetime="${new Date(at).toISOString()}">${esc(this._decisionTime(at))}</time></h3><div class="card list">${rows.join("")}</div></div>`).join("") || `<div class="card"><p>${esc(this._t(plan ? "plan_empty" : "no_plan"))}</p></div>`}</section>`;
+    const slots = [...groups].sort(([a], [b]) => a - b);
+    return `<section id="plan"${slots.length ? ` data-next-at="${slots[0][0]}"` : ""}><h2>${esc(this._t("plan"))}</h2><div class="card"><p id="plan-status" role="status" aria-live="polite">${esc(this._offline() ? this._offlineMessage() : this._t("plan_description"))}</p><small id="plan-update-note" ${this._offline() ? "" : "hidden"}>${esc(this._t("plan_not_updating"))}</small>${plan ? `<p class="plan-metadata">${esc(this._t("plan_generated", { time: this._decisionTime(plan.generatedAt) }))} · ${esc(this._t("plan_expires", { time: this._decisionTime(plan.expiresAt) }))}</p>` : ""}</div>${slots.map(([at, rows]) => `<div class="plan-slot"><h3><time datetime="${new Date(at).toISOString()}">${esc(this._decisionTime(at))}</time></h3><div class="card list">${rows.join("")}</div></div>`).join("") || `<div class="card"><p>${esc(this._t(plan ? "plan_empty" : "no_plan"))}</p></div>`}</section>`;
   }
   async _loadRecentDecisions() {
     if (this._offline() || this._recentDecisionsLoaded || this._recentDecisionsLoading || this._view.name !== "home") return;

@@ -291,5 +291,6 @@
   "plan_not_updating": "Senast mottagna plan. Planen uppdateras inte medan fluks är frånkopplad.",
   "plan_generated": "Mottagen plan skapad {time}",
   "plan_expires": "Löper ut {time}",
-  "plan_empty": "Inga schemalagda Decisions."
+  "plan_empty": "Inga kommande Decisions.",
+  "plan_scheduled": "Schemalagd"
 }

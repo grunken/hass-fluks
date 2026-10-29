@@ -291,5 +291,6 @@
   "plan_not_updating": "Senest modtagne plan. Planen opdateres ikke, mens fluks er offline.",
   "plan_generated": "Modtaget plan oprettet {time}",
   "plan_expires": "Udløber {time}",
-  "plan_empty": "Ingen planlagte Decisions."
+  "plan_empty": "Ingen kommende Decisions.",
+  "plan_scheduled": "Planlagt"
 }

@@ -291,5 +291,6 @@
   "plan_not_updating": "Zuletzt empfangener Plan. Dieser Plan wird offline nicht aktualisiert.",
   "plan_generated": "Empfangener Plan erstellt am {time}",
   "plan_expires": "Läuft ab am {time}",
-  "plan_empty": "Keine geplanten Decisions."
+  "plan_empty": "Keine bevorstehenden Decisions.",
+  "plan_scheduled": "Geplant"
 }
