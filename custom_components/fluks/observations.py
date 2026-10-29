@@ -224,7 +224,9 @@ class RealtimeObservationPublisher:
         self._availability_task_sources: dict[str, str] = {}
         self._availability_cooldown = availability_cooldown
         self._loaded = False
+        self._initialized = False
         self._unsubscribe: Callable[[], None] | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
         self._refresh_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._stopped = False
@@ -234,9 +236,18 @@ class RealtimeObservationPublisher:
             )
 
     def _async_runtime_status_changed(self, status: dict[str, Any]) -> None:
-        """Forget duplicate baselines while disconnected so reconnect resends state."""
+        """Reset duplicate baselines and recover initialization on reconnect."""
+        if self._stopped:
+            return
         if status.get("state") != "connected":
             self._last_sent.clear()
+        elif not self._initialized and (
+            self._recovery_task is None or self._recovery_task.done()
+        ):
+            self._recovery_task = self._hass.async_create_task(
+                self.async_refresh(only_if_uninitialized=True),
+                "fluks observations recovery",
+            )
 
     async def _async_send_observations(
         self,
@@ -380,10 +391,10 @@ class RealtimeObservationPublisher:
         )
         return f"{converted:g} {canonical_temperature_unit}"
 
-    async def async_refresh(self) -> None:
+    async def async_refresh(self, *, only_if_uninitialized: bool = False) -> None:
         """Replace subscriptions from the current persisted input Mappings."""
         async with self._refresh_lock:
-            if self._stopped:
+            if self._stopped or (only_if_uninitialized and self._initialized):
                 return
             await self._async_load()
             try:
@@ -528,6 +539,7 @@ class RealtimeObservationPublisher:
                     list(by_entity),
                     _state_changed,
                 )
+            self._initialized = True
             for entity_id, device_id, concept, attribute in baselines:
                 if (state := self._hass.states.get(entity_id)) is not None:
                     await self._async_publish_cumulative(
@@ -900,6 +912,10 @@ class RealtimeObservationPublisher:
         if self._unsubscribe_runtime_status is not None:
             self._unsubscribe_runtime_status()
             self._unsubscribe_runtime_status = None
+        if self._recovery_task is not None:
+            self._recovery_task.cancel()
+            await asyncio.gather(self._recovery_task, return_exceptions=True)
+            self._recovery_task = None
         tasks = list(self._availability_tasks.values())
         for task in tasks:
             if not task.done():

@@ -1,5 +1,6 @@
 """Tests for realtime canonical Fact publishing."""
 
+import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 
 from homeassistant.core import State
 
+from custom_components.fluks.api import FluksCannotConnect
 from custom_components.fluks.observations import RealtimeObservationPublisher
 
 
@@ -35,6 +37,133 @@ def state_event(state, when):
     return SimpleNamespace(
         data={"entity_id": state.entity_id, "new_state": state}, time_fired=when
     )
+
+
+@pytest.fixture
+async def recovering_publisher(hass):
+    api = AsyncMock()
+    api.list_devices.return_value = [{"id": "battery", "deviceId": "external-battery"}]
+    api.list_mappings.return_value = [{
+        "direction": "input", "deviceId": "battery", "concept": "battery.power",
+        "configuration": {"entityId": "sensor.recovery", "attribute": "power"},
+    }]
+    api.get_device_type_catalog.return_value = []
+    send = AsyncMock(return_value=True)
+    listeners = []
+
+    def subscribe(listener):
+        listeners.append(listener)
+        return lambda: listeners.remove(listener)
+
+    observations = RealtimeObservationPublisher(
+        hass, api, "site", "recovery", send, subscribe_runtime_status=subscribe,
+    )
+    observations._store = MemoryStore()
+    yield observations, api, send, listeners
+    await observations.async_stop()
+
+
+@pytest.mark.parametrize("failed_fetch", ["list_devices", "list_mappings", "get_device_type_catalog"])
+async def test_reconnect_recovers_failed_initial_metadata_and_delivers_state_changes(
+    hass, recovering_publisher, failed_fetch,
+):
+    observations, api, send, listeners = recovering_publisher
+    getattr(api, failed_fetch).side_effect = FluksCannotConnect()
+    await observations.async_refresh()
+    hass.states.async_set("sensor.recovery", "ready", {"power": 100})
+    await hass.async_block_till_done()
+    send.assert_not_awaited()
+
+    getattr(api, failed_fetch).side_effect = None
+    listeners[0]({"state": "reconnecting"})
+    listeners[0]({"state": "connected"})
+    await hass.async_block_till_done()
+    hass.states.async_set("sensor.recovery", "ready", {"power": 200})
+    await hass.async_block_till_done()
+    send.assert_awaited_once_with({"deviceId": "external-battery", "battery.power": 200})
+
+    # Repeated status notifications must not replace healthy subscriptions.
+    fetches = api.list_devices.await_count
+    listeners[0]({"state": "connected"})
+    await hass.async_block_till_done()
+    assert api.list_devices.await_count == fetches
+    await observations.async_stop()
+    assert not listeners
+    hass.states.async_set("sensor.recovery", "ready", {"power": 300})
+    await hass.async_block_till_done()
+    assert send.await_count == 1
+
+
+@pytest.mark.parametrize("initial_fails", [False, True])
+async def test_reconnect_during_initial_fetch_serializes_and_coalesces_recovery(
+    hass, recovering_publisher, initial_fails,
+):
+    observations, api, send, listeners = recovering_publisher
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def fetch(_site):
+        if api.list_devices.await_count == 1:
+            started.set()
+            await finish.wait()
+            if initial_fails:
+                raise FluksCannotConnect()
+        return [{"id": "battery", "deviceId": "external-battery"}]
+
+    api.list_devices.side_effect = fetch
+    initial = asyncio.create_task(observations.async_refresh())
+    await started.wait()
+    for _ in range(3):
+        listeners[0]({"state": "reconnecting"})
+        listeners[0]({"state": "connected"})
+    await asyncio.sleep(0)
+    assert api.list_devices.await_count == 1
+    finish.set()
+    await initial
+    await hass.async_block_till_done()
+    assert api.list_devices.await_count == (2 if initial_fails else 1)
+    hass.states.async_set("sensor.recovery", "ready", {"power": 123})
+    await hass.async_block_till_done()
+    send.assert_awaited_once_with({"deviceId": "external-battery", "battery.power": 123})
+
+
+async def test_stop_cancels_inflight_recovery_and_does_not_install_listeners(
+    hass, recovering_publisher,
+):
+    observations, api, send, listeners = recovering_publisher
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def fetch(_site):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    api.list_devices.side_effect = fetch
+    listeners[0]({"state": "connected"})
+    await asyncio.wait_for(started.wait(), 1)
+    await observations.async_stop()
+    assert cancelled.is_set()
+    assert not listeners
+    await observations.async_refresh()
+    hass.states.async_set("sensor.recovery", "ready", {"power": 200})
+    await hass.async_block_till_done()
+    send.assert_not_awaited()
+
+
+async def test_empty_mappings_are_initialized_without_repeated_discovery(
+    hass, recovering_publisher,
+):
+    observations, api, send, listeners = recovering_publisher
+    api.list_mappings.return_value = []
+    await observations.async_refresh()
+    for _ in range(2):
+        listeners[0]({"state": "reconnecting"})
+        listeners[0]({"state": "connected"})
+        await hass.async_block_till_done()
+    api.list_devices.assert_awaited_once()
+    send.assert_not_awaited()
 
 
 def space_heater_state_mapping(*, power=False, energy=False):
