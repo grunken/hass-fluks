@@ -1,5 +1,7 @@
 """Tests for the finite authenticated fluks panel command boundary."""
 
+import pytest
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2729,7 +2731,7 @@ async def test_control_save_accepts_local_battery_hold_without_catalog_mode(hass
 async def test_control_save_reconciles_separate_mode_mapping_records(hass):
     entry = make_entry(hass)
     default = output_configuration(40)
-    target = output_configuration(60)
+    discharge = output_configuration(60)
     release = output_configuration(0)
     charge = output_configuration(80)
     api = MagicMock(spec=FluksApiClient)
@@ -2752,7 +2754,7 @@ async def test_control_save_reconciles_separate_mode_mapping_records(hass):
             "device_id": "device-a", "concept": "battery.power",
             "behaviors": [
                 {"mode": None, "configuration": default},
-                {"mode": "target", "configuration": target},
+                {"mode": "discharge", "configuration": discharge},
                 {"mode": "release", "configuration": release},
                 {"mode": "charge", "configuration": charge},
             ],
@@ -2761,7 +2763,7 @@ async def test_control_save_reconciles_separate_mode_mapping_records(hass):
 
     api.update_mapping.assert_not_awaited()
     api.delete_mapping.assert_awaited_once_with("site-a", "limit-map")
-    assert [call.args[1]["mode"] for call in api.create_mapping.await_args_list] == ["target", "release", "charge"]
+    assert [call.args[1]["mode"] for call in api.create_mapping.await_args_list] == ["discharge", "release", "charge"]
     conn.send_result.assert_called_once_with(24, {"changed": True})
 
 
@@ -3014,3 +3016,36 @@ async def test_site_delete_removes_entry_only_after_backend_success(hass):
     api.delete_site.assert_awaited_once_with("site-a")
     remove.assert_awaited_once_with(entry.entry_id)
     conn.send_result.assert_called_once_with(4, {"entry_removed": True})
+
+
+@pytest.mark.parametrize("device_type", ["battery", "electricVehicle"])
+@pytest.mark.parametrize("mode", ["target", "limit"])
+async def test_signed_power_save_rejects_removed_mapping_behaviors(hass, device_type, mode):
+    entry = make_entry(hass)
+    concept = f"{device_type}.power"
+    catalog = {device_type: {"type": device_type, "concepts": [{"concept": concept, "datatype": "number", "usages": ["control"], "mappingModes": [None, "target", "limit", "release"]}]}}
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "device-a", "type": device_type})
+    api.list_mappings = AsyncMock(return_value=[])
+    api.create_mapping = AsyncMock()
+    conn = connection()
+    with patch("custom_components.fluks.panel_api._api", return_value=api), patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)):
+        websocket_control_save(hass, conn, {"id": 41, "type": COMMAND_CONTROL_SAVE, "entry_id": entry.entry_id, "device_id": "device-a", "concept": concept, "behaviors": [{"mode": mode, "configuration": output_configuration()}]})
+        await hass.async_block_till_done()
+    api.create_mapping.assert_not_awaited()
+    conn.send_error.assert_called_once()
+
+
+@pytest.mark.parametrize("concept", ["battery.power", "electricVehicle.power", "site.power", "heatPump.temperature"])
+def test_only_signed_power_mapping_definitions_remove_target_and_limit(concept):
+    from custom_components.fluks.panel_api import _control_concepts, _control_behaviors
+    definition = {"concept": concept, "datatype": "number", "usages": ["control"], "mappingModes": [None, "target", "limit", "release"]}
+    presented = _control_concepts({"concepts": [definition]})[0]
+    behaviors = _control_behaviors(definition)
+    if concept in {"battery.power", "electricVehicle.power"}:
+        assert "target" not in presented["mappingModes"] and "limit" not in presented["mappingModes"]
+        assert "target" not in behaviors and "limit" not in behaviors
+        assert {"charge", "discharge", "hold"} <= set(behaviors)
+    else:
+        assert presented == definition
+        assert {"target", "limit"} <= set(behaviors)

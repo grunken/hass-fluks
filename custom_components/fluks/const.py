@@ -5,6 +5,7 @@ API_BASE_URL = "https://app.fluks.one"
 API_TIMEOUT_SECONDS = 10
 DATA_RUNTIME = "runtime"
 DATA_OBSERVATIONS = "observations"
+SIGNED_POWER_CONTROLS = {"battery.power", "electricVehicle.power"}
 ENERGY_LIFETIME_STORAGE_VERSION = 1
 TEMPERATURE_OWNERSHIP_STORAGE_VERSION = 1
 

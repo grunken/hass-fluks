@@ -4,6 +4,8 @@ import asyncio
 from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from custom_components.fluks.output_execution import RuntimeOutputExecutor
 
 
@@ -402,7 +404,7 @@ async def test_snapshot_resolves_device_mapping_transforms_and_order(hass):
     ]
 
 
-async def test_decision_mode_selects_only_the_exact_mapping_behavior(hass):
+async def test_site_decision_mode_selects_only_the_exact_mapping_behavior(hass):
     calls = []
 
     async def record(call):
@@ -411,24 +413,26 @@ async def test_decision_mode_selects_only_the_exact_mapping_behavior(hass):
     hass.services.async_register("select", "select_option", record)
     default = _mapping()
     default["configuration"]["actions"] = [default["configuration"]["actions"][0]]
+    default.update(deviceId="internal-site", concept="site.power")
     target = _mapping("target")
+    target.update(deviceId="internal-site", concept="site.power")
     target["configuration"]["actions"] = [target["configuration"]["actions"][0]]
     target["configuration"]["actions"][0]["data"]["option"]["value"] = "target"
     api = MagicMock()
     api.list_devices = AsyncMock(return_value=[{
-        "id": "internal-battery", "deviceId": "external-battery", "type": "battery",
+        "id": "internal-site", "deviceId": "external-site", "type": "site",
     }])
     api.list_mappings = AsyncMock(return_value=[default, target])
-    api.get_device_type_catalog = AsyncMock(return_value=_catalog())
+    api.get_device_type_catalog = AsyncMock(return_value=[{"type": "site", "concepts": [{"concept": "site.power", "datatype": "number", "usages": ["control"]}]}])
     executor = RuntimeOutputExecutor(hass, api, "site-a")
 
     await executor.async_handle({"type": "decision.snapshot", "decisions": [{
-        "deviceId": "external-battery", "deviceType": "battery", "power": 100, "mode": "target",
+        "deviceId": "external-site", "deviceType": "site", "power": 100, "mode": "target",
     }]})
     assert calls == ["target"]
 
     await executor.async_handle({"type": "decision.snapshot", "decisions": [{
-        "deviceId": "external-battery", "deviceType": "battery", "power": 0, "mode": None,
+        "deviceId": "external-site", "deviceType": "site", "power": 0, "mode": None,
     }]})
     assert calls == ["target", "eco"]
 
@@ -1151,3 +1155,53 @@ async def test_logbook_failure_does_not_stop_configured_actions(hass):
         })
     assert len(received) == 2
     assert received[1]["value"] == -1500
+
+
+@pytest.mark.parametrize("device_type", ["battery", "electricVehicle"])
+@pytest.mark.parametrize("mode,value,behavior", [("target", "6350", "charge"), ("target", "-2300", "discharge"), ("target", "0", "hold"), ("release", "0", "release")])
+async def test_signed_power_target_and_release_use_only_their_configured_behaviors(hass, device_type, mode, value, behavior):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data))
+    mappings = [_battery_signed_mapping(m, f"number.{m}") for m in ["charge", "discharge", "hold", "release", "target", "limit"]]
+    for mapping in mappings:
+        mapping["concept"] = f"{device_type}.power"
+        mapping["configuration"]["actions"][0]["data"] = {"value": {"kind": "requestedValue"}}
+    api = _battery_signed_api(mappings)
+    api.list_devices.return_value[0]["type"] = device_type
+    api.get_device_type_catalog.return_value[0]["type"] = device_type
+    api.get_device_type_catalog.return_value[0]["concepts"][0]["concept"] = f"{device_type}.power"
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": device_type, "power": value, "mode": mode,
+    }]})
+    assert calls == [{"value": int(value), "entity_id": f"number.{behavior}"}]
+
+
+@pytest.mark.parametrize("device_type", ["battery", "electricVehicle"])
+@pytest.mark.parametrize("mode", ["target", "limit"])
+async def test_removed_signed_power_mapping_modes_are_never_a_fallback(hass, device_type, mode):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call))
+    mapping = _battery_signed_mapping(mode, "number.removed")
+    mapping["concept"] = f"{device_type}.power"
+    api = _battery_signed_api([mapping])
+    api.list_devices.return_value[0]["type"] = device_type
+    api.get_device_type_catalog.return_value[0]["type"] = device_type
+    api.get_device_type_catalog.return_value[0]["concepts"][0]["concept"] = f"{device_type}.power"
+    events = await _logbook_events(hass)
+    await RuntimeOutputExecutor(hass, api, "site-a").async_handle({"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": device_type, "power": "6350", "mode": mode,
+    }]})
+    await hass.async_block_till_done()
+    assert calls == []
+    assert "No actions performed" in events[0]["message"]
+
+
+@pytest.mark.parametrize("mode", ["target", "limit"])
+async def test_site_target_and_limit_still_execute_exact_mapping_without_balance_ownership(hass, mode):
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data))
+    mapping = _site_power_mapping(mode=mode, entity="number.site")
+    executor = RuntimeOutputExecutor(hass, _site_condition_api([mapping]), "site-a")
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", mode, 1234)]})
+    assert calls == [{"value": 1234, "entity_id": "number.site"}]
+    assert executor._balance_active is False

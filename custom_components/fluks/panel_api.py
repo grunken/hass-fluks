@@ -32,6 +32,7 @@ from .api import (
     FluksValidationError,
 )
 from .const import (
+    SIGNED_POWER_CONTROLS,
     CONF_CLEARED_MAPPING_CONCEPTS,
     CONF_DEVICE,
     CONF_DEVICE_CONTEXTS,
@@ -246,7 +247,8 @@ def _mappable_concepts(catalog_item: dict[str, Any]) -> list[dict[str, Any]]:
 def _control_concepts(catalog_item: dict[str, Any]) -> list[dict[str, Any]]:
     """Return catalog controls exposed during the Add-device review."""
     return [
-        concept
+        dict(concept, mappingModes=[mode for mode in (concept.get("mappingModes") or []) if mode not in {"target", "limit"}])
+        if concept["concept"] in SIGNED_POWER_CONTROLS else concept
         for concept in catalog_item["concepts"]
         if isinstance(concept, dict)
         and isinstance(concept.get("concept"), str)
@@ -258,10 +260,12 @@ def _control_behaviors(concept: dict[str, Any]) -> list[str]:
     """Use the same local behavior labels as the output editor."""
     behaviors: list[str] = []
     for mode in concept.get("mappingModes") or [None]:
+        if concept.get("concept") in SIGNED_POWER_CONTROLS and mode in {"target", "limit"}:
+            continue
         behavior = "default" if mode is None else mode
         if isinstance(behavior, str) and behavior and behavior not in behaviors:
             behaviors.append(behavior)
-    if concept.get("concept") == "battery.power" and concept.get("datatype") == "number":
+    if concept.get("concept") in SIGNED_POWER_CONTROLS and concept.get("datatype") == "number":
         for behavior in ("charge", "discharge", "hold"):
             if behavior not in behaviors:
                 behaviors.append(behavior)
@@ -593,6 +597,7 @@ def _configuration_status(
         if isinstance(item, dict)
         if item.get("direction") == "output"
         and isinstance(item.get("concept"), str)
+        and not (item.get("concept") in SIGNED_POWER_CONTROLS and item.get("mode") in {"target", "limit"})
         and isinstance(item.get("configuration"), dict)
         and isinstance(item["configuration"].get("actions"), list)
         and item["configuration"]["actions"]
@@ -1174,6 +1179,8 @@ async def websocket_device_detail(hass, connection, msg):
         output_mappings: dict[str, list[dict[str, Any]]] = {}
         for item in mappings:
             if item.get("direction") == "output" and isinstance(item.get("concept"), str):
+                if item["concept"] in SIGNED_POWER_CONTROLS and item.get("mode") in {"target", "limit"}:
+                    continue
                 output_mappings.setdefault(str(item["concept"]), []).append(item)
         concepts = _mappable_concepts(catalog[device_type])
         ha_device_id = _ha_context(entry, device_id)
@@ -1749,9 +1756,8 @@ async def websocket_control_save(hass, connection, msg):
             raise PanelCommandError("not_found")
         allowed_modes = set(definition.get("mappingModes") or [None])
         allowed_modes.add(None)
-        if msg["concept"] == "battery.power" and definition.get("datatype") == "number":
-            # Charge/discharge/hold are local HACS execution behaviors. They
-            # are selected from the signed value and are not backend modes.
+        if msg["concept"] in SIGNED_POWER_CONTROLS and definition.get("datatype") == "number":
+            allowed_modes.difference_update({"target", "limit"})
             allowed_modes.update({"charge", "discharge", "hold"})
         mappings = await api.list_mappings(site_id, device_id=msg["device_id"])
         existing = [item for item in mappings
@@ -1862,7 +1868,10 @@ async def websocket_control_suggestions(hass, connection, msg):
             ),
             None,
         )
-        if definition is None or not all(
+        if definition is None or (
+            msg["concept"] in SIGNED_POWER_CONTROLS
+            and any(mode in {"target", "limit"} for mode in msg["behaviors"] if isinstance(mode, str))
+        ) or not all(
             isinstance(item, str) and item for item in msg["behaviors"]
         ) or not all(isinstance(item, dict) for item in msg["actions"]):
             _LOGGER.warning(

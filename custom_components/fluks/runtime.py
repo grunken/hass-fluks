@@ -186,12 +186,35 @@ class FluksRuntimeWebSocket:
                 break
 
     async def _handle_message(self, payload: Any) -> None:
-        """Validate and deliver supported runtime message envelopes."""
-        if not isinstance(payload, dict) or not isinstance(payload.get("type"), str):
+        """Deliver concept-keyed Decisions through the existing snapshot executor."""
+        if not isinstance(payload, dict):
             _LOGGER.debug("Ignoring malformed fluks runtime message envelope")
             return
-        if payload["type"] == "decision.snapshot":
-            if self._message_handler is not None:
-                await self._message_handler(payload)
+        if "type" in payload:
+            if payload["type"] == "decision.snapshot":
+                if self._message_handler is not None:
+                    await self._message_handler(payload)
+            else:
+                _LOGGER.debug("Ignoring unsupported fluks runtime message type %s", payload["type"])
             return
-        _LOGGER.debug("Ignoring unsupported fluks runtime message type %s", payload["type"])
+
+        decisions = []
+        for concept, decision in payload.items():
+            device_type, separator, field = concept.partition(".")
+            if (
+                not separator or not device_type or not field
+                or not isinstance(decision, dict)
+                or not isinstance(decision.get("deviceId"), str)
+                or not decision["deviceId"]
+                or "value" not in decision
+            ):
+                _LOGGER.debug("Ignoring malformed fluks runtime Decision for %s", concept)
+                continue
+            decisions.append({
+                "deviceId": decision["deviceId"],
+                "deviceType": device_type,
+                field: decision["value"],
+                "mode": decision.get("mode"),
+            })
+        if decisions and self._message_handler is not None:
+            await self._message_handler({"type": "decision.snapshot", "decisions": decisions})

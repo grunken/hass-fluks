@@ -190,3 +190,40 @@ async def test_observation_send_reuses_current_socket_after_reconnect():
     ]
     assert len(session.calls) == 2
     await runtime.async_stop()
+
+
+async def test_concept_keyed_decisions_are_dispatched_on_connect_live_and_reconnect():
+    import json
+    first = FakeSocket([
+        SimpleNamespace(type=WSMsgType.TEXT, data=json.dumps({"electricVehicle.power": {"deviceId": "ev", "value": "6350", "mode": "target"}})),
+        SimpleNamespace(type=WSMsgType.TEXT, data=json.dumps({"site.power": {"deviceId": "site", "value": "1000", "mode": "target"}})),
+    ])
+    second = FakeSocket([
+        SimpleNamespace(type=WSMsgType.TEXT, data=json.dumps({"electricVehicle.power": {"deviceId": "ev", "value": "0", "mode": "target"}})),
+    ], hold=True)
+    handler = AsyncMock()
+    runtime = FluksRuntimeWebSocket(FakeSession([first, second]), KEY, API_BASE_URL, message_handler=handler, reconnect_delays=(0,))
+    runtime.start(asyncio.create_task)
+    await _wait_for(lambda: handler.await_count == 3)
+    assert [call.args[0] for call in handler.await_args_list] == [
+        {"type": "decision.snapshot", "decisions": [{"deviceId": "ev", "deviceType": "electricVehicle", "power": "6350", "mode": "target"}]},
+        {"type": "decision.snapshot", "decisions": [{"deviceId": "site", "deviceType": "site", "power": "1000", "mode": "target"}]},
+        {"type": "decision.snapshot", "decisions": [{"deviceId": "ev", "deviceType": "electricVehicle", "power": "0", "mode": "target"}]},
+    ]
+    await runtime.async_stop()
+
+
+async def test_concept_keyed_batch_preserves_zero_false_and_release_null():
+    handler = AsyncMock()
+    runtime = FluksRuntimeWebSocket(FakeSession([]), KEY, API_BASE_URL, message_handler=handler)
+    await runtime._handle_message({
+        "battery.power": {"deviceId": "battery", "value": 0, "mode": "hold"},
+        "waterHeater.state": {"deviceId": "water", "value": False},
+        "heatPump.temperature": {"deviceId": "heat", "value": None, "mode": "release"},
+        "invalid": {}, "solar.power": {"deviceId": "solar"},
+    })
+    handler.assert_awaited_once_with({"type": "decision.snapshot", "decisions": [
+        {"deviceId": "battery", "deviceType": "battery", "power": 0, "mode": "hold"},
+        {"deviceId": "water", "deviceType": "waterHeater", "state": False, "mode": None},
+        {"deviceId": "heat", "deviceType": "heatPump", "temperature": None, "mode": "release"},
+    ]})

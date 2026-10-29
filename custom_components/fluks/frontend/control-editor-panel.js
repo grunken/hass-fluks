@@ -9,6 +9,7 @@ const loadControlActionEditor = () => controlActionEditorModule ??= import(`./co
 const TAGLINE = "Your Energy. Decides together.";
 const DEVICE_ICON_BASE = "/fluks-device-icons";
 const BATTERY_POWER_CONCEPT = "battery.power";
+const SIGNED_POWER_CONCEPTS = new Set([BATTERY_POWER_CONCEPT, "electricVehicle.power"]);
 const BATTERY_SOC_CONCEPT = "battery.soc";
 const SOLAR_POWER_CONCEPT = "solar.power";
 const SITE_POWER_CONCEPT = "site.power";
@@ -480,7 +481,9 @@ class FluksControlEditorPanel extends HTMLElement {
       missingMappings = concepts.filter((concept) => !mapped.has(concept.concept));
     }
     const controls = Array.isArray(detail?.controls) ? detail.controls : [];
-    const outputMappings = detail?.output_mappings ?? {};
+    const outputMappings = Object.fromEntries(Object.entries(detail?.output_mappings ?? {}).map(([concept, mappings]) => [
+      concept, mappings.filter((mapping) => !SIGNED_POWER_CONCEPTS.has(concept) || !["target", "limit"].includes(mapping.mode)),
+    ]));
     let missingControls = controls.filter((control) => !(outputMappings[control.concept] ?? [])
       .some((mapping) => Array.isArray(mapping?.configuration?.actions) && mapping.configuration.actions.length));
     let controlsComplete = missingControls.length === 0;
@@ -1506,11 +1509,13 @@ class FluksControlEditorPanel extends HTMLElement {
         { mode: "balance", valueCondition: "ltZero", labelKey: "behavior_balance_export", descriptionKey: "behavior_balance_export_description" },
         { mode: "balance", valueCondition: "eqZero", labelKey: "behavior_balance_zero", descriptionKey: "behavior_balance_zero_description" },
       ] : [];
-    const localBatteryPowerModes = control.concept === "battery.power" && control.datatype === "number"
-      ? ["charge", "discharge", "hold"] : [];
-    editor.allowedModes = [...new Set([...(control.mappingModes ?? []), ...localBatteryPowerModes])];
+    const signedPower = SIGNED_POWER_CONCEPTS.has(control.concept) && control.datatype === "number";
+    const localPowerModes = signedPower ? ["charge", "discharge", "hold"] : [];
+    editor.allowedModes = [...new Set([...(control.mappingModes ?? []), ...localPowerModes])]
+      .filter((mode) => !signedPower || !["target", "limit"].includes(mode));
     const persisted = (this._detail.output_mappings[control.concept] ?? []).map((mapping) => ({ mode: mapping.mode ?? null, ...(editor.behaviorChoices.length ? { valueCondition: mapping.valueCondition ?? null } : {}), actions: mapping.configuration?.actions ?? [] }));
-    editor.behaviors = this._pendingControl?.key === key ? this._pendingControl.behaviors : persisted;
+    editor.behaviors = (this._pendingControl?.key === key ? this._pendingControl.behaviors : persisted)
+      .filter((behavior) => !signedPower || !["target", "limit"].includes(behavior.mode));
     editor.outputSuggestions = this._outputSuggestions.get(key) ?? {};
     editor.outputSuggestionsLoading = false;
     const requestInFlight = this._outputSuggestionRequests.has(key);

@@ -19,7 +19,7 @@ from .output_mapping import (
     apply_output_transforms,
     validate_output_configuration,
 )
-from .const import DOMAIN, TEMPERATURE_OWNERSHIP_STORAGE_VERSION
+from .const import DOMAIN, SIGNED_POWER_CONTROLS, TEMPERATURE_OWNERSHIP_STORAGE_VERSION
 
 _LOGGER = logging.getLogger(__name__)
 _DECISION_FIELDS = {"deviceId", "deviceType", "mode"}
@@ -260,7 +260,18 @@ class RuntimeOutputExecutor:
                     await self._async_log("decision_balance_suppressed", concept=concept)
                     continue
                 mapping_modes = [decision.get("mode")]
-                if concept == "battery.power" and decision.get("mode") != "release":
+                if concept in SIGNED_POWER_CONTROLS and decision.get("mode") == "limit":
+                    mapping_modes = []
+                elif concept in SIGNED_POWER_CONTROLS and decision.get("mode") == "target":
+                    try:
+                        signed_power = _canonical_value(raw_value, str(definition.get("datatype")))
+                    except (TypeError, ValueError) as err:
+                        await self._async_log(
+                            "decision_failed", concept=concept, error=str(err) or type(err).__name__,
+                        )
+                        continue
+                    mapping_modes = ["charge" if signed_power > 0 else "discharge" if signed_power < 0 else "hold"]
+                elif concept == "battery.power" and decision.get("mode") != "release":
                     try:
                         signed_power = _canonical_value(
                             raw_value, str(definition.get("datatype"))
@@ -275,9 +286,8 @@ class RuntimeOutputExecutor:
                             if signed_power < 0
                             else "hold"
                         )
-                        # Prefer the signed Battery Power behavior when it is
-                        # configured, while retaining legacy target/limit/
-                        # default mappings as a compatibility fallback.
+                        # Keep existing signed Battery behaviors and the
+                        # default behavior for Decisions without a mode.
                         mapping_modes.insert(0, sign_mode)
                 if concept in _TEMPERATURE_CONTROLS and decision.get("mode") == "release":
                     mapping_modes = ["target"]
@@ -301,7 +311,8 @@ class RuntimeOutputExecutor:
                         break
                 if mapping is None:
                     await self._async_log(
-                        "decision_no_mapping", concept=concept, mode=decision.get("mode"),
+                        "decision_no_mapping", concept=concept,
+                        mode=mapping_modes[0] if concept in SIGNED_POWER_CONTROLS and decision.get("mode") == "target" else decision.get("mode"),
                     )
                     if concept in _TEMPERATURE_CONTROLS and decision.get("mode") == "release":
                         self._temperature_ownership.pop(

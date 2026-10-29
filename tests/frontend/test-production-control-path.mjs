@@ -112,7 +112,7 @@ test("production control path adds local Battery Power signed behaviors", () => 
   let editor;
   panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
   panel._renderControl();
-  assert.deepEqual(editor.allowedModes, [null, "target", "limit", "balance", "release", "charge", "discharge", "hold"]);
+  assert.deepEqual(editor.allowedModes, [null, "balance", "release", "charge", "discharge", "hold"]);
   assert.deepEqual(editor.behaviors.map(({ mode }) => mode), [null, "release"]);
   assert.match(editor.shadowRoot.innerHTML, /default behavior/i);
   assert.match(editor.shadowRoot.innerHTML, /behavior release/i);
@@ -2502,3 +2502,20 @@ test("native service translation failures keep the existing Controls page usable
   assert.equal(rendered, true);
   assert.deepEqual(panel._controlCapabilities, []);
 });
+
+
+for (const concept of ["battery.power", "electricVehicle.power", "site.power", "heatPump.temperature"]) {
+  test(`Mapping mode removal is scoped correctly for ${concept}`, () => {
+    const panel = new Panel(); panel._context = { translations: {} };
+    panel._view = { name: "control", deviceId: "device", concept };
+    const action = { type: "serviceCall", service: "number.set_value", target: { entityId: "number.test" }, data: {} };
+    panel._detail = { id: "device", type_name: "Device", controls: [{ concept, datatype: "number", mappingModes: [null, "target", "limit", "release"] }], output_mappings: { [concept]: ["target", "limit", "charge"].map((mode) => ({ mode, configuration: { version: 1, actions: [action] } })) } };
+    let editor; panel._frame = () => { editor = new Editor(); panel.shadowRoot.querySelector = (selector) => selector === CONTROL_EDITOR_TAG ? editor : null; };
+    panel._renderControl();
+    const signed = ["battery.power", "electricVehicle.power"].includes(concept);
+    assert.equal(editor.allowedModes.includes("target"), !signed);
+    assert.equal(editor.allowedModes.includes("limit"), !signed);
+    assert.equal(editor.behaviors.some((item) => item.mode === "target"), !signed);
+    assert.equal(editor.behaviors.some((item) => item.mode === "limit"), !signed);
+  });
+}
