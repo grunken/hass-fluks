@@ -248,6 +248,27 @@ test("typed literal and requestedValue bindings retain the existing Mapping shap
   assert.deepEqual(editor.actions[1].data.value.transforms, target.data.value.transforms);
 });
 
+test("action overview shows every fixed value and preserves requested and valueless summaries", () => {
+  const editor = new Editor();
+  editor.strings = {
+    uses_fixed_value: "Uses a fixed value", uses_control_value: "Uses the requested value",
+    target_only: "Runs without a value",
+  };
+  const fixed = { ...mode, data: {
+    option: { kind: "literal", value: "general" },
+    limit: { kind: "literal", value: 0 },
+    enabled: { kind: "literal", value: false },
+  } };
+  const escaped = { ...mode, data: { option: { kind: "literal", value: '<general & "eco">' } } };
+  const actions = [fixed, escaped, target, { ...mode, data: {} }];
+  editor.actions = actions;
+  assert.match(editor.shadowRoot.innerHTML, /Uses a fixed value: general · Uses a fixed value: 0 · Uses a fixed value: false/);
+  assert.match(editor.shadowRoot.innerHTML, /Uses a fixed value: &lt;general &amp; &quot;eco&quot;&gt;/);
+  assert.match(editor.shadowRoot.innerHTML, /<div class="detail">Uses the requested value<\/div>/);
+  assert.match(editor.shadowRoot.innerHTML, /<div class="detail">Runs without a value<\/div>/);
+  assert.deepEqual(editor.actions, actions);
+});
+
 test("production editor removal remains a draft until Save", () => {
   const editor = new Editor();
   editor.actions = [mode, target];

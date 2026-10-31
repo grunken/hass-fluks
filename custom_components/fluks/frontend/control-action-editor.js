@@ -78,7 +78,7 @@ export class FluksControlActionEditor extends HTMLElement {
     const bindings = Object.values(action.data ?? {});
     const details = bindings.map((value) => value?.kind === "requestedValue"
       ? this._t("uses_control_value")
-      : value?.kind === "literal" ? this._t("uses_fixed_value") : null).filter(Boolean);
+      : value?.kind === "literal" ? `${this._t("uses_fixed_value")}: ${value.value}` : null).filter(Boolean);
     return {
       title: `${capability?.name ?? action.service} · ${entity?.name ?? action.target?.entityId ?? this._t("choose_entity")}`,
       detail: details.length ? details.join(" · ") : this._t("target_only"),
