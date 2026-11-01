@@ -111,6 +111,7 @@
     "decision_no_controls": "Inga åtgärder utförda för beslutet på {device}: inga styrfunktioner ingick.",
     "decision_unsupported": "Inga åtgärder utförda för {concept}: denna styrning stöds inte.",
     "decision_balance_suppressed": "Inga åtgärder utförda för {concept}: batteristyrning undertrycks medan platsbalansering är aktiv.",
+    "decision_conflict_suppressed": "Inga åtgärder utförda för {concept}: den konfigurerade laddningsstyrningen för batteriet är redan aktiv och står i konflikt med denna styrning.",
     "decision_no_mapping": "Inga åtgärder utförda för {concept}: ingen körbar utgående koppling matchade läget {mode} och beslutets värde.",
     "decision_failed": "Avbröt utförandet av beslutet för {concept}: {error}.",
     "decision_release_unavailable": "Inga åtgärder utförda för {concept}: det skrivbara temperaturbörvärdet är inte tillgängligt.",

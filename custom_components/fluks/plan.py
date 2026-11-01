@@ -15,6 +15,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .output_mapping import potential_control_conflicts
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class LocalPlan:
     def __init__(self, hass: HomeAssistant, entry_id: str, site_id: str, executor, *, store=None):
         self.hass, self.site_id, self.executor = hass, site_id, executor
         self.store = store or Store(hass, 1, f"{DOMAIN}.plan.{entry_id}", atomic_writes=True)
-        self.data: dict[str, Any] = {"plan": None, "claimed": [], "active": {}, "cache": {}, "panel": {}}
+        self.data: dict[str, Any] = {"plan": None, "claimed": [], "active": {}, "cache": {}, "panel": {}, "conflicts": []}
         self._lock = asyncio.Lock()
         self._connected = False
         self._stopped = False
@@ -180,6 +181,8 @@ class LocalPlan:
                     cache["mappings"].append(data)
             else:
                 return
+            if resource == "mappings" or resource.startswith("mappings/"):
+                updated["conflicts"] = potential_control_conflicts(cache["mappings"])
             await self._save(updated)
         if self.state != previous_state:
             self.notify()

@@ -111,6 +111,7 @@
     "decision_no_controls": "Ingen handlinger utført for beslutningen på {device}: ingen styringer var inkludert.",
     "decision_unsupported": "Ingen handlinger utført for {concept}: dette er ikke en støttet styring.",
     "decision_balance_suppressed": "Ingen handlinger utført for {concept}: batteristyring er undertrykt mens balansering av stedet er aktiv.",
+    "decision_conflict_suppressed": "Ingen handlinger utført for {concept}: den konfigurerte ladestyringen for batteriet er allerede aktiv og er i konflikt med denne styringen.",
     "decision_no_mapping": "Ingen handlinger utført for {concept}: ingen kjørbar utgående tilknytning matchet modusen {mode} og beslutningsverdien.",
     "decision_failed": "Stoppet utførelsen av beslutningen for {concept}: {error}.",
     "decision_release_unavailable": "Ingen handlinger utført for {concept}: det skrivbare temperatursettpunktet er utilgjengelig.",

@@ -45,6 +45,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api,
         entry.data[CONF_SITE_ID],
         entry.entry_id,
+        get_conflicts=lambda: plan.data["conflicts"],
     )
     plan = LocalPlan(hass, entry.entry_id, entry.data[CONF_SITE_ID], output)
     api._response_callback = plan.async_cache_response

@@ -53,7 +53,7 @@ async def setup(hass, store=None, ownership=None):
     api.list_devices=AsyncMock(side_effect=AssertionError('Core must not be called offline'))
     api.list_mappings=AsyncMock(side_effect=AssertionError('Core must not be called offline'))
     api.get_device_type_catalog=AsyncMock(side_effect=AssertionError('Core must not be called offline'))
-    output=RuntimeOutputExecutor(hass,api,'site',ownership_store=ownership or MemoryStore(),sleep=AsyncMock())
+    output=RuntimeOutputExecutor(hass,api,'site',ownership_store=ownership or MemoryStore(),sleep=AsyncMock(),get_conflicts=lambda:plan.data['conflicts'])
     plan=LocalPlan(hass,'entry','site',output,store=store or MemoryStore())
     await plan.async_load()
     if not plan.data['cache']:
@@ -158,6 +158,82 @@ async def test_existing_http_responses_refresh_offline_cache_without_requests(ha
     await plan.async_cache_response('DELETE','/sites/site/mappings/'+changed['id'],{},None)
     assert all(m['id']!=changed['id'] for m in plan.data['cache']['mappings'])
     await plan.async_stop()
+
+
+async def test_device_mapping_refresh_recalculates_cross_device_conflicts(hass):
+    plan = await setup(hass)
+    def mapping(concept, device, value):
+        return {'id': device, 'deviceId': device, 'direction': 'output', 'concept': concept,
+                'configuration': {'version': 1, 'actions': [{
+                    'type': 'serviceCall', 'service': 'select.select_option',
+                    'target': {'entityId': 'select.shared'},
+                    'data': {'option': {'kind': 'literal', 'value': value}},
+                }]}}
+    site = mapping('site.power', 'site-device', 'general')
+    battery = mapping('battery.power', 'battery-device', 'eco')
+    for item in (site, battery):
+        extra = deepcopy(item['configuration']['actions'][0])
+        extra['target']['entityId'] = 'select.other'
+        item['configuration']['actions'].append(extra)
+    conflicts = [{'concepts': ['battery.power', 'site.power'], 'entities': [
+        {'entityId': entity, 'values': {'battery.power': 'eco', 'site.power': 'general'}}
+        for entity in ('select.other', 'select.shared')
+    ]}]
+    try:
+        await plan.async_cache_response('GET', '/sites/site/mappings', {'data': [site, battery]}, None)
+        assert plan.store.data['conflicts'] == conflicts
+        changed = deepcopy(battery)
+        changed['configuration']['actions'][1]['data']['option']['value'] = 'general'
+        await plan.async_cache_response('PATCH', '/sites/site/mappings/battery-device', {'data': changed}, None)
+        assert plan.store.data['conflicts'] == [
+            {'concepts': ['battery.power', 'site.power'], 'entities': [
+                {'entityId': 'select.shared', 'values': {'battery.power': 'eco', 'site.power': 'general'}},
+            ]},
+        ]
+        await plan.async_cache_response('GET', '/sites/site/mappings', {'data': []}, {'deviceId': 'battery-device'})
+        assert plan.store.data['conflicts'] == []
+        assert plan.data['cache']['mappings'] == [site]
+        await plan.async_cache_response('GET', '/sites/site/mappings', {'data': [battery]}, {'deviceId': 'battery-device'})
+        assert plan.store.data['conflicts'] == conflicts
+        await plan.async_cache_response('GET', '/sites/site/mappings', {'data': []}, None)
+        assert plan.store.data['conflicts'] == []
+    finally:
+        await plan.async_stop()
+
+
+async def test_restored_offline_site_target_checks_all_fixed_charging_states(hass, freezer):
+    plan = await setup(hass)
+    cache = context()
+    def fixed(entity, value):
+        return {'type': 'serviceCall', 'service': 'test.execute', 'target': {'entityId': entity},
+                'data': {'option': {'kind': 'literal', 'value': value}}}
+    charge = next(m for m in cache['mappings'] if m['concept'] == 'battery.power' and m['mode'] == 'charge')
+    charge['configuration']['actions'] = [fixed('select.mode', 'eco_charge'), fixed('select.gate', 'allow')]
+    target = next(m for m in cache['mappings'] if m['concept'] == 'site.power' and m['mode'] == 'target')
+    target['configuration']['actions'].insert(0, fixed('select.mode', 'general'))
+    await plan.async_cache_response('GET', '/sites/site/mappings', {'data': cache['mappings']}, None)
+    now = dt_util.utcnow()
+    message = wire(now)
+    message['decisions'] = [
+        {'at': (now + timedelta(seconds=seconds)).isoformat(), 'site.power': {'deviceId': 'site', 'mode': 'target', 'value': '1000'}}
+        for seconds in (10, 20)
+    ]
+    await plan.async_receive(message)
+    await plan.async_stop()
+    restored = await setup(hass, plan.store)
+    calls = []
+    hass.services.async_register('test', 'execute', lambda call: calls.append(dict(call.data)))
+    try:
+        assert restored.data['conflicts'][0]['entities'][0]['entityId'] == 'select.mode'
+        hass.states.async_set('select.mode', 'eco_charge')
+        hass.states.async_set('select.gate', 'allow')
+        await advance(hass, freezer, now + timedelta(seconds=10))
+        assert calls == []  # No Battery Decision has executed; HA was configured manually.
+        hass.states.async_set('select.gate', 'blocked')
+        await advance(hass, freezer, now + timedelta(seconds=20))
+        assert calls == [{'option': 'general', 'entity_id': 'select.mode'}, {'value': 1000, 'entity_id': 'number.site'}]
+    finally:
+        await restored.async_stop()
 
 
 async def test_restart_after_expiry_only_cleans_up_offline_controls(hass, freezer):

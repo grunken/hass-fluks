@@ -16,6 +16,7 @@ from homeassistant.helpers.translation import async_get_translations
 
 from .api import FluksApiClient
 from .output_mapping import (
+    OutputMappingValidationError,
     apply_output_transforms,
     validate_output_configuration,
 )
@@ -84,6 +85,7 @@ class RuntimeOutputExecutor:
         *,
         ownership_store: Store[dict[str, Any]] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        get_conflicts: Callable[[], list[dict[str, Any]]] | None = None,
     ) -> None:
         self._hass = hass
         self._api = api
@@ -92,6 +94,7 @@ class RuntimeOutputExecutor:
         self._execution_lock = asyncio.Lock()
         self._execution_guard = None
         self._sleep = sleep
+        self._get_conflicts = get_conflicts or (lambda: [])
         self._balance_active = False
         self._temperature_store = ownership_store or Store(
             hass,
@@ -226,6 +229,48 @@ class RuntimeOutputExecutor:
         if self._execution_guard is not None and not self._execution_guard():
             raise asyncio.CancelledError
 
+    def _charging_conflict_active(self, mappings: list[dict[str, Any]]) -> bool:
+        """Check all fixed charging writes; conflicts only gate this state check."""
+        if not any(
+            conflict.get("concepts") in (
+                ["site.power", "battery.power"], ["battery.power", "site.power"],
+            )
+            for conflict in self._get_conflicts()
+        ):
+            return False
+        for mapping in mappings:
+            if (
+                mapping.get("direction") != "output"
+                or mapping.get("concept") != "battery.power"
+                or mapping.get("mode") != "charge"
+            ):
+                continue
+            try:
+                configuration = validate_output_configuration(mapping.get("configuration"))
+            except OutputMappingValidationError:
+                continue
+            fixed_actions = [
+                (action, {field: binding["value"] for field, binding in action["data"].items()
+                          if binding["kind"] == "literal"})
+                for action in configuration["actions"]
+                if any(binding["kind"] == "literal" for binding in action["data"].values())
+            ]
+            states = {
+                action["target"]["entityId"]: self._hass.states.get(action["target"]["entityId"])
+                for action, _ in fixed_actions
+            }
+            if fixed_actions and all(
+                (state := states[action["target"]["entityId"]]) is not None
+                and state.state not in {"unknown", "unavailable"}
+                and all(
+                    self._same_value(expected, state.attributes.get(field, state.state))
+                    for field, expected in values.items()
+                )
+                for action, values in fixed_actions
+            ):
+                return True
+        return False
+
     async def _async_handle(self, payload: dict[str, Any], *, context=None) -> None:
         """Execute a supported Decision snapshot without disrupting transport."""
         if payload.get("type") != "decision.snapshot" or not isinstance(
@@ -274,6 +319,12 @@ class RuntimeOutputExecutor:
             device_type = decision.get("deviceType")
             if device is None or device.get("type") != device_type:
                 await self._async_log("decision_device_missing", device=decision.get("deviceId"))
+                continue
+            if (
+                device_type == "site" and decision.get("mode") == "target"
+                and "power" in decision and self._charging_conflict_active(mappings)
+            ):
+                await self._async_log("decision_conflict_suppressed", concept="site.power")
                 continue
             if not set(decision) - _DECISION_FIELDS:
                 await self._async_log("decision_no_controls", device=decision.get("deviceId"))

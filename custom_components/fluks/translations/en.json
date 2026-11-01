@@ -111,6 +111,7 @@
     "decision_no_controls": "No actions performed for Decision on {device}: no controls were included.",
     "decision_unsupported": "No actions performed for {concept}: this is not a supported control.",
     "decision_balance_suppressed": "No actions performed for {concept}: Battery control is suppressed while Site balance is active.",
+    "decision_conflict_suppressed": "No actions performed for {concept}: the configured Battery charging control is already active and conflicts with this control.",
     "decision_no_mapping": "No actions performed for {concept}: no executable output Mapping matched mode {mode} and the Decision value.",
     "decision_failed": "Stopped executing the Decision for {concept}: {error}.",
     "decision_release_unavailable": "No actions performed for {concept}: the writable temperature setpoint is unavailable.",

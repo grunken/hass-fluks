@@ -55,6 +55,73 @@ class FakeSession:
         return response
 
 
+async def test_mapping_saves_recalculate_conflicts_in_existing_native_storage(hass):
+    from homeassistant.helpers.storage import Store
+    from custom_components.fluks.plan import LocalPlan
+
+    def mapping(concept, device_id, value):
+        return {
+            "id": device_id + "-mapping", "deviceId": device_id,
+            "concept": concept, "direction": "output", "mode": None,
+            "configuration": {"version": 1, "actions": [{
+                "type": "serviceCall", "service": "select.select_option",
+                "target": {"entityId": "select.shared_mode"},
+                "data": {"option": {"kind": "literal", "value": value}},
+            }]},
+        }
+
+    site = mapping("site.power", "site-device", "general")
+    battery = mapping("battery.power", "battery-device", "eco")
+    compatible = mapping("battery.power", "battery-device", "general")
+    conflicts = [{"concepts": ["battery.power", "site.power"], "entities": [
+        {"entityId": "select.shared_mode", "values": {"battery.power": "eco", "site.power": "general"}},
+    ]}]
+    session = FakeSession(
+        FakeResponse(200, {"data": [site]}),
+        FakeResponse(201, {"data": battery}),
+        FakeResponse(500, {}),
+        FakeResponse(200, {"data": compatible}),
+        FakeResponse(200, {"data": battery}),
+        FakeResponse(204, None),
+    )
+    plan = LocalPlan(hass, "conflicts-entry", "site-id", None)
+    await plan.async_load()
+    client = FluksApiClient(
+        session, integration_key=INTEGRATION_KEY,
+        response_callback=plan.async_cache_response,
+    )
+
+    async def persisted():
+        stored = await Store(hass, 1, "fluks.plan.conflicts-entry", atomic_writes=True).async_load()
+        return stored["conflicts"]
+
+    restored = None
+    try:
+        await client.list_mappings("site-id")
+        assert await persisted() == []
+        await client.create_mapping("site-id", {key: value for key, value in battery.items() if key != "id"})
+        assert await persisted() == conflicts
+        with pytest.raises(FluksApiError):
+            await client.update_mapping("site-id", battery["id"], compatible["configuration"])
+        assert await persisted() == conflicts
+        await client.update_mapping("site-id", battery["id"], compatible["configuration"])
+        assert await persisted() == []
+        await client.update_mapping("site-id", battery["id"], battery["configuration"])
+        assert await persisted() == conflicts
+        restored = LocalPlan(hass, "conflicts-entry", "site-id", None)
+        await restored.async_load()
+        assert restored.data["conflicts"] == conflicts
+        assert restored.data["cache"]["mappings"] == [site, battery]
+        await client.delete_mapping("site-id", battery["id"])
+        assert await persisted() == []
+        assert plan.data["cache"]["mappings"] == [site]
+        assert session.requests[1][2]["json"] == {key: value for key, value in battery.items() if key != "id"}
+    finally:
+        await plan.async_stop()
+        if restored is not None:
+            await restored.async_stop()
+
+
 @pytest.mark.asyncio
 async def test_public_authentication_contract():
     """Public requests use exact paths and documented payload field names."""

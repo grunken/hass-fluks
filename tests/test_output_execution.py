@@ -938,6 +938,150 @@ def _decision(device_type, mode, value=0):
     }
 
 
+def _charging_conflict_api(hass):
+    api = _ownership_api()
+    def write(entity, data):
+        return {"type": "serviceCall", "service": "test.execute",
+                "target": {"entityId": entity}, "data": data}
+    site_actions = [write("number.site_first", {}), write("number.site_second", {})]
+    api.list_mappings.return_value = [
+        {"deviceId": "site-internal", "concept": "site.power", "direction": "output",
+         "mode": mode, "configuration": {"version": 1, "actions": site_actions}}
+        for mode in (None, "target", "limit", "balance", "release")
+    ] + [{
+        "deviceId": "battery-internal", "concept": "battery.power", "direction": "output", "mode": "charge",
+        "configuration": {"version": 1, "actions": [
+            write("select.charge_mode", {"option": {"kind": "literal", "value": "eco_charge"}}),
+            write("select.charge_gate", {"option": {"kind": "literal", "value": "allow"}}),
+            write("number.charge_limit", {"value": {"kind": "literal", "value": 0}}),
+            write("number.dynamic", {"value": {"kind": "requestedValue"}}),
+        ]},
+    }]
+    hass.states.async_set("select.charge_mode", "eco_charge")
+    hass.states.async_set("select.charge_gate", "allow")
+    hass.states.async_set("number.charge_limit", "0.0")
+    return api
+
+
+def _charging_conflicts():
+    # Deliberately lists only one entity; current charging Mapping values are authoritative.
+    return [{"concepts": ["site.power", "battery.power"], "entities": [{
+        "entityId": "select.charge_mode", "values": {"site.power": "general", "battery.power": "stale"},
+    }]}]
+
+
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize("mismatch", [None, "select.charge_mode", "select.charge_gate", "number.charge_limit"])
+async def test_site_target_protection_checks_all_fixed_charging_entities(hass, offline, mismatch):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    if mismatch:
+        hass.states.async_set(mismatch, "different")
+    executor = RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=_charging_conflicts)
+    context = {
+        "devices": api.list_devices.return_value, "mappings": api.list_mappings.return_value,
+        "catalog": api.get_device_type_catalog.return_value,
+    } if offline else None
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "target", 1000)]}, context=context)
+    assert [call["entity_id"] for call in calls] == (
+        ["number.site_first", "number.site_second"] if mismatch else []
+    )
+    assert api.list_mappings.await_count == (0 if offline else 1)
+    assert not executor._balance_active
+
+
+@pytest.mark.parametrize("conflicts", [[], [{"concepts": ["site.power", "electricVehicle.power"]}]])
+async def test_site_target_runs_without_a_battery_conflict(hass, conflicts):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    await RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=lambda: conflicts).async_handle(
+        {"type": "decision.snapshot", "decisions": [_decision("site", "target", 1000)]}
+    )
+    assert calls == ["number.site_first", "number.site_second"]
+
+
+@pytest.mark.parametrize("mode", [None, "limit", "balance", "release"])
+async def test_charging_conflict_leaves_other_site_modes_unchanged(hass, mode):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    executor = RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=_charging_conflicts)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", mode, 1000)]})
+    assert calls == ["number.site_first", "number.site_second"]
+    assert executor._balance_active == (mode == "balance")
+
+
+@pytest.mark.parametrize("unavailable", ["unknown", "unavailable", None])
+async def test_site_target_runs_when_a_nonconflicting_fixed_entity_is_unreadable(hass, unavailable):
+    api = _charging_conflict_api(hass)
+    if unavailable is None:
+        hass.states.async_remove("select.charge_gate")
+    else:
+        hass.states.async_set("select.charge_gate", unavailable)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    await RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=_charging_conflicts).async_handle(
+        {"type": "decision.snapshot", "decisions": [_decision("site", "target", 1000)]}
+    )
+    assert calls == ["number.site_first", "number.site_second"]
+
+
+@pytest.mark.parametrize("charging_mode", [None, "hold", "discharge", "release"])
+async def test_protection_requires_a_charging_control_with_fixed_values(hass, charging_mode):
+    api = _charging_conflict_api(hass)
+    api.list_mappings.return_value[-1]["mode"] = charging_mode
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    await RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=_charging_conflicts).async_handle(
+        {"type": "decision.snapshot", "decisions": [_decision("site", "target", 1000)]}
+    )
+    assert calls == ["number.site_first", "number.site_second"]
+
+
+async def test_protection_does_not_change_battery_execution_or_use_requested_values_as_evidence(hass):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    executor = RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=_charging_conflicts)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("battery", "target", 1000)]})
+    assert calls == [
+        {"entity_id": "select.charge_mode", "option": "eco_charge"},
+        {"entity_id": "select.charge_gate", "option": "allow"},
+        {"entity_id": "number.charge_limit", "value": 0},
+        {"entity_id": "number.dynamic", "value": 1000},
+    ]
+    calls.clear()
+    api.list_mappings.return_value[-1]["configuration"]["actions"] = [
+        api.list_mappings.return_value[-1]["configuration"]["actions"][-1],
+    ]
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "target", 1000)]})
+    assert [call["entity_id"] for call in calls] == ["number.site_first", "number.site_second"]
+
+
+async def test_protection_uses_fresh_manual_states_and_logs_the_complete_skip(hass):
+    api = _charging_conflict_api(hass)
+    events = await _logbook_events(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    conflicts = _charging_conflicts()
+    # The entity/value details are not inputs to the state check, only the concept pair is.
+    conflicts[0]["entities"] = [{"entityId": "select.unrelated", "values": {}}]
+    conflicts[0]["concepts"].reverse()
+    executor = RuntimeOutputExecutor(hass, api, "site-a", get_conflicts=lambda: conflicts)
+    decision = {"type": "decision.snapshot", "decisions": [_decision("site", "target", 1000)]}
+    await executor.async_handle(decision)
+    await hass.async_block_till_done()
+    assert calls == []
+    assert len(events) == 1
+    assert "No actions performed for site.power" in events[0]["message"]
+    assert "charging control is already active" in events[0]["message"]
+    hass.states.async_set("select.charge_gate", "blocked")
+    await executor.async_handle(decision)
+    assert calls == ["number.site_first", "number.site_second"]
+
+
 async def test_site_balance_executes_first_and_suppresses_battery_power(hass):
     calls = []
     hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))

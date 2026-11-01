@@ -5,8 +5,138 @@ import pytest
 from custom_components.fluks.output_mapping import (
     OutputMappingValidationError,
     apply_output_transforms,
+    potential_control_conflicts,
     validate_output_configuration,
 )
+
+
+def fixed_mapping(concept, value, *, entity="number.shared", mode=None):
+    write = action({"kind": "literal", "value": value})
+    write["target"]["entityId"] = entity
+    return {
+        "concept": concept, "direction": "output", "mode": mode,
+        "configuration": {"version": 1, "actions": [write]},
+    }
+
+
+@pytest.mark.parametrize("left,right,conflicts", [
+    ("general", "eco", True), ("general", "general", False),
+    (0, 0.0, False), (False, False, False), (None, None, False),
+    (False, 0, True), (True, 1, True), ("0", 0, True), (None, 0, True),
+])
+def test_fixed_write_conflicts_compare_typed_values(left, right, conflicts):
+    mappings = [fixed_mapping("site.power", left), fixed_mapping("battery.power", right)]
+    assert potential_control_conflicts(mappings) == (
+        [{"concepts": ["battery.power", "site.power"], "entities": [
+            {"entityId": "number.shared", "values": {"battery.power": right, "site.power": left}},
+        ]}] if conflicts else []
+    )
+    if conflicts:
+        values = potential_control_conflicts(mappings)[0]["entities"][0]["values"]
+        assert type(values["site.power"]) is type(left)
+        assert type(values["battery.power"]) is type(right)
+
+
+def test_conflicts_are_generic_bidirectional_unique_and_do_not_mutate_mappings():
+    from copy import deepcopy
+
+    mappings = [
+        fixed_mapping("heatPump.temperature", "heat"),
+        fixed_mapping("waterHeater.temperature", "off"),
+        fixed_mapping("electricVehicle.power", "on"),
+        fixed_mapping("heatPump.temperature", "heat", mode="release"),
+        fixed_mapping("heatPump.temperature", "heat", entity="number.shared_two"),
+        fixed_mapping("waterHeater.temperature", "off", entity="number.shared_two"),
+    ]
+    mappings[0]["configuration"]["actions"] *= 2
+    original = deepcopy(mappings)
+    expected = [
+        {"concepts": ["electricVehicle.power", "heatPump.temperature"], "entities": [
+            {"entityId": "number.shared", "values": {"electricVehicle.power": "on", "heatPump.temperature": "heat"}},
+        ]},
+        {"concepts": ["electricVehicle.power", "waterHeater.temperature"], "entities": [
+            {"entityId": "number.shared", "values": {"electricVehicle.power": "on", "waterHeater.temperature": "off"}},
+        ]},
+        {"concepts": ["heatPump.temperature", "waterHeater.temperature"], "entities": [
+            {"entityId": entity, "values": {"heatPump.temperature": "heat", "waterHeater.temperature": "off"}}
+            for entity in ("number.shared", "number.shared_two")
+        ]},
+    ]
+    assert potential_control_conflicts(mappings) == expected
+    assert potential_control_conflicts(list(reversed(mappings))) == expected
+    assert mappings == original
+
+
+def test_other_entities_and_behaviors_of_the_same_control_are_not_conflicts():
+    assert potential_control_conflicts([
+        fixed_mapping("site.power", "general"),
+        fixed_mapping("site.power", "eco", mode="release"),
+        fixed_mapping("battery.power", "off", entity="number.other"),
+    ]) == []
+
+
+def test_conflicts_include_literal_fields_in_mixed_actions():
+    site = fixed_mapping("site.power", "general")
+    battery = fixed_mapping("battery.power", "unused")
+    battery["configuration"]["actions"][0]["data"] = {
+        "value": {"kind": "requestedValue"},
+        "option": {"kind": "literal", "value": "eco"},
+    }
+    assert potential_control_conflicts([site, battery]) == [
+        {"concepts": ["battery.power", "site.power"], "entities": [
+            {"entityId": "number.shared", "values": {"battery.power": "eco", "site.power": "general"}},
+        ]},
+    ]
+
+
+def test_conflicts_preserve_distinct_value_combinations_across_behaviors():
+    mappings = [
+        fixed_mapping("site.power", "general"),
+        fixed_mapping("battery.power", "eco_charge", mode="charge"),
+        fixed_mapping("battery.power", "eco_discharge", mode="discharge"),
+        fixed_mapping("battery.power", "eco_charge", mode="hold"),
+        fixed_mapping("battery.power", "general", mode="release"),
+    ]
+    expected = [{"concepts": ["battery.power", "site.power"], "entities": [
+        {"entityId": "number.shared", "values": {"battery.power": value, "site.power": "general"}}
+        for value in ("eco_charge", "eco_discharge")
+    ]}]
+    assert potential_control_conflicts(mappings) == expected
+    assert potential_control_conflicts(list(reversed(mappings))) == expected
+
+
+def test_conflicting_value_records_keep_false_and_zero_distinct():
+    result = potential_control_conflicts([
+        fixed_mapping("site.power", False),
+        fixed_mapping("site.power", 0, mode="release"),
+        fixed_mapping("battery.power", "eco"),
+    ])
+    assert len(result) == 1
+    assert len(result[0]["entities"]) == 2
+    values = [entity["values"]["site.power"] for entity in result[0]["entities"]]
+    assert values == [False, 0]
+    assert [type(value) for value in values] == [bool, int]
+
+
+def test_conflicts_ignore_inputs_requested_values_and_valueless_actions():
+    mappings = [fixed_mapping("site.power", "general")]
+    input_mapping = fixed_mapping("battery.power", "eco")
+    input_mapping["direction"] = "input"
+    mappings.append(input_mapping)
+    for concept, binding in [
+        ("battery.power", {"kind": "requestedValue"}),
+        ("electricVehicle.power", {"kind": "requestedValue", "transforms": [
+            {"type": "valueMap", "values": [{"from": 0, "to": "eco"}]},
+        ]}),
+    ]:
+        mapped = fixed_mapping(concept, "unused")
+        mapped["configuration"]["actions"][0]["data"]["value"] = binding
+        mappings.append(mapped)
+    valueless = fixed_mapping("heatPump.temperature", "unused")
+    valueless["configuration"]["actions"][0]["data"] = {}
+    mappings.append(valueless)
+    mappings.append({"concept": "waterHeater.temperature", "direction": "output", "configuration": {}})
+    assert potential_control_conflicts(mappings) == []
 
 
 def test_requested_value_transforms_execute_in_persisted_order():

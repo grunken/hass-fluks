@@ -1,4 +1,4 @@
-"""Validation for documented Home Assistant output Mapping configuration v1."""
+"""Validation and inspection of Home Assistant output Mapping configuration v1."""
 
 from __future__ import annotations
 
@@ -228,3 +228,38 @@ def validate_output_configuration(configuration: Any) -> dict[str, Any]:
             }
         )
     return {"version": 1, "actions": normalized}
+
+
+def potential_control_conflicts(mappings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group entities with differing fixed writes by unordered control pair."""
+    writes: dict[str, list[tuple[str, tuple[str, Any]]]] = {}
+    conflicts: dict[tuple[str, str], dict[str, set[tuple]]] = {}
+    for mapping in mappings:
+        concept = mapping.get("concept")
+        if mapping.get("direction") != "output" or not isinstance(concept, str):
+            continue
+        try:
+            configuration = validate_output_configuration(mapping.get("configuration"))
+        except OutputMappingValidationError:
+            continue
+        for action in configuration["actions"]:
+            entity = action["target"]["entityId"]
+            previous = writes.setdefault(entity, [])
+            for binding in action["data"].values():
+                if binding["kind"] != "literal":
+                    continue
+                value = (_datatype(binding["value"]), binding["value"])
+                for other_concept, other_value in previous:
+                    if other_concept != concept and other_value != value:
+                        pair = tuple(sorted((concept, other_concept)))
+                        values = (value, other_value) if pair[0] == concept else (other_value, value)
+                        conflicts.setdefault(pair, {}).setdefault(entity, set()).add(values)
+                previous.append((concept, value))
+    return [
+        {"concepts": list(pair), "entities": [
+            {"entityId": entity, "values": {pair[0]: values[0][1], pair[1]: values[1][1]}}
+            for entity, combinations in sorted(entities.items())
+            for values in sorted(combinations)
+        ]}
+        for pair, entities in sorted(conflicts.items())
+    ]
