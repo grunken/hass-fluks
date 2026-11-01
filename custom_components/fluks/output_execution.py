@@ -32,6 +32,7 @@ _TEMPERATURE_CONTROLS = {
 }
 _DECISION_ATTEMPTS = 3
 _ACTION_RETRY_DELAY = 1.0
+_BALANCE_RECHECK_DELAY = 5.0
 _TEMPERATURE_VERIFICATION_TOLERANCE = Decimal("0.5")
 
 
@@ -86,6 +87,7 @@ class RuntimeOutputExecutor:
         ownership_store: Store[dict[str, Any]] | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         get_conflicts: Callable[[], list[dict[str, Any]]] | None = None,
+        create_task: Callable[[Awaitable[None]], asyncio.Task[None]] | None = None,
     ) -> None:
         self._hass = hass
         self._api = api
@@ -95,6 +97,9 @@ class RuntimeOutputExecutor:
         self._execution_guard = None
         self._sleep = sleep
         self._get_conflicts = get_conflicts or (lambda: [])
+        self._create_task = create_task or (
+            lambda coroutine: hass.async_create_background_task(coroutine, "fluks balance recheck")
+        )
         self._balance_active = False
         self._temperature_store = ownership_store or Store(
             hass,
@@ -215,19 +220,32 @@ class RuntimeOutputExecutor:
     def _temperature_key(device: dict[str, Any], concept: str) -> str:
         return f"{device['deviceId']}|{concept}"
 
-    async def async_handle(self, payload: dict[str, Any], *, context=None, guard=None) -> None:
+    async def async_handle(self, payload: dict[str, Any], *, context=None, guard=None, retry_balance=True) -> None:
         """Serialize online and offline use of the same Mapping executor."""
         async with self._execution_lock:
             self._execution_guard = guard
             try:
                 self._check_authority()
-                await self._async_handle(payload, context=context)
+                await self._async_handle(payload, context=context, retry_balance=retry_balance)
             finally:
                 self._execution_guard = None
 
     def _check_authority(self) -> None:
         if self._execution_guard is not None and not self._execution_guard():
             raise asyncio.CancelledError
+
+    async def _async_recheck_balance(self, decision, *, context, guard) -> None:
+        """Recheck once without blocking receipt or execution of Site transitions."""
+        await self._sleep(_BALANCE_RECHECK_DELAY)
+        if guard is not None and not guard():
+            return
+        if self._balance_active:
+            await self._async_log("decision_balance_suppressed", concept="battery.power")
+            return
+        await self.async_handle(
+            {"type": "decision.snapshot", "decisions": [decision]},
+            context=context, guard=guard, retry_balance=False,
+        )
 
     def _charging_conflict_active(self, mappings: list[dict[str, Any]]) -> bool:
         """Check all fixed charging writes; conflicts only gate this state check."""
@@ -271,7 +289,7 @@ class RuntimeOutputExecutor:
                 return True
         return False
 
-    async def _async_handle(self, payload: dict[str, Any], *, context=None) -> None:
+    async def _async_handle(self, payload: dict[str, Any], *, context=None, retry_balance=True) -> None:
         """Execute a supported Decision snapshot without disrupting transport."""
         if payload.get("type") != "decision.snapshot" or not isinstance(
             payload.get("decisions"), list
@@ -322,10 +340,18 @@ class RuntimeOutputExecutor:
                 continue
             if (
                 device_type == "site" and decision.get("mode") == "target"
-                and "power" in decision and self._charging_conflict_active(mappings)
+                and "power" in decision
             ):
-                await self._async_log("decision_conflict_suppressed", concept="site.power")
-                continue
+                # Core's target replaces balance even when its actions are skipped.
+                if self._balance_active:
+                    self._balance_active = False
+                    try:
+                        await self._async_save_temperature_ownership()
+                    except OSError:
+                        _LOGGER.warning("Unable to persist the end of Site balance ownership", exc_info=True)
+                if self._charging_conflict_active(mappings):
+                    await self._async_log("decision_conflict_suppressed", concept="site.power")
+                    continue
             if not set(decision) - _DECISION_FIELDS:
                 await self._async_log("decision_no_controls", device=decision.get("deviceId"))
             for field, raw_value in decision.items():
@@ -337,7 +363,13 @@ class RuntimeOutputExecutor:
                     await self._async_log("decision_unsupported", concept=concept)
                     continue
                 if self._balance_active and concept == "battery.power":
-                    await self._async_log("decision_balance_suppressed", concept=concept)
+                    if retry_balance:
+                        pending = {key: value for key, value in decision.items() if key in _DECISION_FIELDS or key == field}
+                        self._create_task(self._async_recheck_balance(
+                            pending, context=context, guard=self._execution_guard,
+                        ))
+                    else:
+                        await self._async_log("decision_balance_suppressed", concept=concept)
                     continue
                 mapping_modes = [decision.get("mode")]
                 if concept in SIGNED_POWER_CONTROLS and decision.get("mode") == "limit":
@@ -486,13 +518,15 @@ class RuntimeOutputExecutor:
         }
         await self._async_save_temperature_ownership()
 
-    @staticmethod
-    def _is_balance_ownership(decision: dict[str, Any]) -> bool:
+    def _is_balance_ownership(self, decision: dict[str, Any]) -> bool:
         """Return whether this Decision can change Site balance ownership."""
         return (
             decision.get("deviceType") == "site"
             and "power" in decision
-            and decision.get("mode") in {"balance", "release"}
+            and (
+                decision.get("mode") in {"balance", "release"}
+                or (self._balance_active and decision.get("mode") == "target")
+            )
         )
 
     async def _async_execute(

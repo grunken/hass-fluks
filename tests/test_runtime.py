@@ -227,3 +227,64 @@ async def test_concept_keyed_batch_preserves_zero_false_and_release_null():
         {"deviceId": "water", "deviceType": "waterHeater", "state": False, "mode": None},
         {"deviceId": "heat", "deviceType": "heatPump", "temperature": None, "mode": "release"},
     ]})
+
+
+async def test_balance_recheck_does_not_block_following_websocket_site_target(hass):
+    import json
+    from custom_components.fluks.output_execution import RuntimeOutputExecutor
+
+    devices = [{"id": kind + "-internal", "deviceId": kind, "type": kind} for kind in ("site", "battery")]
+    mappings = [{
+        "deviceId": kind + "-internal", "direction": "output", "concept": kind + ".power", "mode": mode,
+        "configuration": {"version": 1, "actions": [{
+            "type": "serviceCall", "service": "test.execute", "target": {"entityId": entity},
+            "data": {"value": {"kind": "requestedValue"}} if kind == "battery" else {},
+        }]},
+    } for kind, mode, entity in [("site", "balance", "number.balance"), ("site", "target", "number.target"), ("battery", "charge", "number.battery")]]
+    api = SimpleNamespace(
+        list_devices=AsyncMock(return_value=devices), list_mappings=AsyncMock(return_value=mappings),
+        get_device_type_catalog=AsyncMock(return_value=[{
+            "type": kind, "concepts": [{"concept": kind + ".power", "datatype": "number", "usages": ["control"]}],
+        } for kind in ("site", "battery")]),
+    )
+    waiting, elapsed, target_received = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    calls, delays, tasks = [], [], []
+    def receive(call):
+        calls.append(dict(call.data))
+        if call.data["entity_id"] == "number.target":
+            target_received.set()
+    hass.services.async_register("test", "execute", receive)
+    async def sleep(delay):
+        delays.append(delay)
+        waiting.set()
+        await elapsed.wait()
+    def create(coroutine):
+        task = asyncio.create_task(coroutine)
+        tasks.append(task)
+        return task
+    executor = RuntimeOutputExecutor(hass, api, "site", sleep=sleep, create_task=create)
+    messages = [
+        {"battery.power": {"deviceId": "battery", "mode": "target", "value": "7468"},
+         "site.power": {"deviceId": "site", "mode": "balance", "value": "0"}},
+        {"site.power": {"deviceId": "site", "mode": "target", "value": "1000"}},
+    ]
+    socket = FakeSocket([SimpleNamespace(type=WSMsgType.TEXT, data=json.dumps(message)) for message in messages], hold=True)
+    runtime = FluksRuntimeWebSocket(FakeSession([socket]), KEY, API_BASE_URL, message_handler=executor.async_handle)
+    runtime.start(asyncio.create_task)
+    try:
+        await asyncio.wait_for(waiting.wait(), 1)
+        await asyncio.wait_for(target_received.wait(), 1)
+        assert calls == [{"entity_id": "number.balance"}, {"entity_id": "number.target"}]
+        assert delays == [5.0] and len(tasks) == 1 and not tasks[0].done()
+        elapsed.set()
+        await asyncio.gather(*tasks)
+        assert calls == [
+            {"entity_id": "number.balance"}, {"entity_id": "number.target"},
+            {"entity_id": "number.battery", "value": 7468},
+        ]
+        assert delays == [5.0] and len(tasks) == 1
+    finally:
+        await runtime.async_stop()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

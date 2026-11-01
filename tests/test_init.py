@@ -41,7 +41,7 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass, record
         patch(
             "custom_components.fluks.api.FluksApiClient.create_integration"
         ) as create_integration,
-        patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime),
+        patch("custom_components.fluks.FluksRuntimeWebSocket", return_value=runtime) as runtime_factory,
         patch(
             "custom_components.fluks.RealtimeObservationPublisher",
             return_value=observations,
@@ -57,8 +57,13 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass, record
         assert pending_runtime not in hass._tasks
         await hass.async_block_till_done()
         assert not pending_runtime.done()
+        executor = runtime_factory.call_args.kwargs["message_handler"].__self__
+        pending_recheck = executor._create_task(asyncio.Event().wait())
+        assert pending_recheck in hass._background_tasks
+        assert pending_recheck not in hass._tasks
         assert await hass.config_entries.async_unload(entry.entry_id)
         assert pending_runtime.cancelled()
+        assert pending_recheck.cancelled()
         runtime.async_stop.assert_awaited_once()
         observations.async_stop.assert_awaited_once()
         runtime.reset_mock()

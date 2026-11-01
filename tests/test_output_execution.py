@@ -1082,6 +1082,105 @@ async def test_protection_uses_fresh_manual_states_and_logs_the_complete_skip(ha
     assert calls == ["number.site_first", "number.site_second"]
 
 
+@pytest.mark.parametrize("transition", [None, "target", "release"])
+async def test_balance_suppression_rechecks_once_then_executes_or_discards(hass, transition):
+    api = _charging_conflict_api(hass)
+    calls, delays, tasks = [], [], []
+    waiting, elapsed = asyncio.Event(), asyncio.Event()
+    events = await _logbook_events(hass)
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+
+    async def sleep(delay):
+        delays.append(delay)
+        waiting.set()
+        await elapsed.wait()
+
+    def create(coroutine):
+        task = asyncio.create_task(coroutine)
+        tasks.append(task)
+        return task
+
+    executor = RuntimeOutputExecutor(
+        hass, api, "site-a", ownership_store=MemoryStore({"controls": {}, "balance_active": True}),
+        sleep=sleep, create_task=create,
+    )
+    try:
+        await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("battery", "target", "7468")]})
+        await asyncio.wait_for(waiting.wait(), 1)
+        assert calls == [] and delays == [5.0] and len(tasks) == 1
+        if transition:
+            await asyncio.wait_for(executor.async_handle({
+                "type": "decision.snapshot", "decisions": [_decision("site", transition, 1000)],
+            }), 1)
+            assert [call["entity_id"] for call in calls] == ["number.site_first", "number.site_second"]
+            assert not tasks[0].done()
+        elapsed.set()
+        await asyncio.gather(*tasks)
+        await hass.async_block_till_done()
+        if transition:
+            assert calls[-1] == {"entity_id": "number.dynamic", "value": 7468}
+            assert len(calls) == 6
+        else:
+            assert calls == []
+            assert sum("Site balance is active" in event["message"] for event in events) == 1
+            # Clearing balance after the one recheck cannot revive the discarded Decision.
+            await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "release")]})
+            assert [call["entity_id"] for call in calls] == ["number.site_first", "number.site_second"]
+        assert delays == [5.0] and len(tasks) == 1
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_inactive_balance_executes_without_scheduling_a_recheck(hass):
+    api = _charging_conflict_api(hass)
+    calls = []
+    create, sleep = MagicMock(), AsyncMock()
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    await RuntimeOutputExecutor(hass, api, "site-a", sleep=sleep, create_task=create).async_handle(
+        {"type": "decision.snapshot", "decisions": [_decision("battery", "target", "7468")]}
+    )
+    assert calls[-1] == {"entity_id": "number.dynamic", "value": 7468}
+    create.assert_not_called()
+    sleep.assert_not_awaited()
+
+
+async def test_delayed_balance_recheck_preserves_offline_authority_guard(hass):
+    api = _charging_conflict_api(hass)
+    calls, tasks = [], []
+    waiting, elapsed = asyncio.Event(), asyncio.Event()
+    authority = True
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data))
+    async def sleep(delay):
+        assert delay == 5.0
+        waiting.set()
+        await elapsed.wait()
+    def create(coroutine):
+        task = asyncio.create_task(coroutine)
+        tasks.append(task)
+        return task
+    executor = RuntimeOutputExecutor(
+        hass, api, "site-a", ownership_store=MemoryStore({"controls": {}, "balance_active": True}),
+        sleep=sleep, create_task=create,
+    )
+    context = {"devices": api.list_devices.return_value, "mappings": api.list_mappings.return_value,
+               "catalog": api.get_device_type_catalog.return_value}
+    try:
+        await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("battery", "target", "7468")]}, context=context, guard=lambda: authority)
+        await asyncio.wait_for(waiting.wait(), 1)
+        authority = False  # Reconnect, plan replacement, expiry or unload invalidates this execution.
+        executor._balance_active = False
+        elapsed.set()
+        await asyncio.gather(*tasks)
+        assert calls == []
+        api.list_devices.assert_not_awaited()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def test_site_balance_executes_first_and_suppresses_battery_power(hass):
     calls = []
     hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
@@ -1105,6 +1204,97 @@ async def test_site_release_clears_ownership_and_resumes_battery_power(hass):
     ]})
 
     assert calls == ["number.balance", "button.release", "number.battery"]
+
+
+@pytest.mark.parametrize("protected_target", [False, True])
+async def test_site_target_clears_persisted_balance_before_7468w_battery_charge(hass, protected_target):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    store = MemoryStore()
+    executor = RuntimeOutputExecutor(
+        hass, api, "site-a", ownership_store=store,
+        get_conflicts=_charging_conflicts if protected_target else None,
+    )
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance")]})
+    assert store.data["balance_active"] is True
+    calls.clear()
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "target", 1234)]})
+    assert not executor._balance_active
+    assert not store.data.get("balance_active", False)
+    assert [call["entity_id"] for call in calls] == ([] if protected_target else ["number.site_first", "number.site_second"])
+
+    # A reload must not resurrect the earlier balance mode.
+    reloaded = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    calls.clear()
+    await reloaded.async_handle({"type": "decision.snapshot", "decisions": [_decision("battery", "target", "7468")]})
+    assert [call["entity_id"] for call in calls] == [
+        "select.charge_mode", "select.charge_gate", "number.charge_limit", "number.dynamic",
+    ]
+    assert calls[-1] == {"value": 7468, "entity_id": "number.dynamic"}
+
+
+async def test_reconnect_site_target_clears_old_balance_before_battery_in_snapshot(hass):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    store = MemoryStore({"controls": {}, "balance_active": True})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", "target", "7468"), _decision("site", "target", 1234),
+    ]})
+    assert [call["entity_id"] for call in calls] == [
+        "number.site_first", "number.site_second", "select.charge_mode", "select.charge_gate",
+        "number.charge_limit", "number.dynamic",
+    ]
+    assert calls[-1]["value"] == 7468
+    assert not store.data.get("balance_active", False)
+
+
+async def test_unmapped_site_target_still_ends_old_balance_ownership(hass):
+    api = _charging_conflict_api(hass)
+    api.list_mappings.return_value = [m for m in api.list_mappings.return_value if m.get("mode") != "target"]
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    store = MemoryStore({"controls": {}, "balance_active": True})
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", "target", "7468"), _decision("site", "target", 1234),
+    ]})
+    assert calls == ["select.charge_mode", "select.charge_gate", "number.charge_limit", "number.dynamic"]
+    assert not store.data.get("balance_active", False)
+
+
+async def test_site_target_keeps_existing_decision_order_when_balance_is_inactive(hass):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(call.data["entity_id"]))
+    executor = RuntimeOutputExecutor(hass, api, "site-a")
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", "target", "7468"), _decision("site", "target", 1234),
+    ]})
+    assert calls == [
+        "select.charge_mode", "select.charge_gate", "number.charge_limit", "number.dynamic",
+        "number.site_first", "number.site_second",
+    ]
+
+
+async def test_ownership_storage_failure_does_not_block_replacing_site_target(hass):
+    api = _charging_conflict_api(hass)
+    calls = []
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    store = MemoryStore({"controls": {}, "balance_active": True})
+    store.async_save = AsyncMock(side_effect=OSError("disk unavailable"))
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [
+        _decision("battery", "target", "7468"), _decision("site", "target", 1234),
+    ]})
+    assert [call["entity_id"] for call in calls] == [
+        "number.site_first", "number.site_second", "select.charge_mode", "select.charge_gate",
+        "number.charge_limit", "number.dynamic",
+    ]
+    assert not executor._balance_active
+    assert calls[-1]["value"] == 7468
 
 
 async def test_reconnect_balance_snapshot_establishes_suppression(hass):
@@ -1295,13 +1485,19 @@ async def test_logbook_reports_real_failure_and_remaining_skipped_action(hass):
 
 async def test_logbook_explains_unmapped_and_balance_suppressed_decisions(hass):
     events = await _logbook_events(hass)
-    executor = RuntimeOutputExecutor(hass, _battery_signed_api([]), "site-a")
+    tasks = []
+    def create(coroutine):
+        task = asyncio.create_task(coroutine)
+        tasks.append(task)
+        return task
+    executor = RuntimeOutputExecutor(hass, _battery_signed_api([]), "site-a", sleep=AsyncMock(), create_task=create)
     payload = {"type": "decision.snapshot", "decisions": [{
         "deviceId": "external-battery", "deviceType": "battery", "power": 0, "mode": "hold",
     }]}
     await executor.async_handle(payload)
     executor._balance_active = True
     await executor.async_handle(payload)
+    await asyncio.gather(*tasks)
     await hass.async_block_till_done()
 
     assert len(events) == 2
