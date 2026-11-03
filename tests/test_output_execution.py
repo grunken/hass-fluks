@@ -428,6 +428,166 @@ def _mapping(mode=None):
     }
 
 
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize("mismatch", [None, "select.inverter_mode", "number.battery_power"])
+async def test_skip_only_when_all_transformed_mapping_settings_are_active(hass, offline, mismatch):
+    api = _retry_api(_mapping())
+    calls = []
+    hass.states.async_set("select.inverter_mode", "eco")
+    hass.states.async_set("number.battery_power", "-1500.0")
+    if mismatch:
+        hass.states.async_set(mismatch, "different")
+    async def apply(call):
+        calls.append(dict(call.data))
+        hass.states.async_set(call.data["entity_id"], str(call.data.get("option", call.data.get("value"))))
+    hass.services.async_register("select", "select_option", apply)
+    hass.services.async_register("number", "set_value", apply)
+    context = {"devices": api.list_devices.return_value, "mappings": api.list_mappings.return_value,
+               "catalog": api.get_device_type_catalog.return_value} if offline else None
+    events = await _logbook_events(hass)
+    executor = RuntimeOutputExecutor(hass, api, "site-a", sleep=AsyncMock())
+    payload = {"type": "decision.snapshot", "decisions": [{
+        "deviceId": "external-battery", "deviceType": "battery", "power": "3000", "mode": None,
+    }]}
+    await executor.async_handle(payload, context=context)
+    await hass.async_block_till_done()
+    expected = [{"option": "eco", "entity_id": "select.inverter_mode"},
+                {"value": -1500, "entity_id": "number.battery_power"}]
+    assert calls == (expected if mismatch else [])
+    if not mismatch:
+        assert len(events) == 1 and "all mapped settings are already active" in events[0]["message"]
+    # The same Decision must check fresh HA state rather than remember its last value.
+    calls.clear()
+    hass.states.async_set("number.battery_power", "0")
+    await executor.async_handle(payload, context=context)
+    assert calls == expected
+    assert api.list_mappings.await_count == (0 if offline else 2)
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+async def test_settings_check_preserves_false_zero_and_multiple_fields(hass, mismatch):
+    action = {"type": "serviceCall", "service": "test.apply", "target": {"entityId": "sensor.settings"},
+              "data": {"enabled": {"kind": "literal", "value": False}, "value": {"kind": "requestedValue"}}}
+    hass.states.async_set("sensor.settings", "ready", {"enabled": mismatch, "value": "0.0"})
+    calls = []
+    def apply(call):
+        calls.append(dict(call.data))
+        hass.states.async_set("sensor.settings", "ready", {"enabled": call.data["enabled"], "value": call.data["value"]})
+    hass.services.async_register("test", "apply", apply)
+    await RuntimeOutputExecutor(hass, _retry_api(_retry_mapping(actions=[action])), "site-a", sleep=AsyncMock()).async_handle({
+        "type": "decision.snapshot", "decisions": [{"deviceId": "external-battery", "deviceType": "battery", "power": "0"}],
+    })
+    assert calls == ([{"enabled": False, "value": 0, "entity_id": "sensor.settings"}] if mismatch else [])
+
+
+@pytest.mark.parametrize("with_value", [False, True])
+async def test_unverifiable_or_valueless_action_keeps_the_complete_sequence(hass, with_value):
+    actions = [
+        {"type": "serviceCall", "service": "number.set_value", "target": {"entityId": "number.already"},
+         "data": {"value": {"kind": "literal", "value": 0}}},
+        {"type": "serviceCall", "service": "test.trigger", "target": {"entityId": "button.trigger"},
+         "data": {"command": {"kind": "literal", "value": "on"}} if with_value else {}},
+    ]
+    hass.states.async_set("number.already", "0")
+    hass.states.async_set("button.trigger", "on")
+    calls = []
+    hass.services.async_register("number", "set_value", lambda call: calls.append(call.data["entity_id"]))
+    hass.services.async_register("test", "trigger", lambda call: calls.append(call.data["entity_id"]))
+    await RuntimeOutputExecutor(hass, _retry_api(_retry_mapping(actions=actions)), "site-a", sleep=AsyncMock()).async_handle({
+        "type": "decision.snapshot", "decisions": [{"deviceId": "external-battery", "deviceType": "battery", "power": 0}],
+    })
+    assert calls == ["number.already", "button.trigger"]
+
+
+@pytest.mark.parametrize("state", [None, "unknown", "unavailable"])
+async def test_unreadable_entity_is_not_treated_as_already_active(hass, state):
+    action = {"type": "serviceCall", "service": "test.apply", "target": {"entityId": "sensor.settings"},
+              "data": {"value": {"kind": "literal", "value": 0}}}
+    if state is not None:
+        hass.states.async_set("sensor.settings", state, {"value": 0})
+    calls = []
+    def apply(call):
+        calls.append(dict(call.data))
+        hass.states.async_set("sensor.settings", "ready", {"value": 0})
+    hass.services.async_register("test", "apply", apply)
+    await RuntimeOutputExecutor(hass, _retry_api(_retry_mapping(actions=[action])), "site-a", sleep=AsyncMock()).async_handle({
+        "type": "decision.snapshot", "decisions": [{"deviceId": "external-battery", "deviceType": "battery", "power": 0}],
+    })
+    assert calls == [{"value": 0, "entity_id": "sensor.settings"}]
+
+
+async def test_normal_execution_resolves_references_after_preceding_actions(hass):
+    actions = [
+        {"type": "serviceCall", "service": "number.set_value", "target": {"entityId": "number.reference"},
+         "data": {"value": {"kind": "literal", "value": 10}}},
+        {"type": "serviceCall", "service": "number.set_value", "target": {"entityId": "number.target"},
+         "data": {"value": {"kind": "requestedValue", "transforms": [{"type": "difference", "reference": {"entityId": "number.reference"}}]}}},
+    ]
+    hass.states.async_set("number.reference", "5")
+    hass.states.async_set("number.target", "0")
+    calls = []
+    def apply(call):
+        calls.append(dict(call.data))
+        hass.states.async_set(call.data["entity_id"], str(call.data["value"]))
+    hass.services.async_register("number", "set_value", apply)
+    await RuntimeOutputExecutor(hass, _retry_api(_retry_mapping(actions=actions)), "site-a", sleep=AsyncMock()).async_handle({
+        "type": "decision.snapshot", "decisions": [{"deviceId": "external-battery", "deviceType": "battery", "power": 3000}],
+    })
+    assert calls == [{"value": 10, "entity_id": "number.reference"}, {"value": 2990, "entity_id": "number.target"}]
+
+
+async def test_preflight_does_not_move_transform_failures_before_earlier_actions(hass):
+    actions = [
+        {"type": "serviceCall", "service": "number.set_value", "target": {"entityId": "number.first"},
+         "data": {"value": {"kind": "literal", "value": 10}}},
+        {"type": "serviceCall", "service": "number.set_value", "target": {"entityId": "number.target"},
+         "data": {"value": {"kind": "requestedValue", "transforms": [{"type": "difference", "reference": {"entityId": "number.missing"}}]}}},
+    ]
+    hass.states.async_set("number.first", "10")
+    hass.states.async_set("number.target", "0")
+    calls = []
+    hass.services.async_register("number", "set_value", lambda call: calls.append(call.data["entity_id"]))
+    await RuntimeOutputExecutor(hass, _retry_api(_retry_mapping(actions=actions)), "site-a", sleep=AsyncMock()).async_handle({
+        "type": "decision.snapshot", "decisions": [{"deviceId": "external-battery", "deviceType": "battery", "power": 3000}],
+    })
+    assert calls == ["number.first"]
+
+
+async def test_already_active_temperature_target_keeps_ownership_and_exact_changes(hass):
+    mapping = temperature_mapping()
+    mapping["configuration"]["actions"][0]["data"]["temperature"]["transforms"] = [{"type": "offset", "amount": 1}]
+    api, store, calls = temperature_api(mapping), MemoryStore(), []
+    hass.states.async_set("climate.zone", "heat", {"temperature": 22})
+    def apply(call):
+        calls.append(call.data["temperature"])
+        hass.states.async_set("climate.zone", "heat", {"temperature": call.data["temperature"]})
+    hass.services.async_register("climate", "set_temperature", apply)
+    executor = RuntimeOutputExecutor(hass, api, "site-a", ownership_store=store, sleep=AsyncMock())
+    payload = {"type": "decision.snapshot", "decisions": [temperature_decision(value="21.05")]}
+    await executor.async_handle(payload)
+    assert calls == [22.05]  # A nearby value within verification tolerance is still a changed setting.
+    await executor.async_handle(payload)
+    assert calls == [22.05]
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [temperature_decision(value=None, mode="release")]})
+    assert calls == [22.05, 22]
+    assert store.data == {"controls": {}}
+
+
+async def test_already_active_site_settings_still_update_balance_ownership(hass):
+    balance = _site_power_mapping(mode="balance")
+    release = _site_power_mapping(mode="release")
+    release["configuration"]["actions"][0]["data"]["value"] = {"kind": "literal", "value": 1000}
+    hass.states.async_set("number.balance", "ready", {"value": 1000})
+    calls, store = [], MemoryStore()
+    hass.services.async_register("test", "execute", lambda call: calls.append(dict(call.data)))
+    executor = RuntimeOutputExecutor(hass, _site_condition_api([balance, release]), "site-a", ownership_store=store)
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "balance", 1000)]})
+    assert executor._balance_active and store.data["balance_active"]
+    await executor.async_handle({"type": "decision.snapshot", "decisions": [_decision("site", "release", None)]})
+    assert not executor._balance_active and not store.data.get("balance_active", False)
+    assert calls == []
+
+
 async def test_snapshot_resolves_device_mapping_transforms_and_order(hass):
     calls = []
 
@@ -717,7 +877,8 @@ async def test_all_supported_temperature_controls_use_temporary_ownership(hass):
             temperature_decision(device_type=device_type, field=concept.rsplit(".", 1)[1]),
         ]})
 
-    assert calls == [22.05, 22.05, 22.05, 22.05]
+    # Subsequent controls already have this setpoint, but still acquire ownership.
+    assert calls == [22.05]
     assert set(store.data["controls"]) == {
         "temperature-external|heatPump.temperature",
         "temperature-external|heatPump.tankTemperature",

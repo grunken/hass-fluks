@@ -537,23 +537,17 @@ class RuntimeOutputExecutor:
         apply_transforms: bool = True,
         concept: str = "",
     ) -> None:
-        """Execute service calls sequentially so configured order is preserved."""
+        """Skip active settings or execute service calls in configured order."""
+        self._check_authority()
+        if self._settings_already_active(configuration, requested_value, apply_transforms=apply_transforms):
+            await self._async_log("decision_settings_active", concept=concept)
+            return
         attempt = 1
         for index, action in enumerate(configuration["actions"]):
             self._check_authority()
             data: dict[str, Any] = {}
             try:
-                for field, source in action.get("data", {}).items():
-                    if source["kind"] == "literal":
-                        data[field] = source["value"]
-                    elif not apply_transforms:
-                        data[field] = requested_value
-                    else:
-                        data[field] = apply_output_transforms(
-                            requested_value,
-                            source.get("transforms", []),
-                            reference_resolver=self._output_reference,
-                        )
+                self._populate_action_data(action, requested_value, data, apply_transforms=apply_transforms)
                 domain, service = action["service"].split(".", 1)
                 attempt = await self._async_execute_action(
                     action, domain, service, data, concept=concept, attempt=attempt,
@@ -579,6 +573,48 @@ class RuntimeOutputExecutor:
                 entity=action["target"]["entityId"], service=action["service"],
                 values=", ".join(f"{field}: {value}" for field, value in data.items()),
             )
+
+    def _populate_action_data(
+        self,
+        action: dict[str, Any],
+        requested_value: Any,
+        data: dict[str, Any],
+        *,
+        apply_transforms: bool,
+    ) -> None:
+        """Resolve the existing bindings for comparison or ordered execution."""
+        for field, source in action.get("data", {}).items():
+            if source["kind"] == "literal":
+                data[field] = source["value"]
+            elif not apply_transforms:
+                data[field] = requested_value
+            else:
+                data[field] = apply_output_transforms(
+                    requested_value, source.get("transforms", []),
+                    reference_resolver=self._output_reference,
+                )
+
+    def _settings_already_active(
+        self,
+        configuration: dict[str, Any],
+        requested_value: Any,
+        *,
+        apply_transforms: bool,
+    ) -> bool:
+        """Skip only when every intended action setting can be confirmed."""
+        for action in configuration["actions"]:
+            state = self._hass.states.get(action["target"]["entityId"])
+            if state is None or state.state in {"unknown", "unavailable"}:
+                return False
+            data: dict[str, Any] = {}
+            try:
+                self._populate_action_data(action, requested_value, data, apply_transforms=apply_transforms)
+            except (TypeError, ValueError, ArithmeticError):
+                # Execution retains its existing action order and failure reporting.
+                return False
+            if self._verify_action_result(action, data, exact=True) is not True:
+                return False
+        return True
 
     async def _async_execute_action(
         self,
@@ -660,7 +696,7 @@ class RuntimeOutputExecutor:
             )
 
     def _verify_action_result(
-        self, action: dict[str, Any], data: dict[str, Any]
+        self, action: dict[str, Any], data: dict[str, Any], *, exact: bool = False,
     ) -> bool | None:
         """Compare resolved action values with a safely identifiable HA result."""
         state = self._hass.states.get(action["target"]["entityId"])
@@ -675,7 +711,7 @@ class RuntimeOutputExecutor:
             else:
                 return None
         return all(
-            self._same_action_value(action, field, expected, actual)
+            (self._same_value(expected, actual) if exact else self._same_action_value(action, field, expected, actual))
             for (field, expected), actual in zip(data.items(), observed)
         )
 
