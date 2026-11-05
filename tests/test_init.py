@@ -36,6 +36,7 @@ async def test_setup_unload_and_reload_have_no_backend_side_effects(hass, record
     runtime.async_stop = AsyncMock()
     observations = MagicMock()
     observations.async_refresh = AsyncMock()
+    observations.async_observe_current = AsyncMock()
     observations.async_stop = AsyncMock()
     with (
         patch(

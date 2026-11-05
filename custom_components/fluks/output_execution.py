@@ -88,6 +88,7 @@ class RuntimeOutputExecutor:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         get_conflicts: Callable[[], list[dict[str, Any]]] | None = None,
         create_task: Callable[[Awaitable[None]], asyncio.Task[None]] | None = None,
+        observe_current: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._hass = hass
         self._api = api
@@ -95,6 +96,11 @@ class RuntimeOutputExecutor:
         self._entry_id = entry_id
         self._execution_lock = asyncio.Lock()
         self._execution_guard = None
+        self._observe_current = observe_current
+        self._ownership_lock = asyncio.Lock()
+        self._ev_charging: dict[str, dict[str, Any]] = {}
+        self._ev_power: dict[str, bool] = {}
+        self._ev_starting: set[str] = set()
         self._sleep = sleep
         self._get_conflicts = get_conflicts or (lambda: [])
         self._create_task = create_task or (
@@ -130,11 +136,22 @@ class RuntimeOutputExecutor:
             _LOGGER.debug("Unable to write fluks Decision to Logbook", exc_info=True)
 
     async def _async_load_temperature_ownership(self) -> None:
+        async with self._ownership_lock:
+            await self._async_load_ownership()
+
+    async def _async_load_ownership(self) -> None:
         if self._temperature_loaded:
             return
         stored = await self._temperature_store.async_load()
         if isinstance(stored, dict):
             self._balance_active = bool(stored.get("balance_active", False))
+            self._ev_charging = {
+                key: dict(record)
+                for key, record in stored.get("ev_charging", {}).items()
+                if isinstance(key, str) and isinstance(record, dict)
+                and record.get("owner") in {"fluks", "manual"}
+                and isinstance(record.get("active"), bool)
+            } if isinstance(stored.get("ev_charging"), dict) else {}
         records = stored.get("controls", {}) if isinstance(stored, dict) else {}
         if isinstance(records, dict):
             self._temperature_ownership = {
@@ -149,10 +166,50 @@ class RuntimeOutputExecutor:
         self._temperature_loaded = True
 
     async def _async_save_temperature_ownership(self) -> None:
-        data = {"controls": self._temperature_ownership}
-        if self._balance_active:
-            data["balance_active"] = True
-        await self._temperature_store.async_save(data)
+        async with self._ownership_lock:
+            data = {"controls": self._temperature_ownership}
+            if self._balance_active:
+                data["balance_active"] = True
+            if self._ev_charging:
+                data["ev_charging"] = self._ev_charging
+            await self._temperature_store.async_save(data)
+
+    def _update_ev_charging(self, device_id: str) -> bool:
+        """Attribute an observed charging session without claiming pending starts."""
+        if device_id not in self._ev_power or device_id in self._ev_starting:
+            return False
+        previous = self._ev_charging.get(device_id)
+        if self._ev_power[device_id]:
+            owner = "fluks" if previous and previous["owner"] == "fluks" else "manual"
+            self._ev_charging[device_id] = {"owner": owner, "active": True}
+        elif previous and (previous["active"] or previous["owner"] == "manual"):
+            self._ev_charging.pop(device_id)
+        return previous != self._ev_charging.get(device_id)
+
+    async def async_observe(self, device_id: str, values: dict[str, Any]) -> None:
+        """Observe local mapped power even when delivery to Core is unavailable."""
+        power = self._numeric(values.get("electricVehicle.power"))
+        if power is None:
+            return
+        await self._async_load_temperature_ownership()
+        self._ev_power[device_id] = power > 0
+        if self._update_ev_charging(device_id):
+            await self._async_save_temperature_ownership()
+
+    async def _async_ev_start(
+        self, device_id: str, configuration: dict[str, Any], value: Any,
+    ) -> None:
+        """Claim a start only after the complete Mapping succeeds or is satisfied."""
+        self._ev_starting.add(device_id)
+        try:
+            await self._async_execute(configuration, value, concept="electricVehicle.power")
+            self._ev_charging[device_id] = {
+                "owner": "fluks", "active": self._ev_power.get(device_id, False),
+            }
+        finally:
+            self._ev_starting.discard(device_id)
+            self._update_ev_charging(device_id)
+            await self._async_save_temperature_ownership()
 
     @staticmethod
     def _numeric(value: Any) -> int | float | None:
@@ -313,6 +370,9 @@ class RuntimeOutputExecutor:
             _LOGGER.warning("Unable to resolve fluks output Mappings")
             return
 
+        if self._observe_current is not None:
+            await self._observe_current()
+
         device_by_external_id = {
             str(device["deviceId"]): device
             for device in devices
@@ -361,6 +421,9 @@ class RuntimeOutputExecutor:
                 definition = definitions.get(str(device_type), {}).get(concept)
                 if definition is None or "control" not in definition.get("usages", []):
                     await self._async_log("decision_unsupported", concept=concept)
+                    continue
+                if device_type == "electricVehicle" and self._ev_charging.get(device["deviceId"], {}).get("owner") == "manual":
+                    await self._async_log("decision_manual_charging", concept=concept)
                     continue
                 if self._balance_active and concept == "battery.power":
                     if retry_balance:
@@ -448,7 +511,14 @@ class RuntimeOutputExecutor:
                         )
                     else:
                         value = None if decision.get("mode") == "release" and raw_value is None else _canonical_value(raw_value, str(definition.get("datatype")))
-                        await self._async_execute(configuration, value, concept=concept)
+                        if (
+                            concept == "electricVehicle.power" and value is not None and value > 0
+                            and mapping.get("mode") in {None, "charge"}
+                            and decision.get("mode") != "release"
+                        ):
+                            await self._async_ev_start(device["deviceId"], configuration, value)
+                        else:
+                            await self._async_execute(configuration, value, concept=concept)
                     if concept == "site.power" and decision.get("mode") == "balance":
                         self._balance_active = True
                         await self._async_save_temperature_ownership()

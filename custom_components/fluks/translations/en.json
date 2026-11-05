@@ -113,6 +113,7 @@
     "decision_balance_suppressed": "No actions performed for {concept}: Battery control is suppressed while Site balance is active.",
     "decision_conflict_suppressed": "No actions performed for {concept}: the configured Battery charging control is already active and conflicts with this control.",
     "decision_settings_active": "No actions performed for {concept}: all mapped settings are already active.",
+    "decision_manual_charging": "No actions performed for {concept}: manual EV charging is active.",
     "decision_no_mapping": "No actions performed for {concept}: no executable output Mapping matched mode {mode} and the Decision value.",
     "decision_failed": "Stopped executing the Decision for {concept}: {error}.",
     "decision_release_unavailable": "No actions performed for {concept}: the writable temperature setpoint is unavailable.",

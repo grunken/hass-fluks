@@ -46,6 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data[CONF_SITE_ID],
         entry.entry_id,
         get_conflicts=lambda: plan.data["conflicts"],
+        observe_current=lambda: observations.async_observe_current(),
         create_task=lambda coroutine: entry.async_create_background_task(
             hass, coroutine, "fluks balance recheck"
         ),
@@ -60,13 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtimes = hass.data.setdefault(DOMAIN, {}).setdefault(DATA_RUNTIME, {})
     if (previous := runtimes.pop(entry.entry_id, None)) is not None:
         await previous.async_stop()
-    await plan.async_load()
     runtimes[entry.entry_id] = runtime
-    runtime.start(
-        lambda coroutine: entry.async_create_background_task(
-            hass, coroutine, "fluks runtime"
-        )
-    )
     observations = RealtimeObservationPublisher(
         hass,
         api,
@@ -74,11 +69,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.entry_id,
         runtime.async_send,
         subscribe_runtime_status=runtime.add_status_listener,
+        observe=output.async_observe,
+        observe_concepts={"electricVehicle.power"},
+        get_cached_context=lambda: plan.data["cache"],
     )
     publishers = hass.data[DOMAIN].setdefault(DATA_OBSERVATIONS, {})
     if (previous := publishers.pop(entry.entry_id, None)) is not None:
         await previous.async_stop()
     publishers[entry.entry_id] = observations
+    await plan.async_load()
+    await observations.async_observe_current()
+    runtime.start(
+        lambda coroutine: entry.async_create_background_task(
+            hass, coroutine, "fluks runtime"
+        )
+    )
     entry.async_create_background_task(
         hass, observations.async_refresh(), "fluks observations"
     )

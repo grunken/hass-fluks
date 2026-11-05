@@ -113,6 +113,7 @@
     "decision_balance_suppressed": "Ingen handlinger utført for {concept}: batteristyring er undertrykt mens balansering av stedet er aktiv.",
     "decision_conflict_suppressed": "Ingen handlinger utført for {concept}: den konfigurerte ladestyringen for batteriet er allerede aktiv og er i konflikt med denne styringen.",
     "decision_settings_active": "Ingen handlinger utført for {concept}: alle tilknyttede innstillinger er allerede aktive.",
+    "decision_manual_charging": "Ingen handlinger utført for {concept}: manuell lading av elbilen er aktiv.",
     "decision_no_mapping": "Ingen handlinger utført for {concept}: ingen kjørbar utgående tilknytning matchet modusen {mode} og beslutningsverdien.",
     "decision_failed": "Stoppet utførelsen av beslutningen for {concept}: {error}.",
     "decision_release_unavailable": "Ingen handlinger utført for {concept}: det skrivbare temperatursettpunktet er utilgjengelig.",

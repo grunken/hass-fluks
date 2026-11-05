@@ -113,6 +113,7 @@
     "decision_balance_suppressed": "Keine Aktionen für {concept} ausgeführt: Die Batteriesteuerung wird unterdrückt, während der Standortausgleich aktiv ist.",
     "decision_conflict_suppressed": "Keine Aktionen für {concept} ausgeführt: Die konfigurierte Ladesteuerung der Batterie ist bereits aktiv und steht im Konflikt mit dieser Steuerung.",
     "decision_settings_active": "Keine Aktionen für {concept} ausgeführt: Alle zugeordneten Einstellungen sind bereits aktiv.",
+    "decision_manual_charging": "Keine Aktionen für {concept} ausgeführt: Das Elektrofahrzeug wird manuell geladen.",
     "decision_no_mapping": "Keine Aktionen für {concept} ausgeführt: Keine ausführbare Ausgangszuordnung passte zum Modus {mode} und zum Entscheidungswert.",
     "decision_failed": "Ausführung der Entscheidung für {concept} abgebrochen: {error}.",
     "decision_release_unavailable": "Keine Aktionen für {concept} ausgeführt: Der schreibbare Temperatursollwert ist nicht verfügbar.",

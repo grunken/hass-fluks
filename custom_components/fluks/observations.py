@@ -21,6 +21,7 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 
 from .api import FluksApiClient
 from .const import DATA_OBSERVATIONS, DOMAIN, ENERGY_LIFETIME_STORAGE_VERSION
+from .output_mapping import apply_output_transforms
 
 INVALID_STATES = {"", "unknown", "unavailable", "none", "null"}
 TEMPERATURE_UNITS = {
@@ -203,11 +204,20 @@ class RealtimeObservationPublisher:
         *,
         availability_cooldown: float = AVAILABILITY_COOLDOWN.total_seconds(),
         subscribe_runtime_status: RuntimeStatusSubscriber | None = None,
+        observe: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        observe_concepts: set[str] | None = None,
+        get_cached_context: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._hass = hass
         self._api = api
         self._site_id = site_id
         self._send = send
+        self._observe = observe
+        self._observe_concepts = observe_concepts or set()
+        self._get_cached_context = get_cached_context or (lambda: {})
+        self._local_mappings: dict[str, list[InputMapping]] = {}
+        self._local_transforms: dict[str, list[dict[str, Any]]] = {}
+        self._using_cached_context = False
         self._last_sent: dict[str, Any] = {}
         self._unsubscribe_runtime_status: Callable[[], None] | None = None
         self._store = Store[dict[str, Any]](
@@ -241,7 +251,7 @@ class RealtimeObservationPublisher:
             return
         if status.get("state") != "connected":
             self._last_sent.clear()
-        elif not self._initialized and (
+        elif (not self._initialized or self._using_cached_context) and (
             self._recovery_task is None or self._recovery_task.done()
         ):
             self._recovery_task = self._hass.async_create_task(
@@ -391,17 +401,17 @@ class RealtimeObservationPublisher:
         )
         return f"{converted:g} {canonical_temperature_unit}"
 
-    async def async_refresh(self, *, only_if_uninitialized: bool = False) -> None:
+    async def async_refresh(self, *, only_if_uninitialized: bool = False, context=None) -> None:
         """Replace subscriptions from the current persisted input Mappings."""
         async with self._refresh_lock:
-            if self._stopped or (only_if_uninitialized and self._initialized):
+            if self._stopped or (only_if_uninitialized and self._initialized and not self._using_cached_context):
                 return
             await self._async_load()
             try:
-                devices = await self._api.list_devices(self._site_id)
-                mappings = await self._api.list_mappings(self._site_id)
+                devices = context["devices"] if context is not None else await self._api.list_devices(self._site_id)
+                mappings = context["mappings"] if context is not None else await self._api.list_mappings(self._site_id)
                 catalog = (
-                    await self._api.get_device_type_catalog()
+                    context.get("catalog", []) if context is not None else await self._api.get_device_type_catalog()
                     if any(
                         isinstance(item.get("configuration"), dict)
                         and item["configuration"].get("attribute")
@@ -411,7 +421,10 @@ class RealtimeObservationPublisher:
                 )
             except Exception:  # noqa: BLE001 - discovery outage must not break HA
                 _LOGGER.debug("Unable to refresh fluks realtime input Mappings")
-                return
+                context = self._get_cached_context()
+                if self._initialized or not {"devices", "mappings"} <= context.keys():
+                    return
+                devices, mappings, catalog = context["devices"], context["mappings"], context.get("catalog", [])
             if self._stopped:
                 return
             external_ids = {
@@ -436,6 +449,8 @@ class RealtimeObservationPublisher:
                 and isinstance(concept.get("concept"), str)
             }
             by_entity: dict[str, list[InputMapping]] = defaultdict(list)
+            local_mappings: dict[str, list[InputMapping]] = defaultdict(list)
+            local_transforms: dict[str, list[dict[str, Any]]] = {}
             initial_target_soc_mappings: dict[str, list[InputMapping]] = defaultdict(list)
             configured: dict[str, set[str]] = defaultdict(set)
             active_sources: dict[str, str] = {}
@@ -488,6 +503,12 @@ class RealtimeObservationPublisher:
                     ),
                 )
                 by_entity[entity_id].append(input_mapping)
+                if concept in self._observe_concepts:
+                    local_mappings[entity_id].append(input_mapping)
+                    local_transforms[self._stream_key(external_id, concept)] = [
+                        transform for transform in configuration.get("transforms", [])
+                        if transform.get("type") in {"invert", "scale", "offset"}
+                    ]
                 if concept == "electricVehicle.targetSocMaximum":
                     initial_target_soc_mappings[entity_id].append(input_mapping)
                 stream = self._lifetime.get(self._stream_key(external_id, concept))
@@ -540,6 +561,10 @@ class RealtimeObservationPublisher:
                     _state_changed,
                 )
             self._initialized = True
+            self._using_cached_context = context is not None
+            self._local_mappings = local_mappings
+            self._local_transforms = local_transforms
+            await self.async_observe_current()
             for entity_id, device_id, concept, attribute in baselines:
                 if (state := self._hass.states.get(entity_id)) is not None:
                     await self._async_publish_cumulative(
@@ -667,6 +692,22 @@ class RealtimeObservationPublisher:
             self._availability[key] = {"source": source}
             await self._store.async_save(self._store_payload())
 
+    async def async_observe_current(self) -> None:
+        """Read local control evidence without publishing or fetching from Core."""
+        if self._stopped or self._observe is None:
+            return
+        if not self._initialized:
+            context = self._get_cached_context()
+            if {"devices", "mappings"} <= context.keys():
+                await self.async_refresh(context=context)
+            return
+        for entity_id, mappings in self._local_mappings.items():
+            if (state := self._hass.states.get(entity_id)) is not None:
+                await self._async_state_changed(
+                    Event("state_changed", {"entity_id": entity_id, "new_state": state}),
+                    {entity_id: mappings}, {}, local_only=True,
+                )
+
     async def _async_state_changed(
         self,
         event: Event,
@@ -675,12 +716,16 @@ class RealtimeObservationPublisher:
             list[InputMapping],
         ],
         derived: dict[str, list[tuple[str, bool, bool, Decimal, str | None]]],
+        *,
+        local_only: bool = False,
     ) -> None:
         state: State | None = event.data.get("new_state")
         entity_id = event.data.get("entity_id")
         if self._stopped or not isinstance(entity_id, str):
             return
         if state is None:
+            if local_only:
+                return
             for device_id, concept, _cumulative, attribute, _unit, _declares_unit, _value_map in (
                 mappings.get(entity_id, [])
             ):
@@ -703,11 +748,15 @@ class RealtimeObservationPublisher:
             key = self._stream_key(device_id, concept)
             source = self._source_id(state.entity_id, attribute)
             if self._source_unavailable(state, attribute):
+                if local_only:
+                    continue
                 await self._async_schedule_unavailable(
                     key, device_id, concept, source
                 )
                 continue
             if cumulative or _is_cumulative_energy(concept):
+                if local_only:
+                    continue
                 published = await self._async_publish_cumulative(
                     state, device_id, concept, attribute
                 )
@@ -740,9 +789,20 @@ class RealtimeObservationPublisher:
                     )
                 value = _mapped_value_map(value, value_map)
             except (TypeError, ValueError):
+                if local_only:
+                    continue
                 await self._async_complete_availability(
                     key, device_id, concept, source, False
                 )
+                continue
+            if self._observe is not None and concept in self._observe_concepts:
+                try:
+                    local_value = apply_output_transforms(value, self._local_transforms.get(key, []))
+                except (TypeError, ValueError, ArithmeticError):
+                    pass  # Invalid readings cannot change local control ownership.
+                else:
+                    await self._observe(device_id, {concept: local_value})
+            if local_only:
                 continue
             published = await self._async_send_observations(
                 device_id, {concept: value}
