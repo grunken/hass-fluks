@@ -1131,7 +1131,7 @@ class FluksControlEditorPanel extends HTMLElement {
     return `<div class="matcher-proposal"><span><strong>${esc(this._t(proposal.classification === "unresolved" ? "possible_match" : "suggested_match"))}</strong><small>${esc(displayName)} · ${esc(detail)}</small></span><button type="button" data-use-proposal="${esc(concept)}">${esc(this._t("use_suggestion"))}</button></div>`;
   }
   _editableDeviceProperties(properties, deviceType) {
-    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKwp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "socMinimum", "socMaximum", "maxChargePowerW", "maxDischargePowerW"] : []), ...(deviceType === "electricVehicle" ? ["batteryCapacity", "targetSocMaximum"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
+    const keys = ["displayName", "vendor", "model", ...(deviceType === "solar" ? ["installedKwp", "azimuthDegrees", "tiltDegrees"] : []), ...(deviceType === "spaceHeater" ? ["ratedPowerW"] : []), ...(deviceType === "battery" ? ["capacityKwh", "socMinimum", "socMaximum", "maxChargePowerW", "maxDischargePowerW"] : []), ...(deviceType === "electricVehicle" ? ["batteryCapacity", "targetSocMaximum", "intelligentChargingEnabled"] : []), ...(deviceType === "site" ? ["arbitrageEnabled", "arbitrageMinimumReturnPercentage"] : [])];
     return Object.fromEntries(keys.filter((key) => Object.hasOwn(properties, key)).map((key) => [key, properties[key]]));
   }
   _spaceHeaterNeedsRatedPower(deviceType, mappings, properties) {
@@ -1165,7 +1165,9 @@ class FluksControlEditorPanel extends HTMLElement {
       ${deviceType === "electricVehicle" ? `<section class="card"><h2>${esc(this._t("electric_vehicle_configuration"))}</h2><div class="fields three">
       ${physicalField("batteryCapacity", "batteryCapacityObserved", "battery_capacity", "estimated_by_fluks", "kWh", 'min="0"')}
       ${physicalField("targetSocMaximum", "targetSocMaximumObserved", "maximum_soc", "highest_observed_by_fluks", "%", 'min="0" max="100"', Boolean(mappings?.["electricVehicle.targetSocMaximum"]?.entityId))}
-      </div></section>` : ""}`;
+      </div></section>
+      <section class="card"><h2 id="proactive-charging-heading">${esc(this._t("proactive_charging"))}</h2><label class="toggle-property"><span aria-hidden="true"></span><span class="toggle-control"><input type="checkbox" data-property="intelligentChargingEnabled" aria-labelledby="proactive-charging-heading" aria-describedby="proactive-charging-description" ${properties.intelligentChargingEnabled === true ? "checked" : ""}><span class="toggle-track" aria-hidden="true"></span></span></label>
+      <small id="proactive-charging-description">${esc(this._t("proactive_charging_description"))}</small></section>` : ""}`;
   }
   _collectForm(useInputDraft = false) {
     const mappings = useInputDraft
@@ -1253,7 +1255,7 @@ class FluksControlEditorPanel extends HTMLElement {
   }
   _captureInputProperties() {
     const current = this._view.name === "add" ? this._draft?.properties : this._editProperties;
-    const properties = { ...(current ?? {}), ...Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()])) };
+    const properties = { ...(current ?? {}), ...Object.fromEntries([...this.shadowRoot.querySelectorAll("[data-property]")].map((node) => [node.dataset.property, node.type === "checkbox" ? node.checked : node.value === "" ? null : node.type === "number" ? Number(node.value) : node.value.trim()])) };
     if (this._view.name === "add" && this._draft) this._draft.properties = properties;
     else this._editProperties = properties;
   }

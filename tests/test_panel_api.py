@@ -1895,12 +1895,12 @@ async def test_ev_target_soc_property_mapping_saves_attribute_without_manual_ove
                 "entityId": "sensor.car_target",
                 "attribute": "target_soc",
             }},
-            "properties": {"batteryCapacity": 70, "targetSocMaximum": 75},
+            "properties": {"batteryCapacity": 70, "targetSocMaximum": 75, "intelligentChargingEnabled": True},
         })
         await hass.async_block_till_done()
 
     api.update_device_properties.assert_awaited_once_with(
-        "site-a", "car-device", {"batteryCapacity": 70}
+        "site-a", "car-device", {"batteryCapacity": 70, "intelligentChargingEnabled": True}
     )
     api.create_mapping.assert_awaited_once()
     assert api.create_mapping.await_args.args[1]["concept"] == "electricVehicle.targetSocMaximum"
@@ -1909,8 +1909,58 @@ async def test_ev_target_soc_property_mapping_saves_attribute_without_manual_ove
     }
     assert "batteryCapacity" in _editable_property_keys("electricVehicle")
     assert "targetSocMaximum" in _editable_property_keys("electricVehicle")
+    assert "intelligentChargingEnabled" in _editable_property_keys("electricVehicle")
     assert "socMinimum" not in _editable_property_keys("electricVehicle")
     conn.send_result.assert_called_once()
+
+
+@pytest.mark.parametrize("original,enabled", [(None, False), (None, True), (False, True), (True, False), (True, True)])
+async def test_ev_proactive_charging_updates_only_its_property_and_preserves_mappings(hass, original, enabled):
+    entry = make_entry(hass)
+    properties = {"batteryCapacity": 70, "targetSocMaximum": 88, "batteryCapacityObserved": 72.5}
+    if original is not None:
+        properties["intelligentChargingEnabled"] = original
+    input_configuration = {"version": 1, "entityId": "sensor.car_soc", "attribute": "soc"}
+    hass.states.async_set("sensor.car_soc", "ready", {"soc": 60})
+    mappings = [{"id": "soc-mapping", "deviceId": "car-device", "direction": "input",
+                 "concept": "electricVehicle.soc", "configuration": input_configuration},
+                {"id": "power-control", "deviceId": "car-device", "direction": "output",
+                 "concept": "electricVehicle.power", "mode": "charge", "configuration": {"version": 1, "actions": [{
+                     "type": "serviceCall", "service": "number.set_value", "target": {"entityId": "number.car_power"},
+                     "data": {"value": {"kind": "requestedValue"}},
+                 }]}}]
+    api = MagicMock(spec=FluksApiClient)
+    api.get_device = AsyncMock(return_value={"id": "car-device", "type": "electricVehicle", "properties": properties})
+    api.list_mappings = AsyncMock(return_value=mappings)
+    updated = {**properties, "intelligentChargingEnabled": enabled}
+    api.update_device_properties = AsyncMock(return_value={"id": "car-device", "type": "electricVehicle", "properties": updated})
+    api.create_mapping = AsyncMock()
+    api.update_mapping = AsyncMock()
+    api.delete_mapping = AsyncMock()
+    catalog = {"electricVehicle": {"type": "electricVehicle", "concepts": [{
+        "concept": "electricVehicle.soc", "datatype": "number", "unit": "%", "cadence": "realtime",
+        "usages": ["fact"], "source": "mapping",
+    }]}}
+    conn = connection()
+    with (
+        patch("custom_components.fluks.panel_api._api", return_value=api),
+        patch("custom_components.fluks.panel_api._catalog", AsyncMock(return_value=catalog)),
+    ):
+        websocket_device_save(hass, conn, {
+            "id": 74, "type": COMMAND_DEVICE_SAVE, "entry_id": entry.entry_id, "device_id": "car-device",
+            "mappings": {"electricVehicle.soc": input_configuration},
+            "properties": {"batteryCapacity": 70, "targetSocMaximum": 88, "intelligentChargingEnabled": enabled},
+        })
+        await hass.async_block_till_done()
+    if original is enabled:
+        api.update_device_properties.assert_not_awaited()
+    else:
+        api.update_device_properties.assert_awaited_once_with("site-a", "car-device", {"intelligentChargingEnabled": enabled})
+    api.create_mapping.assert_not_awaited()
+    api.update_mapping.assert_not_awaited()
+    api.delete_mapping.assert_not_awaited()
+    conn.send_error.assert_not_called()
+    conn.send_result.assert_called_once_with(74, {"properties": updated})
 
 
 async def test_battery_suggestions_are_noop_and_configured_values_can_be_cleared(hass):

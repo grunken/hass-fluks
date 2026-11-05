@@ -123,6 +123,8 @@
   "installed_solar_capacity": "Installed capacity",
   "battery_configuration": "Battery configuration",
   "electric_vehicle_configuration": "Electric vehicle configuration",
+  "proactive_charging": "Proactive charging",
+  "proactive_charging_description": "Adjusts charging based on expected driving needs and future electricity prices.",
   "battery_capacity": "Battery capacity",
   "minimum_soc": "Minimum SOC",
   "maximum_soc": "Maximum SOC",

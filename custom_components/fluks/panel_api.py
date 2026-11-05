@@ -1421,7 +1421,7 @@ def _editable_property_keys(device_type: str) -> set[str]:
             "maxDischargePowerW",
         })
     elif device_type == "electricVehicle":
-        keys.update({"batteryCapacity", "targetSocMaximum"})
+        keys.update({"batteryCapacity", "targetSocMaximum", "intelligentChargingEnabled"})
     elif device_type == SITE_DEVICE_TYPE:
         keys.update({"arbitrageEnabled", "arbitrageMinimumReturnPercentage"})
     return keys
@@ -1505,8 +1505,11 @@ def _validate_electric_vehicle_properties(
     device_type: str, properties: dict[str, Any]
 ) -> None:
     """Validate documented manually configured EV properties."""
-    keys = {"batteryCapacity", "targetSocMaximum"}
+    keys = {"batteryCapacity", "targetSocMaximum", "intelligentChargingEnabled"}
     if device_type != "electricVehicle" and any(key in properties for key in keys):
+        raise PanelCommandError("validation_error")
+    enabled = properties.get("intelligentChargingEnabled")
+    if enabled is not None and not isinstance(enabled, bool):
         raise PanelCommandError("validation_error")
     capacity = properties.get("batteryCapacity")
     if capacity is not None and (

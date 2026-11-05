@@ -123,6 +123,8 @@
   "installed_solar_capacity": "Installierte Leistung",
   "battery_configuration": "Batteriekonfiguration",
   "electric_vehicle_configuration": "Elektrofahrzeugkonfiguration",
+  "proactive_charging": "Vorausschauendes Laden",
+  "proactive_charging_description": "Passt den Ladevorgang an den erwarteten Fahrbedarf und zukünftige Strompreise an.",
   "battery_capacity": "Batteriekapazität",
   "minimum_soc": "Minimaler Ladezustand",
   "maximum_soc": "Maximaler Ladezustand",

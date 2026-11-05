@@ -123,6 +123,8 @@
   "installed_solar_capacity": "Installeret kapacitet",
   "battery_configuration": "Batterikonfiguration",
   "electric_vehicle_configuration": "Elbilskonfiguration",
+  "proactive_charging": "Proaktiv opladning",
+  "proactive_charging_description": "Tilpasser opladningen efter forventet kørsel og fremtidige elpriser.",
   "battery_capacity": "Batterikapacitet",
   "minimum_soc": "Minimum-SOC",
   "maximum_soc": "Maksimum-SOC",

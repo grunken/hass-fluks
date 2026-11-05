@@ -2088,6 +2088,81 @@ test("EV configuration uses observed values and locks maximum SOC when mapped", 
   });
 });
 
+test("Proactive charging reuses the Site toggle, defaults off, and loads every supported language", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const labels = { en: "Proactive charging", da: "Proaktiv opladning", nb: "Proaktiv lading", sv: "Proaktiv laddning", de: "Vorausschauendes Laden" };
+  for (const [language, label] of Object.entries(labels)) {
+    const translations = JSON.parse(await readFile(new URL(`../../custom_components/fluks/panel_translations/${language}.json`, import.meta.url), "utf8"));
+    const panel = new Panel(); panel._context = { translations };
+    for (const configured of [undefined, false, true]) {
+      const properties = configured === undefined ? {} : { intelligentChargingEnabled: configured };
+      const body = panel._propertiesForm(properties, "electricVehicle");
+      assert.match(body, /<label class="toggle-property"><span aria-hidden="true"><\/span>/);
+      assert.match(body, /class="toggle-control"/);
+      assert.match(body, /class="toggle-track" aria-hidden="true"/);
+      assert.ok(body.includes(label));
+      assert.ok(body.includes(translations.proactive_charging_description));
+      assert.ok(body.indexOf('data-property="targetSocMaximum"') < body.indexOf('data-property="intelligentChargingEnabled"'));
+      const cards = [...body.matchAll(/<section\b[^>]*>[\s\S]*?<\/section>/g)].map((match) => match[0]);
+      assert.equal(cards.length, 3);
+      assert.ok(cards[1].includes(`<h2>${translations.electric_vehicle_configuration}</h2>`));
+      assert.doesNotMatch(cards[1], /intelligentChargingEnabled/);
+      assert.ok(cards[2].startsWith(`<section class="card"><h2 id="proactive-charging-heading">${label}</h2>`));
+      assert.equal(cards[2].split(label).length - 1, 1);
+      assert.ok(cards[2].includes(translations.proactive_charging_description));
+      assert.match(cards[2], /data-property="intelligentChargingEnabled"/);
+      const input = body.match(/<input[^>]*data-property="intelligentChargingEnabled"[^>]*>/)[0];
+      assert.equal(/\bchecked\b/.test(input), configured === true);
+      assert.match(input, /aria-labelledby="proactive-charging-heading"/);
+      assert.match(input, /aria-describedby="proactive-charging-description"/);
+    }
+    for (const deviceType of ["battery", "solar", "heatPump", "site"]) {
+      assert.doesNotMatch(panel._propertiesForm({}, deviceType), /intelligentChargingEnabled/);
+    }
+  }
+});
+
+test("EV toggle saves as a boolean without replacing properties or Mapping drafts", async () => {
+  for (const enabled of [true, false]) {
+    const panel = new Panel();
+    panel._context = { translations: {}, entities: [] };
+    panel._hass = { states: {}, language: "en", localize: () => undefined };
+    panel._view = { name: "edit" };
+    const mapping = { version: 1, entityId: "sensor.car_target", attribute: "soc", transforms: [{ type: "scale", factor: 1 }] };
+    const properties = { batteryCapacity: 70, targetSocMaximum: 88, batteryCapacityObserved: 72.5, intelligentChargingEnabled: !enabled };
+    panel._detail = {
+      id: "car-device", type: "electricVehicle", properties,
+      concepts: [{ concept: "electricVehicle.targetSocMaximum", datatype: "number" }],
+      mappings: { "electricVehicle.targetSocMaximum": { configuration: mapping } }, proposals: {},
+    };
+    const toggle = { dataset: { property: "intelligentChargingEnabled" }, type: "checkbox", value: "on", checked: enabled };
+    const capacity = { dataset: { property: "batteryCapacity" }, type: "number", value: "70" };
+    const soc = { dataset: { property: "targetSocMaximum" }, type: "number", value: "88" };
+    const cancel = {}; const save = {}; let saved;
+    panel._frame = () => {};
+    panel.shadowRoot.querySelectorAll = (selector) => selector === "[data-property]" ? [capacity, soc, toggle] : [];
+    panel.shadowRoot.querySelector = (selector) => selector === "#cancel" ? cancel : selector === "#save" ? save : null;
+    panel._call = async (command, payload) => { assert.equal(command, "fluks/config/device_save"); saved = payload; return { properties: { ...properties, intelligentChargingEnabled: enabled } }; };
+    panel._renderEdit();
+    assert.equal(panel._editProperties.intelligentChargingEnabled, !enabled);
+    panel._captureInputProperties();
+    panel._renderInputDraft();
+    assert.equal(panel._editProperties.intelligentChargingEnabled, enabled);
+    assert.equal(panel._inputDraft["electricVehicle.targetSocMaximum"].attribute, "soc");
+    await save.onclick();
+    assert.deepEqual(saved, {
+      device_id: "car-device", mappings: { "electricVehicle.targetSocMaximum": mapping },
+      properties: { batteryCapacity: 70, targetSocMaximum: 88, intelligentChargingEnabled: enabled },
+    });
+    assert.equal(panel._detail.properties.batteryCapacityObserved, 72.5);
+    assert.equal(panel._detail.properties.intelligentChargingEnabled, enabled);
+
+    panel._view = { name: "add" }; panel._draft = { properties: { batteryCapacity: 70 } };
+    panel._captureInputProperties();
+    assert.equal(panel._draft.properties.intelligentChargingEnabled, enabled);
+  }
+});
+
 test("Solar installed capacity keeps learned suggestion separate and round-trips backend state", async () => {
   const learned = { "maximumKwpObserved": 14.038032 };
   const panel = new Panel();
