@@ -139,6 +139,8 @@ class FluksRuntimeWebSocket:
             await socket.send_json(payload)
         except (ClientError, OSError, RuntimeError):
             self._set_status("reconnecting", self._now_ms())
+            with contextlib.suppress(Exception):
+                await socket.close()
             return False
         return True
 

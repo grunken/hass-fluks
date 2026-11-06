@@ -192,6 +192,28 @@ async def test_observation_send_reuses_current_socket_after_reconnect():
     await runtime.async_stop()
 
 
+async def test_failed_outbound_send_closes_socket_and_reconnects():
+    class FailingSocket(FakeSocket):
+        async def send_json(self, payload):
+            raise ClientConnectionError("connection lost")
+
+    first = FailingSocket(hold=True)
+    second = FakeSocket(hold=True)
+    session = FakeSession([first, second])
+    runtime = FluksRuntimeWebSocket(session, KEY, API_BASE_URL, reconnect_delays=(0,))
+    runtime.start(asyncio.create_task)
+    await _wait_for(lambda: runtime._socket is first)
+
+    assert not await runtime.async_send({"deviceId": "device", "site.power": 1})
+    assert runtime.status["state"] == "reconnecting"
+    await _wait_for(lambda: runtime._socket is second)
+
+    assert first.closed
+    assert len(session.calls) == 2
+    assert runtime.status["state"] == "connected"
+    await runtime.async_stop()
+
+
 async def test_concept_keyed_decisions_are_dispatched_on_connect_live_and_reconnect():
     import json
     first = FakeSocket([
